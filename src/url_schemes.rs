@@ -600,6 +600,7 @@ impl SchemeRegistry for WinRegistry {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use std::path::PathBuf;
 
@@ -795,7 +796,8 @@ mod tests {
 
     #[test]
     fn globals_table_is_pruned_against_the_store() {
-        let path = std::env::temp_dir().join(format!("termurion-urlschemes-{}.toml", std::process::id()));
+        let _td = TempDir::new("urlschemes");
+        let path = _td.file("x.toml");
         let store = crate::store::Store::fresh(&path);
         let live = store.profiles[0].guid();
         let mut globals = crate::globals::Globals::empty(&path);

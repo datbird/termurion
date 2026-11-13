@@ -103,13 +103,11 @@ pub fn dev_vendor_dir() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("termurion-test-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn scratch(name: &str) -> TempDir {
+        TempDir::new(&format!("test-{name}"))
     }
 
     #[test]
@@ -125,7 +123,7 @@ mod tests {
 
     #[test]
     fn missing_dll_is_an_error() {
-        let err = load(&Source::Shipped(scratch("nodll"))).err().unwrap();
+        let err = load(&Source::Shipped(scratch("nodll").to_path_buf())).err().unwrap();
         assert!(err.contains("conpty.dll not found"), "{err}");
     }
 
@@ -133,7 +131,7 @@ mod tests {
     fn missing_openconsole_is_an_error() {
         let dir = scratch("noexe");
         std::fs::copy(dev_vendor_dir().join("conpty.dll"), dir.join("conpty.dll")).unwrap();
-        let err = load(&Source::Shipped(dir)).err().unwrap();
+        let err = load(&Source::Shipped(dir.to_path_buf())).err().unwrap();
         assert!(err.contains("OpenConsole.exe not found"), "{err}");
     }
 

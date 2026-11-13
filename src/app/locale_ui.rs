@@ -307,6 +307,7 @@ fn write_locale(store: &mut crate::store::Store, ask: &Ask, mode: i64, custom: O
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     fn prompt(allow: bool) -> Ask {
@@ -330,7 +331,8 @@ mod tests {
 
     #[test]
     fn a_settings_answer_on_a_session_copy_writes_the_copy_not_the_saved_profile() {
-        let path = std::env::temp_dir().join(format!("termurion-locale-{}.toml", std::process::id()));
+        let _td = TempDir::new("locale");
+        let path = _td.file("x.toml");
         let mut st = crate::store::Store::fresh(&path);
         let saved = st.profiles[0].guid();
         let copy = st.divorce(&saved);

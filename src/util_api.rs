@@ -276,7 +276,7 @@ mod tests {
                 return;
             }
         };
-        let dir = crate::util_cli::TempDir::new("termurion-it2api");
+        let dir = crate::test_tmp::TempDir::new("termurion-it2api");
         let file = dir.join("it2api.py");
         std::fs::write(&file, script()).unwrap();
 

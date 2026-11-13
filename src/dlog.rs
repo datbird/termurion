@@ -1149,7 +1149,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn temp_on_a_share_falls_back() {
-        let local = std::env::temp_dir();
+        let _td = crate::test_tmp::TempDir::new("t");
+        let local = _td.to_path_buf();
         std::fs::create_dir_all(local.join("TermurionDlogTest")).unwrap();
         let env = |share: bool| {
             let local = local.clone();
@@ -1168,11 +1169,10 @@ mod tests {
     }
 
     #[cfg(windows)]
-    fn scratch(tag: &str) -> localfs::LocalPath {
-        let dir = std::env::temp_dir().join(format!("termurion-dlog-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        localfs::LocalPath::judge(&dir).expect("a temp folder is local")
+    fn scratch(tag: &str) -> (crate::test_tmp::TempDir, localfs::LocalPath) {
+        let td = crate::test_tmp::TempDir::new(&format!("dlog-{tag}"));
+        let local = localfs::LocalPath::judge(&td).expect("a temp folder is local");
+        (td, local)
     }
 
     /// B3: a new file has exactly one allow ACE, for this user; a planted link is refused and
@@ -1180,14 +1180,14 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn log_file_is_owner_only_and_unfollowed() {
-        let dir = scratch("acl");
+        let (_td, dir) = scratch("acl");
         let path = save_in(&dir, "H\n", "body\n", "F\n", false).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "H\nbody\nF\n");
         let sddl = localfs::dacl_sddl(&dir.unfollowed(FILE_NAME).unwrap()).unwrap();
         assert_eq!(sddl.matches("(A;").count(), 1, "one allow ACE: {sddl}");
         assert!(sddl.contains(&crate::platform::windows::ipc::user_sid().unwrap()) && sddl.starts_with("D:P"), "for the user, protected: {sddl}");
         // A planted junction at the file's name is not followed and not written through.
-        let target = scratch("acl-target");
+        let (_td, target) = scratch("acl-target");
         let _ = std::fs::remove_file(&path);
         let status = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&path).arg(target.path()).output().unwrap();
         assert!(status.status.success(), "mklink: {}", String::from_utf8_lossy(&status.stdout));
@@ -1224,7 +1224,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_log_with_a_wider_dacl_is_not_appended_to() {
-        let dir = scratch("wide");
+        let (_td, dir) = scratch("wide");
         // Our own file (owner is the user, one ACE), then a second allow entry for Everyone.
         let first = save_in(&dir, "OLD\n", "", "", false).unwrap();
         let grant = std::process::Command::new("icacls").arg(&first).args(["/grant", "*S-1-1-0:R"]).output().unwrap();
@@ -1243,7 +1243,7 @@ mod tests {
     #[test]
     fn prepare_hands_back_the_judged_handle() {
         use std::io::Write;
-        let dir = scratch("handle");
+        let (_td, dir) = scratch("handle");
         let file = dir.unfollowed(FILE_NAME).unwrap();
         assert!(matches!(prepare(&dir, &file, true, 1, 1 << 20), Ok(Prepared::Fresh)), "no file yet");
         save_in(&dir, "one\n", "", "", false).unwrap();
@@ -1259,7 +1259,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn append_is_capped() {
-        let dir = scratch("cap");
+        let (_td, dir) = scratch("cap");
         save_in_capped(&dir, "H1\n", "one\n", "F1\n", false, 64).unwrap();
         save_in_capped(&dir, "H2\n", "two\n", "F2\n", true, 64).unwrap();
         let p = dir.path().join(FILE_NAME);

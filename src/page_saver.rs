@@ -913,6 +913,7 @@ impl Job {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_tmp::TempDir;
 
     fn u(s: &str) -> usize {
         units(s)
@@ -921,7 +922,8 @@ mod tests {
     /// The production door itself, with the real drives (Task 10 review minor 8).
     #[test]
     fn the_real_destination_refuses_shares() {
-        let ok = std::env::temp_dir().join(format!("termurion-dest-{}", std::process::id())).join("www.ex.com");
+        let tmp = TempDir::new("dest");
+        let ok = tmp.file("www.ex.com");
         assert!(destination(&ok).is_ok(), "{ok:?}");
         for bad in [r"\\h\s\x", "//h/s/x", r"\\?\UNC\h\s\x", r"\\.\UNC\h\s\x", r"\\h\s"] {
             assert_eq!(destination(Path::new(bad)).err(), Some(NETWORK_TEXT.to_string()), "{bad}");

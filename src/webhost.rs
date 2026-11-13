@@ -1826,6 +1826,7 @@ impl LocalDoc {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     /// Final review I7: a view that goes away while its window's page holds the keyboard hands the
@@ -2042,13 +2043,13 @@ mod tests {
         let ua = g.string("WebUserAgent");
         assert!(!ua.contains(['\r', '\n']) && ua.chars().count() == 512, "{}", ua.len());
         // A file loaded with a bad value is bounded too.
-        let dir = std::env::temp_dir().join(format!("termurion-hint-{}", std::process::id()));
+        let _td = TempDir::new("hint");
+        let dir = _td.to_path_buf();
         let _ = std::fs::create_dir_all(&dir);
         let file = dir.join("g.toml");
         std::fs::write(&file, format!("BrowserPluginPathHint = \"C:\\\\{}\"\n", "a".repeat(400))).unwrap();
         let loaded = crate::globals::Globals::load(&file).unwrap();
         assert_eq!(loaded.string("BrowserPluginPathHint"), "");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

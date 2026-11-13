@@ -269,6 +269,7 @@ pub fn forget(_h: isize) {}
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use std::process::{Command, Stdio};
     use std::sync::{mpsc, MutexGuard, OnceLock};
     use std::time::{Duration, Instant};
@@ -330,7 +331,8 @@ mod tests {
             if child.try_wait().ok().flatten().is_some() || !std::path::Path::new(&sock).exists() {
                 continue;
             }
-            let home = std::env::temp_dir().join(format!("termurion-openbox-{n}"));
+            let _td = TempDir::new("openbox");
+            let home = _td.to_path_buf();
             let _ = std::fs::create_dir_all(&home);
             // New windows are not focused by the manager, as on a desktop with focus stealing prevention.
             let rc = home.join("rc.xml");

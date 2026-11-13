@@ -138,6 +138,7 @@ pub fn it2tip(args: &[String], io: &mut Io) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_tmp::TempDir;
     use crate::util_cli::Harness;
     use sha2::{Digest, Sha256};
 
@@ -185,10 +186,11 @@ mod tests {
         assert_eq!(rc_path(&env(&[("XDG_DATA_HOME", "~\\x"), ("USERPROFILE", "C:\\U")])), PathBuf::from("C:\\U\\x\\.it2totd"));
 
         // The utility: tip 0, then tip 1, the index saved with no newline.
-        let tmp = crate::util_cli::TempDir::new("termurion-util-tip");
+        let tmp = TempDir::new("termurion-util-tip");
         let dir = tmp.to_path_buf();
         let mut h = Harness { cwd: dir.clone(), ..Default::default() };
-        h.env.insert("XDG_DATA_HOME".into(), dir.display().to_string());
+        // A trailing separator keeps the tip file inside the folder on every OS.
+        h.env.insert("XDG_DATA_HOME".into(), format!("{}{}", dir.display(), std::path::MAIN_SEPARATOR));
         assert_eq!(h.run("it2tip", &[]), 0);
         assert_eq!(String::from_utf8(h.out.clone()).unwrap(), plain);
         assert_eq!(std::fs::read(dir.join(".it2totd")).unwrap(), b"0");

@@ -283,6 +283,7 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     const DAY: f64 = 86_400.0;
@@ -393,14 +394,14 @@ mod tests {
         assert_eq!(insertable_dir("/home/me/My Docs", Some("bash")), "/home/me/My\\ Docs");
         assert_eq!(insertable_dir("/home/me/it's", Some("zsh")), "/home/me/it\\'s", "a POSIX shell escapes on every OS");
         assert_eq!(insertable_dir("/tmp/a\nb", None), "/tmp/a\\\nb", "POSIX: newlines escaped too");
-        let dir = std::env::temp_dir().join(format!("termurion-write-{}", std::process::id()));
+        let _td = TempDir::new("write");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("h.json");
         write_whole(&f, "one").unwrap();
         write_whole(&f, "two").unwrap();
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "two");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no temporary file left");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -8,6 +8,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use crate::platform::pty::conpty::{self, Api, Source, dev_vendor_dir};
     use crate::platform::pty::{Pty, spawn_flags};
     use crate::ssh_probe::*;
@@ -86,6 +87,7 @@ mod tests {
     struct Cleanup {
         temp: PathBuf,
         keepalive: Option<Child>,
+        _td: TempDir,
     }
 
     impl Drop for Cleanup {
@@ -255,8 +257,9 @@ mod tests {
     /// Steps (0) to (4): preflight, the user, the sshd and its check, the client key, remote.sh.
     /// Returns the cleanup guard, the key's path and the user.
     fn setup() -> (Cleanup, String, String) {
-        let temp = std::env::temp_dir().join("termurion-ssh-probe");
-        let mut cleanup = Cleanup { temp: temp.clone(), keepalive: None };
+        let td = TempDir::new("ssh-probe");
+        let temp = td.to_path_buf();
+        let mut cleanup = Cleanup { temp: temp.clone(), keepalive: None, _td: td };
 
         // (0) Preflight: nothing is installed; any miss is BLOCKED.
         let wsl_ok = ok(&wsl(&["-e", "sh", "-c", "true"]));

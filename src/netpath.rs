@@ -935,7 +935,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn the_real_reader_reads_a_junction_without_following_it() {
-        let base = std::env::temp_dir().join(format!("termurion-reparse-{}", std::process::id()));
+        let _td = crate::test_tmp::TempDir::new("reparse");
+        let base = _td.to_path_buf();
         let target = base.join("target");
         let link = base.join("link");
         std::fs::create_dir_all(&target).unwrap();
@@ -947,6 +948,5 @@ mod tests {
         assert!(read.to_string_lossy().to_lowercase().ends_with(&target.to_string_lossy().to_lowercase()[2..]), "{read:?}");
         assert!(judge(&link.join("f.txt"), &read_reparse, &RealDrives));
         std::fs::remove_dir(&link).unwrap();
-        std::fs::remove_dir_all(&base).unwrap();
     }
 }

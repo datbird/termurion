@@ -869,10 +869,10 @@ mod tests {
         // The step's variables reach the program.
         let env = Step { program: p("cmd.exe"), args: s(&["/c", "echo %TERMURION_T%"]), env: vec![("TERMURION_T".into(), "yes".into())] };
         assert_eq!(r.run(&env), Ok("yes\r\n".to_string()));
-        let tmp = std::env::temp_dir().join(format!("termurion-sha-{}.txt", std::process::id()));
+        let _td = crate::test_tmp::TempDir::new("sha");
+        let tmp = _td.file("x.txt");
         std::fs::write(&tmp, "abc").unwrap();
         let sum = r.sha256(&tmp);
-        let _ = std::fs::remove_file(&tmp);
         assert_eq!(sum, Ok("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".to_string()));
     }
 

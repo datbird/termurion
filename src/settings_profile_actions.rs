@@ -282,6 +282,7 @@ pub fn show(ctx: &egui::Context, sheet: &mut BulkCopy, rows: &[(String, String, 
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     fn store_with(names: &[&str]) -> Store {
@@ -313,7 +314,8 @@ mod tests {
 
     #[test]
     fn an_import_stops_at_the_first_bad_file_and_hands_back_the_rest() {
-        let dir = std::env::temp_dir().join(format!("termurion-json-import-{}", std::process::id()));
+        let _td = TempDir::new("json-import");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let (good, bad) = (dir.join("a.json"), dir.join("b.json"));
         std::fs::write(&good, profile_json(&Profile::new("A"))).unwrap();
@@ -329,7 +331,6 @@ mod tests {
         assert_eq!(failed.rest.len(), 1, "the file after it waits for the answer (OK goes on, Abort stops)");
         let (n, failed) = import_json_files(&mut store, &failed.rest);
         assert!(n == 1 && failed.is_none());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

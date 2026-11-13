@@ -15,6 +15,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
 
@@ -79,7 +80,8 @@ mod tests {
     /// capped; stdin is closed.
     fn ssh_cli(ssh: &[String], server: &str, args: &[&str]) -> String {
         use std::process::{Command, Stdio};
-        let file = std::env::temp_dir().join(format!("termurion-live-ssh-{}-{server}.txt", std::process::id()));
+        let _td = TempDir::new("live-ssh");
+        let file = _td.file("x.txt");
         let Ok(out) = std::fs::File::create(&file) else { return "no temp file".into() };
         let Ok(err) = out.try_clone() else { return "no temp file".into() };
         let child = Command::new(ssh_program()).arg("-n").args(ssh).args(["tmux", "-L", server]).args(args).stdin(Stdio::null()).stdout(out).stderr(err).spawn();
@@ -100,7 +102,6 @@ mod tests {
             let _ = child.wait();
         }
         let text = std::fs::read_to_string(&file).unwrap_or_default();
-        let _ = std::fs::remove_file(&file);
         text.trim().to_string()
     }
 

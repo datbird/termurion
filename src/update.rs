@@ -452,6 +452,7 @@ pub fn up_to_date_text(newest: &str, running: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::globals::Globals;
     use std::cmp::Ordering::{Equal, Greater, Less};
@@ -652,16 +653,15 @@ mod tests {
         }
     }
 
-    fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("termurion-update-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join("settings.toml")
+    fn scratch(name: &str) -> (TempDir, std::path::PathBuf) {
+        let td = TempDir::new(&format!("update-{name}"));
+        let file = td.file("settings.toml");
+        (td, file)
     }
 
     #[test]
     fn consent_follows_sparkle() {
-        let path = scratch("consent");
+        let (_td, path) = scratch("consent");
         let mut g = Globals::empty(&path);
         assert_eq!(automatic_of(&g), None);
         assert!(!automatic_checks_on(&g));
@@ -695,7 +695,8 @@ mod tests {
 
     #[test]
     fn stored_state_is_read_defensively() {
-        let mut g = Globals::empty(&scratch("state"));
+        let (_td, _f) = scratch("state");
+        let mut g = Globals::empty(&_f);
         g.set("SUSkippedVersion", Value::String("0.0.9".into()));
         assert_eq!(skipped_of(&g).as_deref(), Some("0.0.9"));
         g.set("SUSkippedVersion", Value::String("9".repeat(65)));

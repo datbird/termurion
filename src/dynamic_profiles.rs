@@ -849,6 +849,7 @@ pub fn alert_text(errors: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     /// The ruling "an ungated load must not exist": no source file outside its tests calls the
     /// ungated `load`, and the function itself is test-only.
     #[test]
@@ -1450,8 +1451,8 @@ mod tests {
 
     #[test]
     fn dynamic_listing_walks_the_folder_and_never_follows_a_link() {
-        let root = std::env::temp_dir().join(format!("termurion-dp-list-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let _td = TempDir::new("dp-list");
+        let root = _td.to_path_buf();
         std::fs::create_dir_all(root.join("sub").join("deeper")).unwrap();
         std::fs::write(root.join("a.json"), b"{}").unwrap();
         std::fs::write(root.join("sub").join("b.json"), b"{}").unwrap();
@@ -1472,7 +1473,6 @@ mod tests {
         assert_eq!(bounded_read(&file, 1024).unwrap(), b"{}".to_vec());
         assert!(bounded_read(&file, 1).unwrap_err().contains("too large"));
         assert!(bounded_read(&root, 1024).is_err(), "a folder is no file");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Task 5 fix r2 item 4 (class): the loader's marks are stripped by ONE function, called by the

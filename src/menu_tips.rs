@@ -232,7 +232,8 @@ mod tests {
         assert!(tip.contains("%LOCALAPPDATA%\\Termurion\\Logs"), "{tip}");
         #[cfg(windows)]
         {
-            let temp = std::env::temp_dir();
+            let _td = crate::test_tmp::TempDir::new("t");
+            let temp = _td.to_path_buf();
             let local = std::env::var("LOCALAPPDATA").unwrap();
             let t = temp.display().to_string();
             let dirs = crate::dlog::log_dirs_with(&|k| match k {

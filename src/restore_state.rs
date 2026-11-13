@@ -194,6 +194,7 @@ pub fn banner_grays(bg: Rgb) -> (u8, u8) {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     /// I3/I6: a tmux gateway is saved with its session's name and id and its DCS id
     /// (`PS:7912-7920`) and comes back from the binary state file; a gateway is restored only with
     /// the name and id (`PS:2545-2547`). Older state files (no flag, or round 2's bare flag) load,
@@ -319,7 +320,8 @@ mod tests {
 
     #[test]
     fn atomic_write_replaces() {
-        let dir = std::env::temp_dir().join(format!("termurion-state-{}", std::process::id()));
+        let _td = TempDir::new("state");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("state");
         write_atomic(&path, b"one").unwrap();
@@ -327,6 +329,5 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"two");
         let left: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
         assert_eq!(left.len(), 1, "no temporary file stays: {left:?}");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

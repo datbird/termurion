@@ -1841,6 +1841,7 @@ fn find_seed(text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::menus::{Chord, ChordKey};
 
@@ -1884,7 +1885,8 @@ mod tests {
         for title in ["..\\a/b:c", "https://a.example/x?y"] {
             let (name, bytes, mime) = crate::ai_browser::ask_ai_attachment(title, "x");
             assert_eq!((bytes.as_slice(), mime), (&b"x"[..], "text/plain"));
-            let root = std::env::temp_dir().join(format!("termurion-askai-{}-{}", std::process::id(), name.len()));
+            let _td = TempDir::new("askai");
+            let root = _td.to_path_buf();
             std::fs::create_dir_all(&root).unwrap();
             let path = crate::chat_view::materialize(&root, "CHAT", "ci_1", &name, &bytes).expect("a cleaned name is written");
             let count = |d: &std::path::Path| std::fs::read_dir(d).map(|r| r.count()).unwrap_or(0);
@@ -1892,7 +1894,6 @@ mod tests {
             assert_eq!(count(&root), 1, "nothing else under the root");
             assert_eq!(path.file_name().and_then(|n| n.to_str()), Some(name.as_str()), "one component");
             assert!(path.starts_with(root.join("CHAT").join("ci_1")));
-            let _ = std::fs::remove_dir_all(&root);
         }
     }
 

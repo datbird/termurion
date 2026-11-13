@@ -481,6 +481,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     /// `triggerTuples` (`PS:4485-4504`): the name, else the regex, else the action's title, else
@@ -520,7 +521,8 @@ mod tests {
 
     #[test]
     fn trigger_limits_follow_iterm2() {
-        let dir = std::env::temp_dir().join(format!("termurion-trigger-limits-{}", std::process::id()));
+        let _td = TempDir::new("trigger-limits");
+        let dir = _td.to_path_buf();
         let mut g = crate::globals::Globals::empty(&dir.join("settings.toml"));
         assert_eq!(trigger_limits_from(&g), (Duration::from_secs(1), Duration::ZERO));
         g.set("AlertTriggerRateLimit", toml::Value::Float(f64::NAN));

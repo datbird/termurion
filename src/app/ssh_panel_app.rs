@@ -456,6 +456,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::remote_file::Kind;
 
@@ -506,8 +507,8 @@ mod tests {
 
     #[test]
     fn later_item_of_one_name_replaces_the_earlier() {
-        let root = std::env::temp_dir().join(format!("termurion-batch-last-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let _td = TempDir::new("batch-last");
+        let root = _td.to_path_buf();
         std::fs::create_dir_all(&root).unwrap();
         // A folder item, then a later folder item of the same name: only the later one's files.
         let d = batch_dest(&root, &remote("/a/d", true));
@@ -526,7 +527,6 @@ mod tests {
         assert!(!x.exists());
         // Nothing there is not an error.
         clear_earlier(&root.join("none")).unwrap();
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -551,8 +551,8 @@ mod tests {
     #[test]
     fn batch_folder_is_fresh() {
         // P12: a new `Termurion-<UUID>` folder under the temp root, made with create_dir.
-        let root = std::env::temp_dir().join(format!("termurion-batch-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let _td = TempDir::new("batch");
+        let root = _td.to_path_buf();
         std::fs::create_dir_all(&root).unwrap();
         let f = make_batch_folder(&root, "U1").unwrap();
         assert_eq!(f, root.join("Termurion-U1"));
@@ -564,6 +564,5 @@ mod tests {
         assert!(make_batch_folder(&root, "U1").is_err());
         std::fs::write(root.join("Termurion-U2"), b"x").unwrap();
         assert!(make_batch_folder(&root, "U2").is_err());
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -1916,6 +1916,7 @@ pub(crate) mod test_gpu {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::layout::Rect;
     use crate::palette::rgb;
@@ -3396,8 +3397,8 @@ mod tests {
     fn render_demo_video() {
         use crate::render_fx::{Clock, Signals, Uniforms, discover};
         use std::time::{Duration, Instant};
-        let out = std::env::temp_dir().join("termurion-demo");
-        let _ = std::fs::remove_dir_all(&out);
+        let _td = TempDir::new("demo");
+        let out = _td.to_path_buf();
         std::fs::create_dir_all(&out).unwrap();
         let (device, queue) = device();
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
@@ -3541,8 +3542,8 @@ mod tests {
     fn render_enter_gallery() {
         use crate::render_fx::{Clock, Signals, Uniforms, discover};
         use std::time::{Duration, Instant};
-        let out = std::env::temp_dir().join("termurion-enter");
-        let _ = std::fs::remove_dir_all(&out);
+        let _td = TempDir::new("enter");
+        let out = _td.to_path_buf();
         std::fs::create_dir_all(&out).unwrap();
         let (device, queue) = device();
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
@@ -4029,7 +4030,8 @@ mod tests {
                 let (above, prompt, below) = (band(2), band(3), band(4));
                 report.push(format!("{family} {px}px cell {:.1}x{:.1}: above {above} prompt {prompt} below {below}", cell.0, cell.1));
                 if above < 200 || below < 200 {
-                    let _ = image::RgbaImage::from_raw(w, h, lit.clone()).map(|im| im.save(std::env::temp_dir().join(format!("surge-{}-{px}.png", family.replace(' ', "")))));
+                    let _td = TempDir::new("surge");
+                    let _ = image::RgbaImage::from_raw(w, h, lit.clone()).map(|im| im.save(_td.file("x.png")));
                 }
             }
         }

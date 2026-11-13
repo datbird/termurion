@@ -601,6 +601,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use std::cell::RefCell;
 
@@ -608,11 +609,8 @@ mod tests {
         pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
     }
 
-    fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("termurion-prefs-ui-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp(name: &str) -> TempDir {
+        TempDir::new(&format!("prefs-ui-{name}"))
     }
 
     /// Local settings with the setting on at `location`, a local syncable key, a NoSync key, and
@@ -706,7 +704,6 @@ mod tests {
         }
         let now = Snapshot::from_local(&g.values, &store.default_guid, &store.profiles.iter().map(|p| p.values.clone()).collect::<Vec<_>>());
         assert!(!rp::differs(&loaded.unwrap(), &now), "a kept switch is no local change");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -806,7 +803,6 @@ mod tests {
         assert_eq!(asks[0].spec.heading, rp::FAILED_FOLDER);
         assert_untouched(&g, &store);
 
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -865,7 +861,6 @@ mod tests {
         assert_eq!(Snapshot::parse(&std::fs::read_to_string(&file).unwrap()), Some(remote()));
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "the temporary file is renamed");
         assert!(write_snapshot(&remote(), Path::new(r"\\host\share\termurion-settings.toml"), &|_| None).is_err());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The Reddit report (2026-10-20): a custom folder iTerm2 on a Mac syncs through holds only
@@ -898,7 +893,6 @@ mod tests {
         assert!(text.contains("<string>Windows</string>") && text.contains("<key>MacOnly</key>"), "{text}");
         assert!(!folder.join(rp::PREFS_FILE).exists(), "no Termurion file is made beside it");
         assert_eq!(read_snapshot(&plist), Some(changed.plist_view()));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -940,13 +934,13 @@ mod tests {
         assert!(write_snapshot(&other, &named, &file_to_share).is_err());
         assert_eq!(std::fs::read_to_string(&named).unwrap(), before, "nothing written");
         assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1, "no temporary file either");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A snapshot loaded from a custom folder or URL never brings a network start folder in.
     #[test]
     fn a_loaded_snapshot_loses_network_folders() {
-        let dir = std::env::temp_dir().join(format!("termurion-prefs-unc-{}", std::process::id()));
+        let _td = TempDir::new("prefs-unc");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let (mut g, mut store) = local(&dir, "x");
         let profile = map(&[("Guid", Value::String("g1".into())), ("Name", Value::String("R".into())), ("Working Directory", Value::String(" \\\\evil\\share".into())), ("AWDS Tab Directory", Value::String("D:\\ok".into()))]);
@@ -954,7 +948,6 @@ mod tests {
         apply_snapshot(&snap, &mut g, &mut store);
         assert_eq!(store.profiles[0].string("Working Directory"), "");
         assert_eq!(store.profiles[0].string("AWDS Tab Directory"), "D:\\ok");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Final review 2: a run-time load writes pending dynamic edits first, applies the snapshot,
@@ -973,7 +966,8 @@ mod tests {
     /// list (the snapshot never holds them); a Guid the snapshot also holds goes to the snapshot.
     #[test]
     fn a_loaded_snapshot_keeps_the_running_dynamic_profiles() {
-        let dir = std::env::temp_dir().join(format!("termurion-prefs-keepdyn-{}", std::process::id()));
+        let _td = TempDir::new("prefs-keepdyn");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let (mut g, mut store) = local(&dir, "x");
         for guid in ["dyn1", "clash"] {
@@ -987,7 +981,6 @@ mod tests {
         assert_eq!(store.dynamic_guids(), ["dyn1"], "the running dynamic profile survives; a clash goes to the snapshot");
         assert!(store.unsaved("dyn1"));
         assert_eq!(store.file_profiles().len(), 2);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Trust ruling: whatever a remote snapshot writes into the workgroups is marked Imported, and
@@ -995,7 +988,8 @@ mod tests {
     #[test]
     fn a_loaded_snapshot_marks_its_workgroups_imported() {
         use crate::workgroup::{self as wg, Source};
-        let dir = std::env::temp_dir().join(format!("termurion-prefs-wg-{}", std::process::id()));
+        let _td = TempDir::new("prefs-wg");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let (mut g, mut store) = local(&dir, "x");
         let mut m = wg::Model::default();
@@ -1014,14 +1008,14 @@ mod tests {
         assert_eq!(back.workgroups.len(), 1);
         assert_eq!(back.source_of(&other_id), Source::Import);
         assert!(back.get(&mine).is_none());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Task 5 fix r2 item 4: remote settings at launch and Import All never bring the Dynamic
     /// Profiles loader's marks in (they would keep a profile out of profiles.toml).
     #[test]
     fn a_loaded_snapshot_loses_the_dynamic_marks() {
-        let dir = std::env::temp_dir().join(format!("termurion-prefs-dyn-{}", std::process::id()));
+        let _td = TempDir::new("prefs-dyn");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let (mut g, mut store) = local(&dir, "x");
         let mut values = vec![("Guid", Value::String("g1".into())), ("Name", Value::String("R".into()))];
@@ -1035,13 +1029,13 @@ mod tests {
         }
         assert!(store.dynamic_guids().is_empty());
         assert_eq!(store.file_profiles().len(), 1, "the profile is saved like any other");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A loaded snapshot's custom color presets are bounded and sanitized as Settings writes are.
     #[test]
     fn a_loaded_snapshot_bounds_custom_color_presets() {
-        let dir = std::env::temp_dir().join(format!("termurion-prefs-presets-{}", std::process::id()));
+        let _td = TempDir::new("prefs-presets");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let (mut g, mut store) = local(&dir, "x");
         let color = Value::Table(map(&[("r", Value::Float(0.1)), ("g", Value::Float(0.2)), ("b", Value::Float(0.3))]).into_iter().collect());
@@ -1058,13 +1052,13 @@ mod tests {
         assert_eq!(stored.len(), crate::color_presets::MAX_CUSTOM);
         assert!(!stored.contains_key("A bad"));
         assert_eq!(crate::color_presets::custom(&g).len(), crate::color_presets::MAX_CUSTOM);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Task 4 ruling: and no network log, archive, icon or background image path either.
     #[test]
     fn a_loaded_snapshot_loses_every_network_path() {
-        let dir = std::env::temp_dir().join(format!("termurion-prefs-unc2-{}", std::process::id()));
+        let _td = TempDir::new("prefs-unc2");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let (mut g, mut store) = local(&dir, "x");
         let keys = ["Log Directory", "Archive Directory", "Custom Icon Path", "Background Image Location", "Background Image Folder Location"];
@@ -1075,6 +1069,5 @@ mod tests {
         for k in keys {
             assert_eq!(store.profiles[0].string(k), "", "{k}");
         }
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

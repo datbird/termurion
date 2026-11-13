@@ -529,9 +529,11 @@ mod tests {
     /// A fresh folder under %APPDATA% (the temp folder is writable by other users, which the
     /// loader's own judge refuses, so the real handle is only happy here). Folders of earlier runs
     /// (another process id, more than an hour old) are removed once per run.
-    fn scratch(tag: &str) -> PathBuf {
+    fn scratch(tag: &str) -> crate::test_tmp::TempDir {
+        use crate::test_tmp::TempDir;
         static SWEEP: std::sync::Once = std::sync::Once::new();
-        let base = std::env::var_os("APPDATA").map_or_else(std::env::temp_dir, PathBuf::from);
+        let name = format!("dynapp-{tag}");
+        let Some(base) = std::env::var_os("APPDATA").map(PathBuf::from) else { return TempDir::new(&name) };
         SWEEP.call_once(|| {
             for e in std::fs::read_dir(&base).into_iter().flatten().flatten() {
                 let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age.as_secs() > 3600);
@@ -540,14 +542,13 @@ mod tests {
                 }
             }
         });
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-        let dir = base.join(format!("termurion-dynapp-{tag}-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        TempDir::new_in(&base, &name)
     }
 
-    fn store() -> Store {
-        Store::fresh(&scratch("store").join("profiles.toml"))
+    fn store() -> (crate::test_tmp::TempDir, Store) {
+        let td = scratch("store");
+        let s = Store::fresh(&td.file("profiles.toml"));
+        (td, s)
     }
 
     fn loaded(entries: Vec<Entry>) -> Loaded {
@@ -560,7 +561,7 @@ mod tests {
 
     #[test]
     fn apply_follows_iterm2() {
-        let mut s = store();
+        let (_td, mut s) = store();
         let saved = s.profiles[0].guid();
         let saved_before = s.profiles[0].values.clone();
         // A and B came from an earlier load.
@@ -602,7 +603,7 @@ mod tests {
 
     #[test]
     fn a_parent_is_found_by_guid_then_by_name_and_never_the_profile_itself() {
-        let mut s = store();
+        let (_td, mut s) = store();
         let mut parent = Profile::new("Parent");
         parent.set("Columns", toml::Value::Integer(90));
         let pg = parent.guid();
@@ -620,7 +621,7 @@ mod tests {
 
     #[test]
     fn removing_the_last_dynamic_profiles_keeps_the_saved_ones_and_the_default() {
-        let mut s = store();
+        let (_td, mut s) = store();
         let default = s.default_guid.clone();
         apply_loaded(&mut s, &loaded(vec![entry(json!({"Guid": "A", "Name": "A"}))]), false);
         let (c, _) = apply_loaded(&mut s, &loaded(Vec::new()), false);
@@ -738,7 +739,7 @@ mod tests {
         let fs = Fs { open: &open, ..real() };
         assert!(matches!(rewrite(&fs, &dir, "sub/b.json", &stamp_of_file(&q), "S", &rename_it), Outcome::Refused(_)));
         // The Dynamic Profiles folder itself is one: the root is judged too.
-        let root = dir.clone();
+        let root = dir.to_path_buf();
         let open = open_with(move |q, o| {
             if q == root {
                 o.trust = Err("it is a link".into());
@@ -878,10 +879,10 @@ mod tests {
     // ---- pending edits are never reverted (B7, fix r1 item 1) ---------------------------------
 
     /// A rewritable file of two profiles, a store that loaded it, and the loader's record of it.
-    fn two_in_one_file(tag: &str) -> (PathBuf, PathBuf, Store, HashMap<String, Source>) {
+    fn two_in_one_file(tag: &str) -> (crate::test_tmp::TempDir, PathBuf, Store, HashMap<String, Source>) {
         let dir = scratch(tag);
         let p = write_json(&dir, "a.json", json!({"Profiles": [{"Guid": "A", "Name": "A", "Rewritable": true}, {"Guid": "B", "Name": "B", "Rewritable": true}]}));
-        let mut s = store();
+        let (_td, mut s) = store();
         let read = |q: &Path| std::fs::read(q).map_err(|e| e.to_string());
         let list = |f: &Path| crate::localfs::judge(f).map(|f| crate::dynamic_profiles::list_dir(&f, &|_| true, 100)).unwrap_or_default();
         apply_loaded(&mut s, &crate::dynamic_profiles::load(&dir, &read, &list, &|_| false), false);

@@ -142,6 +142,7 @@ pub fn controls_enabled(c: &SshConfig, selected: Option<usize>) -> (bool, bool) 
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     /// Removes a test's scratch folder when the test ends, panicking or not.
@@ -206,7 +207,8 @@ mod tests {
         assert_eq!(env_text(&strings(&["A", "B"])), "A B");
         assert_eq!(ok_path(""), None);
         assert_eq!(ok_path("C:\\s.exe"), Some("C:\\s.exe".to_string()));
-        let dir = std::env::temp_dir().join(format!("termurion-ssh-config-{}", std::process::id()));
+        let _td = TempDir::new("ssh-config");
+        let dir = _td.to_path_buf();
         let _scratch = Scratch(dir.clone());
         std::fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("x.EXE");

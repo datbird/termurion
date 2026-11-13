@@ -176,26 +176,9 @@ fn run(folder: PathBuf, latency: Duration, notify: Notify, shared: Arc<Shared>) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use crate::test_tmp::TempDir;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
-
-    struct TempDir(PathBuf);
-
-    impl TempDir {
-        fn new(tag: &str) -> TempDir {
-            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-            let dir = std::env::temp_dir().join(format!("termurion-dynscan-{tag}-{}-{nanos}", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
-            TempDir(dir)
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
 
     fn wait_for_reload(s: &Scanner, within: Duration) -> bool {
         let until = Instant::now() + within;

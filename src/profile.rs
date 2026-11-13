@@ -536,6 +536,7 @@ pub fn start_dir_probing(p: &Profile, previous: Option<&std::path::Path>, is_dir
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     /// Task 5 fix r2 item 4: a profile built from outside values never carries the loader's marks.
     #[test]
     fn from_values_drops_the_dynamic_marks() {
@@ -571,7 +572,8 @@ mod tests {
     fn recycle_uses_the_previous_directory() {
         let mut p = Profile::default();
         p.set("Custom Directory", toml::Value::String("Recycle".into()));
-        let dir = std::env::temp_dir();
+        let _td = TempDir::new("t");
+        let dir = _td.to_path_buf();
         assert_eq!(start_dir_with(&p, Some(&dir)).0, dir);
     }
 
@@ -752,7 +754,8 @@ mod tests {
     fn start_dir_follows_custom_directory() {
         let mut p = Profile::default();
         p.set("Custom Directory", toml::Value::String("Yes".into()));
-        let dir = std::env::temp_dir();
+        let _td = TempDir::new("t");
+        let dir = _td.to_path_buf();
         p.set("Working Directory", toml::Value::String(dir.to_string_lossy().into_owned()));
         assert_eq!(start_dir(&p), (dir, None));
     }

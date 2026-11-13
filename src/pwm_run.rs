@@ -502,9 +502,8 @@ mod win {
 
         /// A folder with `inner.bat` (pings `pings` times, then writes the marker) and `outer.bat`
         /// (starts inner by its full path, detached from the pipes, then pings `outer_pings`).
-        fn tree(tag: &str, pings: u32, outer_pings: u32) -> (std::path::PathBuf, std::path::PathBuf) {
-            let dir = std::env::temp_dir().join(format!("termurion-pwm-{tag}-{}", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
+        fn tree(tag: &str, pings: u32, outer_pings: u32) -> (crate::test_tmp::TempDir, std::path::PathBuf) {
+            let dir = crate::test_tmp::TempDir::new(&format!("pwm-{tag}"));
             let marker = dir.join("marker.txt");
             let inner = dir.join("inner.bat");
             std::fs::write(&inner, format!("@echo off\r\nping -n {pings} 127.0.0.1 >NUL\r\necho x >\"{}\"\r\n", marker.display())).unwrap();
@@ -536,7 +535,6 @@ mod win {
             let (dir, marker) = tree("control", 2, 5);
             ProcessRunner::new().run(outer(&dir, Duration::from_secs(30))).unwrap();
             let wrote = wait_for(&marker, 10);
-            let _ = std::fs::remove_dir_all(&dir);
             assert!(wrote, "inner.bat never ran: the kill tests would pass for the wrong reason");
         }
 
@@ -545,7 +543,6 @@ mod win {
             let (dir, marker) = tree("kill", 6, 30);
             assert_eq!(ProcessRunner::new().run(outer(&dir, Duration::from_millis(1500))).unwrap_err(), TIMED_OUT);
             let survived = wait_for(&marker, 9);
-            let _ = std::fs::remove_dir_all(&dir);
             assert!(!survived, "a grandchild outlived the timed-out request");
         }
 
@@ -557,7 +554,6 @@ mod win {
             ProcessRunner::new().run(outer(&dir, Duration::from_secs(2))).unwrap();
             assert!(!marker.exists(), "the agent had not finished yet");
             let survived = wait_for(&marker, 14);
-            let _ = std::fs::remove_dir_all(&dir);
             assert!(survived, "the job killed a process that outlived a successful request");
         }
 
@@ -579,12 +575,12 @@ mod win {
 
         #[test]
         fn a_bare_name_is_found_with_its_extension() {
-            let dir = std::env::temp_dir().join(format!("termurion-pwm-ext-{}", std::process::id()));
+            let _td = crate::test_tmp::TempDir::new("pwm-ext");
+            let dir = _td.to_path_buf();
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("kxfake.cmd"), "@echo off\r\n").unwrap();
             let found = resolve_in("kxfake", dir.as_os_str(), ".COM;.EXE;.CMD").unwrap();
             let named = resolve_in("kxfake.cmd", dir.as_os_str(), ".COM;.EXE").unwrap();
-            let _ = std::fs::remove_dir_all(&dir);
             assert!(found.to_lowercase().ends_with("kxfake.cmd"), "{found}");
             assert!(named.to_lowercase().ends_with("kxfake.cmd"), "{named}");
             assert_eq!(resolve_in("C:\\x\\bw", std::ffi::OsStr::new(""), "").unwrap(), "C:\\x\\bw");
@@ -608,7 +604,8 @@ mod win {
             let rel = format!("termurion-pwm-rel-{}", std::process::id());
             std::fs::create_dir_all(&rel).unwrap();
             std::fs::write(std::path::Path::new(&rel).join(format!("{name}.cmd")), "@echo off\r\n").unwrap();
-            let real = std::env::temp_dir().join(format!("termurion-pwm-abs-{}", std::process::id()));
+            let _td = crate::test_tmp::TempDir::new("pwm-abs");
+            let real = _td.to_path_buf();
             std::fs::create_dir_all(&real).unwrap();
             std::fs::write(real.join(format!("{name}.cmd")), "@echo off\r\n").unwrap();
             let abs = real.to_string_lossy().into_owned();
@@ -619,7 +616,6 @@ mod win {
             let ran = ProcessRunner::new().run(Request::new(name.clone(), Vec::new()));
             let _ = std::fs::remove_file(&planted);
             let _ = std::fs::remove_dir_all(&rel);
-            let _ = std::fs::remove_dir_all(&real);
             assert!(with_ext.is_err(), "a planted file with an extension was found: {with_ext:?}");
             assert!(ran.as_ref().is_err_and(|e| e.contains("was not found")), "{ran:?}");
             assert!(none.is_err(), "a planted file in the current folder was found: {none:?}");
@@ -679,9 +675,8 @@ mod tests {
         use super::*;
         use std::sync::mpsc;
 
-        fn script(name: &str, body: &str) -> (std::path::PathBuf, String) {
-            let dir = std::env::temp_dir().join(format!("termurion-pwm-run-{name}-{}", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
+        fn script(name: &str, body: &str) -> (crate::test_tmp::TempDir, String) {
+            let dir = crate::test_tmp::TempDir::new(&format!("pwm-{name}"));
             let file = dir.join("t.cmd");
             std::fs::write(&file, body).unwrap();
             (dir, file.to_string_lossy().into_owned())

@@ -267,6 +267,7 @@ impl View for CrashView {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     #[test]
@@ -279,8 +280,8 @@ mod tests {
 
     #[test]
     fn the_newest_unreported_dump_is_pending() {
-        let d = std::env::temp_dir().join(format!("termurion-crashrep-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let _td = TempDir::new("crashrep");
+        let d = _td.to_path_buf();
         std::fs::create_dir_all(&d).unwrap();
         let now = std::time::SystemTime::now();
         for (name, age) in [("termurion-1-1.dmp", 300u64), ("termurion-2-2.dmp", 100), ("termurion-3-3.dmp", 200)] {
@@ -293,7 +294,6 @@ mod tests {
         let secs = |age: u64| (now - std::time::Duration::from_secs(age)).duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as f64;
         assert!(pending(&d, secs(50)).is_none(), "a crash older than the last report is not offered again");
         assert_eq!(pending(&d, secs(150)).unwrap().0.file_name().unwrap(), "termurion-2-2.dmp");
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

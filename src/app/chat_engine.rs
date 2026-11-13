@@ -1130,6 +1130,7 @@ enum Fresh {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use super::super::chat_app::create_in;
 
@@ -1236,6 +1237,7 @@ mod tests {
     }
 
     struct H {
+        _td: TempDir,
         store: Store,
         broker: Broker,
         overrides: Overrides,
@@ -1255,10 +1257,12 @@ mod tests {
 
     impl H {
         fn new() -> H {
-            let mut g = Globals::empty(&std::env::temp_dir().join("termurion-chat-engine-test.toml"));
+            let td = TempDir::new("chat-engine");
+            let mut g = Globals::empty(&td.file("x.toml"));
             g.set(ENABLE_AI, T::Boolean(true));
             crate::ai_gate::grant(&mut g, "api.openai.com");
             H {
+                _td: td,
                 store: Store::open_in_memory().unwrap(),
                 broker: Broker::new(),
                 overrides: Overrides::default(),

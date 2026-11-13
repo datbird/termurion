@@ -527,12 +527,8 @@ mod tests {
         use super::*;
         use crate::arrangement::has_mark_of_the_web;
 
-        fn fresh(tag: &str) -> PathBuf {
-            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            let p = std::env::temp_dir().join(format!("termurion-sshlocal-{tag}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
-            let _ = std::fs::remove_dir_all(&p);
-            std::fs::create_dir_all(&p).unwrap();
-            p
+        fn fresh(tag: &str) -> crate::test_tmp::TempDir {
+            crate::test_tmp::TempDir::new(&format!("sshl-{tag}"))
         }
         fn listing(p: &Path) -> Vec<String> {
             let mut v: Vec<String> = std::fs::read_dir(p).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
@@ -559,7 +555,6 @@ mod tests {
             std::fs::write(&temp, "x").unwrap();
             let e = finish(&temp, &d.join("no").join("b.txt"), "ssh://h/b").unwrap_err();
             assert!(!e.is_empty() && !temp.exists());
-            let _ = std::fs::remove_dir_all(&d);
         }
 
         #[test]
@@ -572,7 +567,6 @@ mod tests {
                 assert!(!temp.exists() && !d.join(name).exists(), "{name}");
             }
             assert_eq!(listing(&d), Vec::<String>::new());
-            let _ = std::fs::remove_dir_all(&d);
         }
 
         #[test]
@@ -608,7 +602,6 @@ mod tests {
             assert_eq!(finish_with(&temp, &x, url, &refuse), Err(FAILED_TO_QUARANTINE.to_string()));
             assert!(!temp.exists());
             assert_eq!(std::fs::read(&x).unwrap(), b"one");
-            let _ = std::fs::remove_dir_all(&t);
         }
 
         /// Task 7 review minor 2: a browser download's final move never replaces a file that is there.
@@ -625,7 +618,6 @@ mod tests {
             let y = t.join("x (1).txt");
             assert_eq!(finish_no_replace(&temp, &y, "https://h/x", &ok), Ok(y.clone()));
             assert_eq!(std::fs::read(&y).unwrap(), b"new");
-            let _ = std::fs::remove_dir_all(&t);
         }
 
         fn tar_zip(parent: &Path, folder: &str, out: &str) {
@@ -660,7 +652,6 @@ mod tests {
             let bad = t.join("bad.zip");
             std::fs::write(&bad, "hello").unwrap();
             assert!(unzip(&bad, &t.join("o2"), "ssh://h/d").unwrap_err().contains("not a zip"));
-            let _ = std::fs::remove_dir_all(&t);
         }
 
         #[test]
@@ -673,7 +664,6 @@ mod tests {
                 let r = unzip(&z, &t.join("out"), "ssh://h/d");
                 assert!(r.is_err(), "{name}");
                 assert_eq!(listing(&t), before, "{name}: nothing new on disk");
-                let _ = std::fs::remove_dir_all(&t);
             }
         }
 
@@ -708,12 +698,12 @@ mod tests {
             let refuse = |_: &Path, _: &str| -> std::io::Result<()> { Err(std::io::Error::other("no streams")) };
             assert_eq!(mark_and_move_with(&f, &out2, "u", &refuse), Err(FAILED_TO_QUARANTINE.to_string()));
             assert!(!out2.exists());
-            let _ = std::fs::remove_dir_all(&t);
         }
 
         #[test]
         fn free_space_is_read() {
-            assert!(free_space(&std::env::temp_dir()).unwrap() > 0);
+            let _td = crate::test_tmp::TempDir::new("t");
+            assert!(free_space(_td.path()).unwrap() > 0);
             assert!(free_space(Path::new(r"Z:\\no\\such\\folder\\anywhere")).is_err());
         }
 
@@ -731,7 +721,6 @@ mod tests {
             std::fs::File::options().write(true).open(&other).unwrap().set_modified(old).unwrap();
             sweep_stale(&t, std::time::SystemTime::now());
             assert_eq!(listing(&t), [".Termurion.NEW", "keep.txt"]);
-            let _ = std::fs::remove_dir_all(&t);
         }
     }
 }

@@ -730,6 +730,7 @@ pub fn remembered_names() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     /// A program-set tab color survives a preset that has no "Tab Color" (every built-in).
     #[test]
     fn escape_preset_keeps_a_program_tab_color() {
@@ -1064,7 +1065,8 @@ mod tests {
         assert!(t.keys().all(|n| name_ok(n)) && !t.contains_key("A nan") && !t.contains_key("not a table"));
         assert_eq!(custom(&g).len(), MAX_CUSTOM);
         // Globals::load: the settings file.
-        let dir = std::env::temp_dir().join(format!("termurion-cp-load-{}", std::process::id()));
+        let _td = TempDir::new("cp-load");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.toml");
         let mut file = toml::Table::new();
@@ -1073,7 +1075,6 @@ mod tests {
         let loaded = Globals::load(&path).unwrap();
         assert_eq!(stored_len(&loaded), MAX_CUSTOM);
         assert_eq!(custom(&loaded).len(), MAX_CUSTOM);
-        let _ = std::fs::remove_dir_all(&dir);
         // A bulk write (the remote-prefs load) is bounded by `bound_values`.
         let mut bulk = globals();
         bulk.values.insert(CUSTOM_KEY.into(), big_custom_table());
@@ -1119,7 +1120,8 @@ mod tests {
 
     #[test]
     fn read_file_is_bounded() {
-        let dir = std::env::temp_dir().join(format!("termurion-cp-{}", std::process::id()));
+        let _td = TempDir::new("cp");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let ok = dir.join("ok.itermcolors");
         std::fs::write(&ok, itermcolors_with(&entry("Ansi 0 Color", "0.1", "0.2", "0.3"))).unwrap();
@@ -1130,6 +1132,5 @@ mod tests {
         std::fs::write(&big, bytes).unwrap();
         assert!(read_file(&big).is_none());
         assert!(read_file(&dir.join("missing.itermcolors")).is_none());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

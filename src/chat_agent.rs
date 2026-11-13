@@ -872,7 +872,7 @@ mod tests {
     }
 
     fn globals() -> Globals {
-        Globals::empty(&std::env::temp_dir().join("termurion-chat-agent-test.toml"))
+        Globals::empty(std::path::Path::new("/nonexistent-termurion-test/globals.toml"))
     }
 
     #[test]

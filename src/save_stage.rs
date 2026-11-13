@@ -90,14 +90,12 @@ pub fn read(page: &Path, rel: &str) -> std::io::Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use std::time::Duration;
 
-    fn temp(tag: &str) -> PathBuf {
-        let t = std::env::temp_dir().join(format!("termurion-stage-{}-{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&t);
-        std::fs::create_dir_all(&t).unwrap();
-        t
+    fn temp(tag: &str) -> TempDir {
+        TempDir::new(&format!("stage-{tag}"))
     }
 
     fn fill(root: &Path) {
@@ -130,7 +128,6 @@ mod tests {
             assert!(prod.contains(needle), "{needle}");
         }
         assert!(prod.matches("self.save_remote_unstage(").count() >= 3);
-        let _ = std::fs::remove_dir_all(&t);
     }
 
     #[test]
@@ -146,6 +143,5 @@ mod tests {
         assert!(read(&root.join("page"), "../x").is_err());
         let plan = crate::page_save_remote::plan(&got).unwrap();
         assert_eq!(plan.files.len(), 2);
-        let _ = std::fs::remove_dir_all(&t);
     }
 }

@@ -313,6 +313,7 @@ impl GlobalNote {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     #[test]
@@ -362,7 +363,8 @@ mod tests {
     /// and writes leave no temporary file.
     #[test]
     fn global_note_never_loses_the_file() {
-        let dir = std::env::temp_dir().join(format!("termurion-notes-{}-{}", std::process::id(), SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos())));
+        let _td = TempDir::new("notes");
+        let dir = _td.to_path_buf();
         let path = dir.join("Termurion").join(FILE_NAME);
         let now = Instant::now();
 
@@ -430,6 +432,5 @@ mod tests {
         assert_eq!(g.flush(), Ok(Wrote::Deferred));
         assert!(path.is_dir());
         assert_eq!(std::fs::read_to_string(path.with_file_name("notes-discarded.txt")).unwrap(), "typed at quit");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

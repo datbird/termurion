@@ -231,6 +231,7 @@ pub fn accept_file(p: &Path) -> Option<LocalPath> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     #[test]
     fn a_resolved_sound_that_is_busy_gets_no_beep() {
         assert!(beeps_after(None), "refused: the system beep");
@@ -413,7 +414,8 @@ mod tests {
 
     #[test]
     fn accept_file_wants_a_local_small_wav() {
-        let dir = std::env::temp_dir().join(format!("termurion-sound-{}", std::process::id()));
+        let _td = TempDir::new("sound");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let wav = dir.join("ok.wav");
         std::fs::write(&wav, b"RIFF").unwrap();
@@ -432,6 +434,5 @@ mod tests {
         std::fs::create_dir_all(&media).unwrap();
         std::fs::write(media.join("Ding.wav"), b"RIFF").unwrap();
         assert!(matches!(resolve("Ding", &dir, &|_| false, &accept_file), Some(s) if s.file().is_some()));
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

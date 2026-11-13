@@ -553,6 +553,7 @@ fn history_row(r: &rusqlite::Row) -> rusqlite::Result<HistoryRow> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     /// 13x2 Task 1: a later plan's schema runs after the base one, and `conn` reaches it.
     #[test]
     fn extra_schemas_run() {
@@ -719,7 +720,8 @@ mod tests {
 
     #[test]
     fn the_file_is_judged_owner_only_and_replaced_when_corrupt() {
-        let dir = std::env::temp_dir().join(format!("termurion-bdb-{}", uuid::Uuid::new_v4().simple()));
+        let _td = TempDir::new("bdb");
+        let dir = _td.to_path_buf();
         let file = path(&dir, "u");
         let db = Db::open(&file).unwrap();
         db.record_visit("https://a.test/", Some("A"), None, None, 0, 1);
@@ -743,14 +745,14 @@ mod tests {
         assert!(file.with_file_name("browserdb-u.sqlite.bad").exists(), "the corrupt file was renamed");
         // A path on a share is refused.
         assert!(Db::open(Path::new("\\\\srv\\share\\browserdb-u.sqlite")).is_err());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Clear All Data removes the file and its journals, and a missing file is fine (BD:147-167).
     #[cfg(windows)]
     #[test]
     fn erase_removes_the_database_files() {
-        let dir = std::env::temp_dir().join(format!("termurion-erase-{}", std::process::id()));
+        let _td = TempDir::new("erase");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("browserdb-x.sqlite");
         for suffix in ["", "-journal", "-wal", "-shm"] {
@@ -759,7 +761,6 @@ mod tests {
         assert_eq!(erase_files(&file), Ok(()));
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
         assert_eq!(erase_files(&file), Ok(()), "already gone");
-        let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(erase_files(Path::new(r"\\host\share\browserdb-x.sqlite")), Err(()), "a share is never touched");
     }
 }

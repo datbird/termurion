@@ -815,6 +815,7 @@ pub fn hex_color(s: &str) -> Option<[f32; 3]> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     #[test]
@@ -973,7 +974,8 @@ mod tests {
 
     #[test]
     fn discovery_lets_the_user_folder_replace_a_builtin() {
-        let tmp = std::env::temp_dir().join(format!("render_fx_test_{}", std::process::id()));
+        let _td = TempDir::new("render_fx_test_");
+        let tmp = _td.to_path_buf();
         let u = tmp.join("u");
         std::fs::create_dir_all(u.join("neon")).unwrap();
         std::fs::write(u.join("neon").join("plugin.toml"), "name = \"Mine\"\nshaders = \"n.glsl\"").unwrap();
@@ -984,7 +986,6 @@ mod tests {
         let (list, errors) = discover_in(BUILTIN, Some(&u));
         let compiled = list[0].compile();
         let escape = list[0].shader_text("../plugin.toml");
-        let _ = std::fs::remove_dir_all(&tmp);
         assert_eq!(list.len(), 1);
         assert_eq!((list[0].title(), list[0].builtin()), ("Mine", false));
         assert_eq!(compiled.map(|c| c.len()), Ok(1));

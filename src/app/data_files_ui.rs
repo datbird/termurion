@@ -441,13 +441,11 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
-    fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("termurion-data-sync-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp(name: &str) -> TempDir {
+        TempDir::new(&format!("data-sync-{name}"))
     }
 
     fn globals(dir: &Path) -> Globals {
@@ -476,7 +474,6 @@ mod tests {
         assert!(local.join("snippets.json").exists());
         assert!(!local.join("notes.txt").exists());
         assert!(local.join("Backups").join("DataSync").join("notes.txt").exists());
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -491,7 +488,6 @@ mod tests {
         apply_pull(&local, &read_set(&folder.join("Data")));
         assert_eq!(std::fs::read_to_string(local.join("snippets.json")).unwrap(), r#"{"snippets": []}"#);
         assert!(!local.join("notes.txt").exists());
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -529,7 +525,6 @@ mod tests {
         // A read that timed out decides nothing.
         let (asks, pulled) = reconcile_with(&mut g, &local, &folder, None);
         assert!(asks.is_empty() && !pulled);
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -551,7 +546,6 @@ mod tests {
         let (_, pulled) = reconcile_with(&mut g, &local, &folder, Some(read_set(&folder.join("Data"))));
         assert!(pulled);
         assert_eq!(std::fs::read_to_string(local.join("notes.txt")).unwrap(), "theirs");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A failed backup stops the overwrite or removal; a discard that cannot finish never lets the
@@ -576,7 +570,6 @@ mod tests {
         assert!(asks.is_empty());
         assert!(!folder.join("Data").join("notes.txt").exists(), "the discarded edits are not published");
         assert!(!push_if_allowed(&mut g, &local, &folder, Some(read_set(&folder.join("Data")))));
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 9a N1: a pull a failed backup stopped leaves the baseline alone, so the next sync sees the
@@ -606,7 +599,6 @@ mod tests {
         let (_, pulled) = reconcile_with(&mut g, &local, &folder, Some(read_set(&folder.join("Data"))));
         assert!(pulled);
         assert_eq!(std::fs::read_to_string(local.join("notes.txt")).unwrap(), "newer from another PC");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// I2: a closed conflict window answers nothing (changes neither side, asks again at launch).

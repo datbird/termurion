@@ -227,15 +227,14 @@ pub fn file_url_os_path(path: String) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::semantic::Run;
 
-    fn dir(name: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("termurion-open-judge-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+    fn dir(name: &str) -> TempDir {
+        let d = TempDir::new(&format!("oj-{name}"));
         // A folder others can write to is shown, so the tests do not follow the umask.
-        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&*d, std::fs::Permissions::from_mode(0o755)).unwrap();
         d
     }
 
@@ -292,7 +291,6 @@ mod tests {
         std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o757)).unwrap();
         assert!(runnable(&sub.to_string_lossy()), "a folder in a folder others write to is shown");
         std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// A path that was not there at the judge is never handed to `open`.
@@ -322,7 +320,6 @@ mod tests {
                 assert!(!runnable(&real.to_string_lossy()), "{}", real.display());
             }
         }
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// A click shows a program and never runs it: Terminal files, bundles, launchers and any file
@@ -356,7 +353,6 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap();
         let f = folder.to_string_lossy().into_owned();
         assert_eq!(opened(&f), Run::Open(f.clone()), "a plain folder opens");
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// A link is judged by what it points at too: a harmless name on a link to a program is
@@ -384,7 +380,6 @@ mod tests {
         std::os::unix::fs::symlink(&a, &b).unwrap();
         assert!(runnable(&a.to_string_lossy()));
         assert_eq!(judged_open(&a), Judged::Reveal(a.clone()));
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// A failed reveal never opens a bundle around the item, and what it opens is the real
@@ -401,7 +396,6 @@ mod tests {
         let plain = d.join("plain");
         std::fs::create_dir_all(&plain).unwrap();
         assert_eq!(fallback_folder(&plain.join("f.txt")), Some(real.join("plain")));
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// A folder that is not there gets no fallback: someone could make it before the opener runs.
@@ -410,7 +404,6 @@ mod tests {
         let d = dir("fallback-missing");
         assert_eq!(fallback_folder(&d.join("zzz/run.sh")), None);
         assert_eq!(fallback_folder(Path::new("/no/such/termurion-dir/f.txt")), None);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Through a linked folder the fallback is the judged real folder, never the link text.
@@ -425,7 +418,6 @@ mod tests {
         write(&d.join("doc.txt"), 0o644);
         std::os::unix::fs::symlink(d.join("doc.txt"), d.join("filelink")).unwrap();
         assert_eq!(fallback_folder(&d.join("filelink/x")), None);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Another user's folder is shown by the judge, so it gives no fallback; only Open counts.
@@ -447,7 +439,6 @@ mod tests {
                 }
             }
         }
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Disk images, Flatpak bundles and the remaining Finder location files are shown too.
@@ -473,7 +464,6 @@ mod tests {
             assert!(runnable(&f));
         }
         std::fs::set_permissions(&inner, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Mount and remote-desktop schemes never reach the opener, whatever was chosen.

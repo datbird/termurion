@@ -335,6 +335,7 @@ unsafe fn start(exe: &Path, dir: &Path, line: &str, env: &[u16], handles: [HANDL
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use std::collections::HashSet;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -384,7 +385,8 @@ mod tests {
             })
         };
         let start = Instant::now();
-        let got = run_with(&cmd, &std::env::temp_dir(), &strings(&["/d", "/c", "ping", "-n", "30", "127.0.0.1"]), Duration::from_secs(1), None, &mut |p| {
+        let _td = TempDir::new("t");
+        let got = run_with(&cmd, _td.path(), &strings(&["/d", "/c", "ping", "-n", "30", "127.0.0.1"]), Duration::from_secs(1), None, &mut |p| {
             *pid.lock().unwrap() = Some(p);
         });
         let took = start.elapsed();
@@ -406,7 +408,8 @@ mod tests {
     /// back, and a capped read says so.
     #[test]
     fn git_runs_hidden_in_a_job() {
-        let dir = std::env::temp_dir();
+        let _td = TempDir::new("t");
+        let dir = _td.to_path_buf();
         let got = WinGitRun.run(Path::new("git"), &dir, &strings(&["--version"]), Duration::from_secs(10), Some(64 * 1024));
         match got {
             RunResult::Exit { code: 0, stdout, capped: false } => assert!(String::from_utf8_lossy(&stdout).starts_with("git version "), "{stdout:?}"),

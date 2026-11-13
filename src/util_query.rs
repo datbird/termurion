@@ -364,6 +364,7 @@ pub fn it2ul(args: &[String], io: &mut Io) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::rc::Rc;
@@ -383,7 +384,6 @@ mod tests {
         let mut h = Harness { stdin_tty: true, stdout_tty: true, ..Harness::default() };
         h.tty.console = true;
         h.tty.replies = replies.iter().map(|b| Some(*b)).collect();
-        h.cwd = std::env::temp_dir();
         h
     }
 
@@ -434,6 +434,7 @@ mod tests {
             run_log.borrow_mut().push(format!("run {} {}", c.program, c.args.join(" ")));
             answers.pop_front().unwrap_or_else(|| Err("no answer".into()))
         };
+        let _td = TempDir::new("q");
         let mut io = Io {
             out: &mut out,
             err: &mut err,
@@ -442,7 +443,7 @@ mod tests {
             stdout_tty: true,
             tty: &mut tty,
             env: &env,
-            cwd: std::env::temp_dir(),
+            cwd: _td.to_path_buf(),
             random: &mut random,
             run: &mut run,
             have: &have,
@@ -678,7 +679,8 @@ mod tests {
         assert_eq!(upload_request(None, "one line"), format!("\x1b]1337;RequestUpload=format=tgz;version={}\x07", b64(b"one line")));
         assert_eq!(upload_request(None, ""), "\x1b]1337;RequestUpload=format=tgz;version=\x07");
 
-        let cwd = std::env::temp_dir();
+        let _td = TempDir::new("t");
+        let cwd = _td.to_path_buf();
         let loc = cwd.to_string_lossy().into_owned();
         let mut h = console(b"ok\nQUJD\rREVG\r\r");
         h.answers = [ok(version), ok("")].into();

@@ -551,6 +551,7 @@ pub fn curl_args(url: &str, timeout: Option<f64>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     /// `UserDefaultsUnsavedController.swift:134-147`, `PreferencePanel.m:647`.
     #[test]
     fn the_unsaved_notice_follows_iterm2() {
@@ -661,14 +662,14 @@ mod tests {
 
     #[test]
     fn writable_probes_and_cleans_up() {
-        let dir = std::env::temp_dir().join(format!("termurion-remote-prefs-{}", std::process::id()));
+        let _td = TempDir::new("remote-prefs");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         assert!(writable(&dir));
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "the probe file is removed");
         assert!(!writable(&dir.join("missing")));
         assert!(!writable(Path::new(" ")));
         assert!(!writable(Path::new(r"\\host\share")));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

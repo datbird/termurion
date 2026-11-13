@@ -455,6 +455,7 @@ impl Transport for Recorded {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::ai_policy::host_of;
     use toml::Value;
@@ -563,7 +564,8 @@ mod tests {
         assert_eq!(parse_proxy(":8080"), Proxy::System);
         assert_eq!(parse_proxy("proxy.test:"), Proxy::System);
 
-        let mut g = Globals::empty(&std::env::temp_dir().join("termurion-ai-transport-test.toml"));
+        let _td = TempDir::new("ai-transport-tes");
+        let mut g = Globals::empty(&_td.file("x.toml"));
         assert_eq!(options_from(&g), Options { idle: Duration::from_secs(1200), proxy: Proxy::System });
         g.set("AI Timeout", Value::Float(2.5));
         assert_eq!(options_from(&g).idle, Duration::from_millis(2500));

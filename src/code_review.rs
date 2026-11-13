@@ -506,6 +506,7 @@ pub fn auto_job(text: &str) -> crate::paste::Job {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     /// Final review Important 1: a review member's program is never git (by name, any case, a full path,
@@ -620,7 +621,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn review_temp_file_is_made_owner_only() {
-        let base = std::env::temp_dir().join(format!("termurion-review-{}", std::process::id()));
+        let _td = TempDir::new("review");
+        let base = _td.to_path_buf();
         let dir = crate::localfs::LocalPath::judge(&base).or_else(|| {
             std::fs::create_dir_all(&base).ok()?;
             crate::localfs::LocalPath::judge(&base)
@@ -641,7 +643,6 @@ mod tests {
         sweep(&dir);
         assert!(!path.exists() && !again.exists());
         assert!(dir.path().join("keep.txt").exists());
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     fn idle() -> &'static str {
@@ -816,7 +817,8 @@ mod tests {
     /// read is stable (a replaced uuid is the same each time).
     #[test]
     fn saved_prompts_are_bounded_at_every_read() {
-        let mut g = crate::globals::Globals::empty(&std::env::temp_dir().join("termurion-cr-bounds-never-saved.toml"));
+        let _td = TempDir::new("cr-bounds-never");
+        let mut g = crate::globals::Globals::empty(&_td.file("x.toml"));
         let many: Vec<SavedPrompt> = (0..200)
             .map(|i| SavedPrompt {
                 uuid: if i == 1 { "bad".into() } else { format!("{i:08X}-0000-0000-0000-000000000000") },

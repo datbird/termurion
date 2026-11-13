@@ -400,6 +400,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     #[test]
@@ -420,7 +421,8 @@ mod tests {
 
     #[test]
     fn the_fx_tick_asks_for_no_wake_when_nothing_happened() {
-        let dir = std::env::temp_dir().join(format!("fx_ui_tick_{}", std::process::id()));
+        let _td = TempDir::new("fx_ui_tick_");
+        let dir = _td.to_path_buf();
         let store = crate::fx_store::Store::open(&dir);
         let mut panes = HashMap::new();
         let mut p = crate::pane::Pane::recording(1, 10, 3);
@@ -437,8 +439,8 @@ mod tests {
 
     #[test]
     fn a_redraw_is_asked_only_when_the_rules_change() {
-        let dir = std::env::temp_dir().join(format!("fx_ui_chg_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = TempDir::new("fx_ui_chg_");
+        let dir = _td.to_path_buf();
         let store = crate::fx_store::Store::open(&dir);
         let mut p = crate::pane::Pane::recording(1, 80, 24);
         p.screen = codex_screen();
@@ -458,8 +460,8 @@ mod tests {
 
     #[test]
     fn detection_skips_a_pane_with_no_effect_on() {
-        let dir = std::env::temp_dir().join(format!("fx_ui_off_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = TempDir::new("fx_ui_off_");
+        let dir = _td.to_path_buf();
         let store = crate::fx_store::Store::open(&dir);
         let mut p = crate::pane::Pane::recording(1, 80, 24);
         p.screen = codex_screen();
@@ -489,8 +491,8 @@ mod tests {
     }
 
     fn picked(pick: Option<&str>, tag: &str) -> String {
-        let dir = std::env::temp_dir().join(format!("fx_ui_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = TempDir::new(&format!("fx-ui-{tag}"));
+        let dir = _td.to_path_buf();
         let store = crate::fx_store::Store::open(&dir);
         let mut p = crate::pane::Pane::recording(1, 80, 24);
         p.screen = codex_screen();

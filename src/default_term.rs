@@ -308,6 +308,7 @@ pub fn embedding_next(started: Instant, now: Instant, handoffs: usize, waiting: 
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::reg::{FakeRegistry, Registry, apply};
     use std::path::Path;
@@ -331,12 +332,12 @@ mod tests {
         assert_eq!(current(&r), pair(CLSID_DEFAULT, CLSID_DEFAULT));
         apply(&mut r, &restore_entries(Some(pair(CLSID_CONHOST, CLSID_CONHOST)))).unwrap();
         assert_eq!(current(&r), pair(CLSID_CONHOST, CLSID_CONHOST));
-        let dir = std::env::temp_dir().join(format!("termurion-wt-{}", std::process::id()));
+        let _td = TempDir::new("wt");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         assert!(!console_host_present(&dir));
         std::fs::write(dir.join("wt.exe"), b"").unwrap();
         assert!(console_host_present(&dir));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

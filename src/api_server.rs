@@ -903,6 +903,7 @@ impl Connection {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::platform::net::bind_exclusive;
     use tungstenite::client::IntoClientRequest;
@@ -1466,7 +1467,8 @@ mod tests {
                 return;
             }
         };
-        let dir = std::env::temp_dir().join(format!("termurion-stock-{}", std::process::id()));
+        let _td = TempDir::new("stock");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("stock_get_app.py");
         std::fs::write(&script, "import iterm2\n\nasync def main(connection):\n    print(len((await iterm2.async_get_app(connection)).windows))\n\niterm2.run_until_complete(main)\n").unwrap();
@@ -1520,7 +1522,6 @@ mod tests {
             }
         }
         let out = script_process.0.take().unwrap().wait_with_output().unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
         let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
         assert_eq!(stdout.trim(), "2", "stderr: {stderr}\nrefusals: {rejected:?}");
     }

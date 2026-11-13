@@ -50,26 +50,26 @@ pub fn write_to(dir: &crate::localfs::LocalPath, text: &str) -> std::io::Result<
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     /// Final review 12: a stale temp file with this process's name (a crashed run with the same
     /// pid) does not stop the file from being written.
     #[test]
     fn a_stale_temp_file_does_not_block_the_write() {
-        let dir = std::env::temp_dir().join(format!("termurion-licenses-stale-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = TempDir::new("licenses-stale");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(format!("{FILE_NAME}.{}.tmp", std::process::id())), "left over").unwrap();
         let judged = crate::localfs::LocalPath::judge(&dir).unwrap();
         let p = write_to(&judged, "fresh").unwrap();
         assert_eq!(std::fs::read_to_string(p.path()).unwrap(), "fresh");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     use super::*;
 
     #[test]
     fn the_list_file_is_written_whole_and_replaced() {
-        let dir = std::env::temp_dir().join(format!("termurion-licenses-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = TempDir::new("licenses");
+        let dir = _td.to_path_buf();
         let judged = crate::localfs::LocalPath::judge(&dir).unwrap();
         let p = write_to(&judged, "first").unwrap();
         assert_eq!(p.path(), dir.join("Termurion Licenses.txt"));
@@ -77,7 +77,6 @@ mod tests {
         write_to(&judged, "second").unwrap();
         assert_eq!(std::fs::read_to_string(p.path()).unwrap(), "second");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no temp file is left");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Every direct dependency in Cargo.toml has its license in the list.

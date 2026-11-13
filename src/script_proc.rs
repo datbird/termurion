@@ -175,6 +175,7 @@ impl ScriptProcess {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -283,7 +284,8 @@ mod tests {
                 return;
             }
         };
-        let dir = std::env::temp_dir().join(format!("termurion-stock-script-{me}"));
+        let _td = TempDir::new("stock-script");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("count_windows.py");
         std::fs::write(&script, "import iterm2\n\nasync def main(c):\n    print(len((await iterm2.async_get_app(c)).windows))\n\niterm2.run_until_complete(main)\n").unwrap();
@@ -323,7 +325,6 @@ mod tests {
                 None => std::thread::sleep(Duration::from_millis(5)),
             }
         };
-        let _ = std::fs::remove_dir_all(&dir);
         let out = String::from_utf8_lossy(&out).into_owned();
         eprintln!("stock_script_launches output: {out:?}, exit {code:?}");
         assert_eq!((out.trim(), code), ("2", Some(0)), "refusals: {rejected:?}");

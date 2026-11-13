@@ -1688,6 +1688,7 @@ mod color_picker_tests {
 #[cfg(test)]
 mod install_tests {
     use super::*;
+    use crate::test_tmp::TempDir;
 
     #[test]
     fn the_pwsh_install_command_allows_scripts_and_quotes_the_path() {
@@ -1700,8 +1701,8 @@ mod install_tests {
 
     #[test]
     fn the_pwsh_install_command_adds_one_line_to_the_profile() {
-        let dir = std::env::temp_dir().join(format!("termurion-install-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = TempDir::new("install");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("termurion_shell_integration.ps1");
         std::fs::write(&script, "$global:TermurionLoaded = 1").unwrap();

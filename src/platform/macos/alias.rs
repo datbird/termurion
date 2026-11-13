@@ -127,6 +127,7 @@ fn resolve(url: &CFURL) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::platform::unix::open_judge::{judged_open, runnable, Judged};
     use std::os::unix::fs::PermissionsExt;
@@ -145,8 +146,8 @@ mod tests {
     /// The stored path of an alias is read from its bookmark bytes without resolving it.
     #[test]
     fn the_stored_path_is_read_before_resolving() {
-        let d = std::env::temp_dir().join(format!("termurion-alias-stored-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let _td = TempDir::new("alias-stored");
+        let d = _td.to_path_buf();
         std::fs::create_dir_all(&d).unwrap();
         file(&d.join("t.txt"), 0o644);
         make_alias(&d.join("t.txt"), &d.join("a.txt"));
@@ -162,7 +163,6 @@ mod tests {
         let at = |s: &str| code.find(s).unwrap();
         assert!(at("screened(&stored_path(") < at("screened(&stored_volume("));
         assert!(at("screened(&stored_volume(") < at("sys::CFURLCreateByResolvingBookmarkData("));
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Writes a Finder alias at `alias` naming `target` (what the Finder's Make Alias does).
@@ -188,8 +188,8 @@ mod tests {
     /// document, and an alias that no longer resolves is shown too.
     #[test]
     fn an_alias_is_judged_by_its_target() {
-        let d = std::env::temp_dir().join(format!("termurion-alias-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let _td = TempDir::new("alias");
+        let d = _td.to_path_buf();
         std::fs::create_dir_all(&d).unwrap();
         std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
         let real = std::fs::canonicalize(&d).unwrap();
@@ -224,6 +224,5 @@ mod tests {
         assert!(matches!(finder_alias(&d.join("dangling.txt")), Some(Err(_))));
         assert!(runnable(&d.join("dangling.txt").to_string_lossy()));
         assert_eq!(judged_open(&d.join("dangling.txt")), Judged::Reveal(d.join("dangling.txt")));
-        let _ = std::fs::remove_dir_all(&d);
     }
 }

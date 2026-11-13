@@ -196,6 +196,7 @@ fn webhost_win_foreground() -> Option<isize> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::platform::browser::{html_setup, quick_look_setup};
     use crate::web_popover::{POPOVER_CSP, WEBRTC_OFF_JS, popover_document};
@@ -257,7 +258,8 @@ mod tests {
             CreateWindowExW(0, class.as_ptr(), std::ptr::null(), WS_POPUP, 0, 0, 200, 200, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null())
         };
         assert!(!hwnd.is_null());
-        let folder = std::env::temp_dir().join(format!("termurion-popsrc-{}", std::process::id()));
+        let _td = TempDir::new("popsrc");
+        let folder = _td.to_path_buf();
         let (tx, rx) = mpsc::channel::<Posted>();
         let pump = |secs: u64, on: &mut dyn FnMut(&Event) -> bool| -> bool {
             let end = Instant::now() + Duration::from_secs(secs);

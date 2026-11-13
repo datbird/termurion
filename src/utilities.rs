@@ -135,8 +135,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn utilities_folder_follows_the_exe() {
-        let dir = std::env::temp_dir().join(format!("termurion-utilities-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = crate::test_tmp::TempDir::new("utilities");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let folder = dir.join(FOLDER);
 
@@ -189,7 +189,6 @@ mod tests {
         assert!(times(&folder).iter().all(|(l, _)| *l == longer.len() as u64), "every name refreshed");
         assert_eq!(std::fs::read(folder.join("it2check.exe")).unwrap(), longer);
         assert_eq!(std::fs::read_to_string(folder.join("notes.txt")).unwrap(), "mine", "never touched");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -232,8 +231,8 @@ mod tests {
 
     /// A folder for one test holding a copy of `exe` (from System32) as termurion-utils.exe.
     #[cfg(windows)]
-    fn with_program(name: &str, exe: &str) -> (crate::util_cli::TempDir, std::path::PathBuf) {
-        let dir = crate::util_cli::TempDir::new(name);
+    fn with_program(name: &str, exe: &str) -> (crate::test_tmp::TempDir, std::path::PathBuf) {
+        let dir = crate::test_tmp::TempDir::new(name);
         let system = std::path::PathBuf::from(std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into())).join("System32");
         std::fs::copy(system.join(exe), dir.join(EXE)).unwrap();
         let src = system.join(exe);

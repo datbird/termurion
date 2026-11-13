@@ -161,6 +161,7 @@ pub fn shell_verb(verb: &str, p: &LocalPath, cwd: Option<&LocalPath>, background
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     /// macOS: `/net` and `/Network` are network mounts, so the probe rule never touches them.
@@ -190,8 +191,8 @@ mod tests {
     /// through the old check then rename, and still never over an existing name.
     #[test]
     fn a_file_system_without_links_still_moves() {
-        let d = std::env::temp_dir().join(format!("termurion-nolink-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let _td = TempDir::new("nolink");
+        let d = _td.to_path_buf();
         std::fs::create_dir_all(&d).unwrap();
         let (a, b, c) = (d.join("a"), d.join("b"), d.join("c"));
         std::fs::write(&a, "A").unwrap();
@@ -209,14 +210,13 @@ mod tests {
         std::fs::write(&a, "A").unwrap();
         let denied = |_: &std::path::Path, _: &std::path::Path| Err(io::Error::from_raw_os_error(libc::EACCES));
         assert_eq!(move_no_replace(&a, &d.join("e"), &no_rename, &denied).unwrap_err().raw_os_error(), Some(libc::EACCES));
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// The move never replaces: an existing name is refused and both files stay as they were.
     #[test]
     fn rename_no_replace_never_replaces() {
-        let d = std::env::temp_dir().join(format!("termurion-rnr-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let _td = TempDir::new("rnr");
+        let d = _td.to_path_buf();
         std::fs::create_dir_all(&d).unwrap();
         let (a, b, c) = (d.join("a"), d.join("b"), d.join("c"));
         std::fs::write(&a, "A").unwrap();
@@ -227,6 +227,5 @@ mod tests {
         assert_eq!((std::fs::read_to_string(&a).unwrap(), std::fs::read_to_string(&b).unwrap()), ("A".into(), "B".into()));
         rename_no_replace(&judged(&a), &judged(&c)).unwrap();
         assert!(!a.exists() && std::fs::read_to_string(&c).unwrap() == "A");
-        let _ = std::fs::remove_dir_all(&d);
     }
 }

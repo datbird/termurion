@@ -291,6 +291,7 @@ impl Pool {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     fn body(a: &Answer) -> (u16, String, String, Vec<(String, String)>) {
@@ -303,11 +304,8 @@ mod tests {
     }
 
     /// A fresh folder under the temp folder (removed by the caller).
-    fn temp(name: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!("termurion-fileserve-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&p);
-        std::fs::create_dir_all(&p).unwrap();
-        p
+    fn temp(name: &str) -> TempDir {
+        TempDir::new(&format!("fileserve-{name}"))
     }
 
     fn url(p: &Path, dir: bool) -> String {
@@ -365,7 +363,6 @@ mod tests {
             assert_eq!((s, text.as_str()), (404, ""), "{u}");
             assert_eq!(csp(&h), browser_pages::FILE_CSP, "{u}");
         }
-        std::fs::remove_dir_all(&t).unwrap();
     }
 
     /// A subresource with no root, outside the root, or beyond a link out of it is a 404; one inside is served
@@ -412,7 +409,6 @@ mod tests {
         assert_eq!(s, 404);
         let (s, ..) = body(&serve_with(&url(&site.join("a.png"), false), 3, Some(&root), 4));
         assert_eq!(s, 200);
-        std::fs::remove_dir_all(&t).unwrap();
     }
 
     /// A junction inside the tree that leads out of it is not followed for a subresource.
@@ -430,7 +426,6 @@ mod tests {
         let (s, _, text, _) = body(&serve(&url(&site.join("j").join("secret.txt"), false), 3, Some(&root)));
         assert_eq!((s, text.as_str()), (404, ""), "a link out of the tree");
         std::fs::remove_dir(site.join("j")).unwrap();
-        std::fs::remove_dir_all(&t).unwrap();
     }
 
     /// A file with a Mark of the Web and one without are served alike: neither runs script (R13x8-NS).
@@ -445,7 +440,6 @@ mod tests {
             let (_, _, text, h) = body(&serve(&url(&t.join(f), false), CONTEXT_DOCUMENT, None));
             assert_eq!((text.as_str(), h), ("<script>1</script>", browser_pages::file_headers()), "{f}");
         }
-        std::fs::remove_dir_all(&t).unwrap();
     }
 
     /// The check is on what the open handle names, in the order: share or device form first, then
@@ -479,7 +473,6 @@ mod tests {
         assert!(!confined(Some(base.path()), &real), "the handle's own path is outside");
         drop(f);
         std::fs::remove_dir(site.join("j")).unwrap();
-        std::fs::remove_dir_all(&t).unwrap();
     }
 
     const CONTEXT_FETCH_LIKE: i32 = 3;

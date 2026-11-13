@@ -641,6 +641,7 @@ pub fn tarballs(payloads: &[Payload]) -> (Vec<(Vec<u8>, String)>, Vec<String>) {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     /// Removes a test's scratch folder when the test ends, panicking or not.
@@ -871,8 +872,8 @@ mod tests {
         let want: Vec<(String, u32, Vec<u8>)> = FILES[..6].iter().map(|f| (f.name.to_string(), 0o644, f.bytes.to_vec())).collect();
         assert_eq!(got, want);
 
-        let dir = std::env::temp_dir().join(format!("termurion-ssh-inject-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = TempDir::new("ssh-inject");
+        let dir = _td.to_path_buf();
         let _scratch = Scratch(dir.clone());
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         std::fs::write(dir.join("bin").join("a"), b"alpha").unwrap();
@@ -905,14 +906,13 @@ mod tests {
         std::fs::write(dir.join(&long).join("f"), b"deep").unwrap();
         let (out, _) = tarballs(&[Payload { source: Source::Disk(dir.join(&long)), destination: "/$HOME".into() }]);
         assert_eq!(untar(&out[0].0), vec![(long.clone(), 0o755, Vec::new()), (format!("{long}/f"), 0o644, b"deep".to_vec())]);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn tarball_caps_hold() {
         assert_eq!((MAX_JOB_BYTES, MAX_JOB_ENTRIES), (64 << 20, 10_000));
-        let dir = std::env::temp_dir().join(format!("termurion-ssh-caps-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = TempDir::new("ssh-caps");
+        let dir = _td.to_path_buf();
         let _scratch = Scratch(dir.clone());
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         for name in ["a", "b", "c"] {
@@ -937,7 +937,6 @@ mod tests {
         let to = |p: &Path, d: &str| Payload { source: Source::Disk(p.to_path_buf()), destination: d.into() };
         let (out, _) = tarballs(&[to(&big, "/$HOME"), to(&small, "/opt")]);
         assert_eq!(out.iter().map(|(_, d)| d.as_str()).collect::<Vec<_>>(), ["/opt"]);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(windows)]

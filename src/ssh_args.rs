@@ -401,6 +401,7 @@ pub fn local_user() -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     /// Removes a test's scratch folder when the test ends, panicking or not.
@@ -576,7 +577,8 @@ mod tests {
         assert_eq!(c.hostname("b"), "first-b");
         assert_eq!(c.hostname("a"), "second");
 
-        let dir = std::env::temp_dir().join(format!("termurion-ssh-args-{}", std::process::id()));
+        let _td = TempDir::new("ssh-args");
+        let dir = _td.to_path_buf();
         let _scratch = Scratch(dir.clone());
         std::fs::create_dir_all(&dir).unwrap();
         let real = dir.join("config");

@@ -319,6 +319,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::color_presets::{self, Preset, PresetColor};
     use crate::globals::Globals;
@@ -334,7 +335,8 @@ mod tests {
     /// R13vw-5: `.itermcolors` goes through 13t's reader, duplicate check and `add_custom`.
     #[test]
     fn color_files_import_through_13t() {
-        let dir = std::env::temp_dir().join(format!("termurion-open-colors-{}", std::process::id()));
+        let _td = TempDir::new("open-colors");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let mut g = Globals::empty(&dir.join("globals.toml"));
         let bytes = two_colors();
@@ -345,7 +347,6 @@ mod tests {
         assert_eq!(color_presets::custom(&g).len(), 1, "a duplicate adds nothing");
         assert_eq!(import_color_preset(&mut g, path, &bytes, true), ColorImport::Added("My Theme (2)".into()));
         assert_eq!(import_color_preset(&mut g, path, b"not a plist", false), ColorImport::Failed);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// B6: a Mark-of-the-Web or oversized script asks every time; the question closes as Cancel.

@@ -1595,8 +1595,8 @@ mod tests {
     fn win_fs_follows_perl_stat() {
         use crate::util_cli::Harness;
         use std::io::Read;
-        let dir = std::env::temp_dir().join(format!("termurion-imgls-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = crate::test_tmp::TempDir::new("imgls");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         image::RgbImage::new(2, 2).save(dir.join("a.png")).unwrap();
         std::fs::write(dir.join("b.txt"), b"").unwrap();
@@ -1693,6 +1693,5 @@ mod tests {
         #[allow(clippy::permissions_set_readonly_false)]
         perm.set_readonly(false);
         std::fs::set_permissions(dir.join("ro.txt"), perm).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

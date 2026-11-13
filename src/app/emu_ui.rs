@@ -330,6 +330,7 @@ mod print_tests {
 #[cfg(test)]
 mod dnd_tests {
     use super::*;
+    use crate::test_tmp::TempDir;
 
     /// 13o Task 9 (Review Focus 8): a drop goes to the registered pane under the pointer first,
     /// and anything else keeps the file-name paste.
@@ -387,7 +388,8 @@ mod dnd_tests {
     #[test]
     #[cfg(windows)] // junctions (mklink /J), Windows device names and file symlinks
     fn dropped_links_and_devices_are_refused() {
-        let dir = std::env::temp_dir().join(format!("termurion-dnd-links-{}", std::process::id()));
+        let _td = TempDir::new("dnd-links");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let real = dir.join("real.txt");
         std::fs::write(&real, b"hello").unwrap();
@@ -411,14 +413,14 @@ mod dnd_tests {
             assert_eq!(read_dropped(std::path::Path::new(name)), None, "{name}");
         }
         std::fs::remove_dir(&junction).unwrap();
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn dropped_files_are_read_only_when_plain_and_local() {
         assert_eq!(read_dropped(std::path::Path::new("\\\\host\\share\\a.txt")), None);
         assert_eq!(read_dropped(std::path::Path::new("//host/share/a.txt")), None);
-        let dir = std::env::temp_dir();
+        let _td = TempDir::new("t");
+        let dir = _td.to_path_buf();
         assert_eq!(read_dropped(&dir), None, "a folder has no bytes");
         let file = dir.join(format!("termurion-dnd-{}.txt", std::process::id()));
         std::fs::write(&file, b"hello").unwrap();

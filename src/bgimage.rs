@@ -196,6 +196,7 @@ pub fn folder_images(folder: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     const R: fn(f32, f32, f32, f32) -> Rect = |x, y, w, h| Rect { x, y, w, h };
@@ -241,7 +242,8 @@ mod tests {
 
     #[test]
     fn bad_images_fall_back() {
-        let dir = std::env::temp_dir().join(format!("termurion-bg-{}", std::process::id()));
+        let _td = TempDir::new("bg");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         assert!(load(&dir.join("missing.png")).is_none());
         std::fs::write(dir.join("corrupt.png"), b"\x89PNG not really").unwrap();
@@ -255,6 +257,5 @@ mod tests {
         std::fs::write(dir.join("notes.txt"), b"x").unwrap();
         let names: Vec<String> = folder_images(&dir).iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
         assert_eq!(names, vec!["corrupt.png", "wide.png"], "images by name, hidden and other files skipped");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

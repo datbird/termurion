@@ -125,6 +125,7 @@ pub fn parse_procargs(block: &[u8]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     #[test]
@@ -143,7 +144,8 @@ mod tests {
     fn a_real_empty_argv0_keeps_its_place() {
         use std::os::unix::process::CommandExt;
         // Paths of several lengths, so the padding after each is tried.
-        let dir = std::env::temp_dir().join(format!("termurion-argv-{}-with-a-long-folder-name", std::process::id()));
+        let _td = TempDir::new("argv-with-a-long");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let long = dir.join("sleep");
         let _ = std::os::unix::fs::symlink("/bin/sleep", &long);
@@ -156,7 +158,6 @@ mod tests {
                 assert_eq!(line.as_deref(), Some(want), "{exe} with argv0 {a0:?}");
             }
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

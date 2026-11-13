@@ -431,18 +431,18 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
-    fn dir(name: &str) -> LocalPath {
-        let p = std::env::temp_dir().join(format!("termurion-adblock-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&p);
-        std::fs::create_dir_all(&p).unwrap();
-        localfs::judge(&p).expect("the temp folder is local")
+    fn dir(name: &str) -> (TempDir, LocalPath) {
+        let td = TempDir::new(&format!("adblock-{name}"));
+        let p = localfs::judge(&td).expect("the temp folder is local");
+        (td, p)
     }
 
     #[test]
     fn the_saved_list_is_atomic_owner_only_and_bounded() {
-        let d = dir("save");
+        let (_td, d) = dir("save");
         assert!(load_list(&d).is_none());
         save_list(&d, "[1]").unwrap();
         assert_eq!(load_list(&d).as_deref(), Some("[1]"));

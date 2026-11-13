@@ -533,6 +533,7 @@ impl Source for CredentialManager {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::pwm_source::target_name_in;
     use std::process::{Command, Stdio};
@@ -557,21 +558,13 @@ mod tests {
         Bare,
     }
 
-    /// Removes the scratch directory even when the test panics.
-    struct Scratch(std::path::PathBuf);
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
     /// Runs the ignored test `inner` in a child with its own bus, keyring and scratch HOME, so nothing
     /// here can reach the real keyring and no env var of this process moves. The child gets a marker
     /// the inner bodies check (`sandboxed`), so they refuse to run anywhere else.
     fn child(inner: &str, bus: Bus) {
-        let dir = std::env::temp_dir().join(format!("termurion-ss-{}-{}", std::process::id(), inner));
-        let _ = std::fs::remove_dir_all(&dir);
-        let _scratch = Scratch(dir.clone());
+        // Named after the inner test, as before: the dead-daemon test relies on this long path.
+        let _td = TempDir::new(&format!("ss-{inner}"));
+        let dir = _td.to_path_buf();
         let run = dir.join("run");
         std::fs::create_dir_all(&run).unwrap();
         {
@@ -733,8 +726,8 @@ mod tests {
         // Run the body of an inner test directly (as `--ignored` in a normal shell would), with the
         // marker removed from the child only. It must panic before any bus call.
         let exe = std::env::current_exe().unwrap();
-        let dir = std::env::temp_dir().join(format!("termurion-ss-guard-{}", std::process::id()));
-        let _scratch = Scratch(dir.clone());
+        let _td = TempDir::new("ss-guard");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         for inner in ["a_written_key_reads_back_inner", "delete_answers_whether_it_was_there_inner", "add_edit_delete_round_trip_inner"] {
             let out = Command::new(&exe)

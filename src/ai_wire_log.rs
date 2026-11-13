@@ -312,6 +312,7 @@ pub fn console(enabled: bool, line: &str) {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     const KEY40: &str = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345";
@@ -456,8 +457,8 @@ mod tests {
 
     #[test]
     fn wire_log_opens_one_file_on_the_first_record() {
-        let dir = std::env::temp_dir().join(format!("termurion-wire-log-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = TempDir::new("wire-log");
+        let dir = _td.file("wire");
         let mut log = WireLog::in_dir(dir.clone());
         log.log(false, "off\n");
         assert!(log.path().is_none() && !dir.exists(), "nothing opens while the setting is off");
@@ -470,10 +471,10 @@ mod tests {
         assert!(text.starts_with("# Termurion AI chat wire log, started "), "{text}");
         assert!(text.ends_with("\n\none\ntwo\n"), "{text}");
         drop(log);
-        std::fs::remove_dir_all(&dir).unwrap();
 
         // A folder that cannot be made disables the log for the launch.
-        let blocker = std::env::temp_dir().join(format!("termurion-wire-log-block-{}", std::process::id()));
+        let _td = TempDir::new("wire-log-block");
+        let blocker = _td.file("blocker");
         std::fs::write(&blocker, b"x").unwrap();
         let mut blocked = WireLog::in_dir(blocker.join("AIChatWire"));
         blocked.log(true, "one\n");

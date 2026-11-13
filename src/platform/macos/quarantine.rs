@@ -55,6 +55,7 @@ fn failed(e: &objc2_foundation::NSError) -> std::io::Error {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     fn quarantine_of(p: &Path) -> Option<String> {
@@ -69,12 +70,12 @@ mod tests {
     /// A marked download carries the quarantine attribute, with this app named in it.
     #[test]
     fn a_download_is_quarantined() {
-        let p = std::env::temp_dir().join(format!("termurion-quarantine-{}.txt", std::process::id()));
+        let _td = TempDir::new("quarantine");
+        let p = _td.file("x.txt");
         std::fs::write(&p, "hi").unwrap();
         let zone = "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=ssh://u@h/x\r\n";
         let r = mark(&p, zone);
         let got = quarantine_of(&p);
-        let _ = std::fs::remove_file(&p);
         r.unwrap();
         let got = got.expect("the attribute is there");
         assert!(got.contains(";Termurion;"), "{got}");

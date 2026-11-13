@@ -377,6 +377,7 @@ pub fn question(scheme: &str, app: &str) -> Spec {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     /// A registered app whose executable (ASSOCSTR_EXECUTABLE) is `exe` and whose command line is `cmd`.
@@ -434,13 +435,13 @@ mod tests {
             assert!(!crate::remote_prefs::syncable(key), "{key} syncs");
             assert!(!crate::ai_settings::toggle_allowed(key), "{key} toggles");
         }
-        let dir = std::env::temp_dir().join(format!("termurion-linkscheme-{}", std::process::id()));
+        let _td = TempDir::new("linkscheme");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("p.plist");
         std::fs::write(&path, r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict><key>LinkSchemesAlways</key><string>vscode</string><key>LinkSchemesNever</key><string>slack</string><key>FocusFollowsMouse</key><true/></dict></plist>"#).unwrap();
         let got = crate::import::globals_from_file(&path).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
         let keys: Vec<&str> = got.iter().map(|(k, _)| k.as_str()).collect();
         assert!(keys.contains(&"FocusFollowsMouse") && !keys.contains(&ALWAYS_KEY) && !keys.contains(&NEVER_KEY), "{keys:?}");
     }

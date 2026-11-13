@@ -881,8 +881,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn the_approval_key_is_made_once_and_owner_only() {
-        let dir = std::env::temp_dir().join(format!("termurion-wg-key-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = crate::test_tmp::TempDir::new("wg-key");
+        let dir = _td.to_path_buf();
         let first = key_in(&dir).expect("made");
         assert_eq!(key_in(&dir), Some(first), "read back, not made again");
         let file = crate::localfs::LocalPath::judge(&dir).unwrap().unfollowed(KEY_FILE).unwrap();
@@ -892,7 +892,6 @@ mod tests {
         let again = key_in(&dir).expect("replaced");
         assert_ne!(again, first);
         assert_eq!(unprotect_key(&std::fs::read(dir.join(KEY_FILE)).unwrap()), Some(again), "the file holds the key protected");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Task 9 findings r2 (Critical): a key file that came from anywhere but this install's own
@@ -903,8 +902,8 @@ mod tests {
     #[test]
     fn a_key_file_copied_in_is_no_key() {
         use std::io::Write;
-        let dir = std::env::temp_dir().join(format!("termurion-wg-key-copied-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = crate::test_tmp::TempDir::new("wg-key-copied");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let file = crate::localfs::LocalPath::judge(&dir).unwrap().unfollowed(KEY_FILE).unwrap();
         // Planted plain bytes, even in an owner-only file.
@@ -922,7 +921,6 @@ mod tests {
         assert_ne!(again, made, "a key file without the owner-only DACL is not read");
         let sddl = crate::localfs::dacl_sddl(&file).unwrap();
         assert!(sddl.contains("D:P(A;;FA;;;S-") && sddl.matches("(A;").count() == 1, "{sddl}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Task 9 re-review r2, new minor 1: a second Termurion that starts while another is removing a bad
@@ -931,8 +929,8 @@ mod tests {
     #[test]
     fn a_key_being_removed_by_another_termurion_is_waited_for() {
         use std::os::windows::fs::OpenOptionsExt;
-        let dir = std::env::temp_dir().join(format!("termurion-wg-key-pending-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = crate::test_tmp::TempDir::new("wg-key-pending");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(KEY_FILE), b"not a key").unwrap();
         // The other Termurion judged the file and marks it for removal through its handle (as `key_in`
@@ -951,7 +949,6 @@ mod tests {
         });
         assert!(got.is_some(), "no key for this run");
         assert_eq!(key_in(&dir), got, "the key it made is the one on disk");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Task 9 findings r2 (minor): copies of Termurion starting together all end with the one key on
@@ -960,8 +957,8 @@ mod tests {
     #[test]
     fn termurions_starting_together_share_one_key() {
         for round in 0..10 {
-            let dir = std::env::temp_dir().join(format!("termurion-wg-key-race-{}-{round}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
+            let _td = crate::test_tmp::TempDir::new("wg-key-race");
+            let dir = _td.to_path_buf();
             let got: Vec<Option<[u8; KEY_LEN]>> = std::thread::scope(|s| {
                 let handles: Vec<_> = (0..6).map(|_| s.spawn(|| key_in(&dir))).collect();
                 handles.into_iter().map(|h| h.join().unwrap()).collect()
@@ -970,7 +967,6 @@ mod tests {
             assert!(got.iter().all(|k| *k == Some(on_disk)), "round {round}: {got:?}");
             let names: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
             assert_eq!(names, [KEY_FILE], "no temporary file is left");
-            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 

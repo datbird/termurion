@@ -173,7 +173,8 @@ mod tests {
     use super::*;
     use crate::git_state::HARDENED;
     use crate::screen::Screen;
-    use crate::util_cli::{Harness, Output, TempDir};
+    use crate::test_tmp::TempDir;
+    use crate::util_cli::{Harness, Output};
 
     /// A fake git answering by its arguments; `rev_list` and `git_dir` fail when false.
     fn fake(git_dir: bool, rev_list: bool) -> impl FnMut(&[&str]) -> Option<(i32, String)> {

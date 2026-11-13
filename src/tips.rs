@@ -222,6 +222,7 @@ pub fn between_of(g: &Globals) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     fn keys(list: &[&str]) -> Vec<String> {
@@ -352,7 +353,8 @@ mod tests {
     #[test]
     fn stored_state_reads_bounded() {
         use toml::Value;
-        let dir = std::env::temp_dir().join("termurion-tips-state-test");
+        let _td = TempDir::new("tips-state-test");
+        let dir = _td.to_path_buf();
         let mut g = crate::globals::Globals::empty(&dir.join("settings.toml"));
         assert_eq!(permission_of(&g), None);
         assert!(seen_of(&g).is_empty());

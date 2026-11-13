@@ -989,8 +989,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn junction_cannot_escape() {
-        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let base = std::env::temp_dir().join(format!("termurion-junction-{}-{stamp}", std::process::id()));
+        let _td = crate::test_tmp::TempDir::new("junction");
+        let base = _td.to_path_buf();
         let (root, outside) = (base.join("root"), base.join("outside"));
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::create_dir_all(&root).unwrap();
@@ -1019,7 +1019,6 @@ mod tests {
         for link in [root.join("C").join("B"), fine, root.join("D")] {
             let _ = std::process::Command::new("cmd").args(["/c", "rmdir"]).arg(&link).output();
         }
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

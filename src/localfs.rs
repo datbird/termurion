@@ -426,7 +426,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn listing_entries_are_judged_when_they_are_links() {
-        let base = std::env::temp_dir().join(format!("termurion-entries-{}", std::process::id()));
+        let _td = crate::test_tmp::TempDir::new("entries");
+        let base = _td.to_path_buf();
         std::fs::create_dir_all(base.join("plain")).unwrap();
         std::fs::write(base.join("f.txt"), b"x").unwrap();
         let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(base.join("j")).arg(base.join("plain")).output().unwrap();
@@ -436,7 +437,6 @@ mod tests {
         seen.sort();
         assert_eq!(seen, [("f.txt".into(), false, false, true), ("j".into(), false, true, true), ("plain".into(), true, false, true)]);
         std::fs::remove_dir(base.join("j")).unwrap();
-        std::fs::remove_dir_all(&base).unwrap();
     }
 
     /// The reading of one Rust source file: test-only items blanked (every `#[cfg(test)]` or
@@ -600,6 +600,9 @@ mod tests {
     /// files shipped beside it, the temp folder it made), Windows' own folders, and PATH lookups. A
     /// new raw probe in a listed function changes its count and fails too.
     const OWN: &[(&str, &str, usize, &str)] = &[
+        ("test_tmp.rs", "new_in", 2, "test-only scratch folders under the temp folder, made and removed by the test helper"),
+        ("test_tmp.rs", "drop", 1, "test-only scratch folder removed by the test helper"),
+        ("test_tmp.rs", "walk", 2, "test-only walk of this crate's own source folder for the temp-folder guard"),
         ("platform/unix/update_fetch.rs", "system_curl", 1, "the fixed system paths /usr/bin/curl and /bin/curl, never a user's path"),
         ("platform/unix/update_fetch.rs", "fetch", 1, "curl's working folder is the fixed root folder /, never a user's path"),
         ("url_launch.rs", "verify_server", 1, "the kernel's /proc/<pid>/exe link of the peer that serves the launch socket, read to compare programs; never a user's path, nothing is opened"),

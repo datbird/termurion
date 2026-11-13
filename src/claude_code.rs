@@ -642,6 +642,7 @@ pub fn old_folder_settings(stored: &str, current: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     #[test]
     fn network_paths_follow_the_one_rule() {
         for p in [r"\\h\s", "//h/s", r"\/h/s", r"/\h\s", r"\\?\UNC\h\s"] {
@@ -659,11 +660,8 @@ mod tests {
         serde_json::from_str(t).expect("valid JSON")
     }
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("termurion-cc-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn scratch(name: &str) -> TempDir {
+        TempDir::new(&format!("cc-{name}"))
     }
 
     /// Every object's keys are in sorted order, at every level.
@@ -779,7 +777,6 @@ mod tests {
         std::fs::create_dir_all(odd.join("settings.json")).unwrap();
         assert!(install_to(&odd.join("settings.json"), CMD).unwrap_err().starts_with("Could not read "));
         assert!(odd.join("settings.json").is_dir());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -815,7 +812,6 @@ mod tests {
         let mut names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
         names.sort();
         assert_eq!(names, ["settings.json", "settings.json.termurion-backup"]);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -830,7 +826,6 @@ mod tests {
         // Stripping what Termurion alone put there leaves a file with no hooks.
         assert_eq!(uninstall_from(&path), Ok(()));
         assert_eq!(parse(&std::fs::read_to_string(&path).unwrap()), serde_json::json!({}));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -877,12 +872,12 @@ mod tests {
         // A network path is never probed, and a folder is not a program.
         assert!(!runnable_path(r"\\host\share\cc-status.exe"));
         assert!(!runnable_path("//host/share/cc-status.exe"));
-        assert!(!runnable_path(&std::env::temp_dir().to_string_lossy()));
+        let _td = TempDir::new("t");
+        assert!(!runnable_path(&_td.path().to_string_lossy()));
         let dir = scratch("runnable");
         let exe = dir.join("cc-status.exe");
         std::fs::write(&exe, b"x").unwrap();
         assert!(runnable_path(&exe.to_string_lossy()));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1011,7 +1006,6 @@ mod tests {
         let f = dir.join("file");
         std::fs::write(&f, b"x").unwrap();
         assert_eq!(old_folder_settings(&f.to_string_lossy(), &current), None);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1099,7 +1093,6 @@ mod tests {
         assert_eq!(old_folder_settings(&b.to_string_lossy(), &current), Some(settings_path(&b)));
         assert!(!same_path(&a, &b));
         assert!(!same_path(&dir.join("a2"), &a), "a longer name is not the same folder");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A junction to the folder in use is the folder in use (the final path is compared when
@@ -1115,6 +1108,5 @@ mod tests {
         assert!(same_path(&link, &real));
         assert_eq!(old_folder_settings(&link.to_string_lossy(), &settings_path(&real)), None);
         let _ = std::fs::remove_dir(&link);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -22,6 +22,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use std::time::{Duration, Instant};
 
     use alacritty_terminal::grid::Dimensions;
@@ -40,6 +41,8 @@ mod tests {
         failures: Vec<String>,
         /// Every byte the shell wrote, with a marker where each resize happened.
         trace: Vec<u8>,
+        /// Script folders for the shell, kept until the shell is gone (fields drop in order).
+        scratch: Vec<TempDir>,
     }
 
     impl Rig {
@@ -48,7 +51,7 @@ mod tests {
             let pty = spawn_notify(&api, cmd, None, &[], cols, rows, std::sync::Arc::new(|| {})).unwrap();
             let mut screen = Screen::new(cols as usize, rows as usize);
             screen.pty_backed = true;
-            let mut r = Rig { pty, screen, failures: Vec::new(), trace: Vec::new() };
+            let mut r = Rig { pty, screen, failures: Vec::new(), trace: Vec::new(), scratch: Vec::new() };
             r.settle();
             r
         }
@@ -565,10 +568,12 @@ $o.Write("[detached (from session funtimes)]`r`nlogout`r`nConnection closed.`r`n
 "#;
 
     /// The stand-in's script on disk, and the command that runs it.
-    fn alt_child_cmd() -> String {
-        let path = std::env::temp_dir().join(format!("termurion-altchild-{}.ps1", std::process::id()));
+    fn alt_child_cmd() -> (TempDir, String) {
+        let td = TempDir::new("altchild");
+        let path = td.file("x.ps1");
         std::fs::write(&path, ALT_CHILD).unwrap();
-        format!("powershell.exe -NoLogo -NoProfile -File \"{}\"", path.display())
+        let cmd = format!("powershell.exe -NoLogo -NoProfile -File \"{}\"", path.display());
+        (td, cmd)
     }
 
     impl Rig {
@@ -591,7 +596,8 @@ $o.Write("[detached (from session funtimes)]`r`nlogout`r`nConnection closed.`r`n
 
         /// Defines `a` as the stand-in, so the line that starts it is short and never wraps.
         fn define_alt(&mut self) -> String {
-            let cmd = alt_child_cmd();
+            let (td, cmd) = alt_child_cmd();
+            self.scratch.push(td);
             self.type_line(&format!("function a {{ {cmd} }}"));
             self.settle();
             "a".to_string()

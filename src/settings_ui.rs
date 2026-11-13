@@ -2672,17 +2672,18 @@ fn shows_ai_models_on(mode: Mode, page: Page, sub: crate::settings_ai::SubTab) -
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     /// The Import from iTerm2 path for a settings plist: the picked file's profiles land in the
     /// store, its keys in the globals, and the AI migration flag is reset once for a plist only.
     #[test]
     fn an_iterm2_plist_import_reaches_the_store_and_globals() {
-        let path = std::env::temp_dir().join(format!("termurion-import-picked-{}.plist", std::process::id()));
+        let _td = TempDir::new("import-picked");
+        let path = _td.file("x.plist");
         std::fs::write(&path, concat!(
             r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>FocusFollowsMouse</key><true/>"#,
             r#"<key>New Bookmarks</key><array><dict><key>Guid</key><string>p2m</string><key>Name</key><string>P2 Mac</string></dict></array></dict></plist>"#,
         )).unwrap();
         let (list, read) = import_picked(&path, None).unwrap();
-        let _ = std::fs::remove_file(&path);
         assert!(read.is_some(), "a plist brings its settings");
         let mut store = crate::store::Store::fresh(std::path::Path::new("x.toml"));
         let before = store.profiles.len();
@@ -3389,7 +3390,8 @@ mod tests {
     /// previewed; any other edit puts a stale preview back before it is applied and saved.
     #[test]
     fn a_stale_preview_never_reaches_a_save() {
-        let mut store = Store::fresh(&std::env::temp_dir().join(format!("termurion-gate-{}.toml", std::process::id())));
+        let _td = TempDir::new("gate");
+        let mut store = Store::fresh(&_td.file("x.toml"));
         let guid = store.default_guid.clone();
         let before = store.get(&guid).unwrap().values.clone();
         let mut st = crate::settings_presets::State::new(false);
@@ -3413,7 +3415,8 @@ mod tests {
     /// a trigger, a key action, a direct save), not only the saves an edit starts.
     #[test]
     fn a_save_with_a_live_preview_writes_the_original_colors() {
-        let path = std::env::temp_dir().join(format!("termurion-save-{}.toml", std::process::id()));
+        let _td = TempDir::new("save");
+        let path = _td.file("x.toml");
         let mut store = Store::fresh(&path);
         let guid = store.default_guid.clone();
         let before = store.get(&guid).unwrap().values.clone();
@@ -3429,7 +3432,6 @@ mod tests {
         assert_eq!(on_disk.get(&guid).unwrap().color_for("Foreground Color", true), store.get(&guid).unwrap().color_for("Foreground Color", true));
         assert_eq!(store.get(&guid).unwrap().values, before, "the store holds the original colors again");
         assert_eq!(on_disk.file_profiles(), store.file_profiles(), "and so does the file");
-        let _ = std::fs::remove_file(&path);
         // No save path of the app writes the store around `save_store`.
         for (name, src) in [("mod.rs", include_str!("app/mod.rs")), ("emu_ui.rs", include_str!("app/emu_ui.rs")), ("hotkey_ui.rs", include_str!("app/hotkey_ui.rs")), ("tmux_tabs_ui.rs", include_str!("app/tmux_tabs_ui.rs"))] {
             assert!(!src.contains("self.store.save()"), "{name} saves the store around save_store");

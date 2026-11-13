@@ -275,12 +275,11 @@ send({{action:'list'}});\n\
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
-    fn temp_dir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("termurion-dl-{tag}-{}", uuid::Uuid::new_v4().simple()));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn temp_dir(tag: &str) -> TempDir {
+        TempDir::new(&format!("dl-{tag}"))
     }
 
     #[test]
@@ -322,7 +321,6 @@ mod tests {
         let exists = |p: &Path| p.exists();
         let (free, _) = crate::ssh_local::final_destination(&d, "a.zip", false, &exists);
         assert_eq!(free, d.join("a (1).zip"));
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -344,7 +342,7 @@ mod tests {
         #[cfg(windows)]
         {
             let junction = d.join("j");
-            let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&junction).arg(&other).output().map(|o| o.status.success()).unwrap_or(false);
+            let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&junction).arg(other.path()).output().map(|o| o.status.success()).unwrap_or(false);
             if made {
                 assert!(!download_path_ok(&d, &junction.join("a.zip")));
                 let _ = std::fs::remove_dir(&junction);
@@ -352,7 +350,6 @@ mod tests {
                 eprintln!("note: junction could not be made, that case is skipped");
             }
         }
-        let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_dir_all(&other);
     }
 

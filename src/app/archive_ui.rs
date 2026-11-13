@@ -264,6 +264,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use std::sync::{Arc, Mutex};
 
     fn production() -> &'static str {
@@ -281,7 +282,8 @@ mod tests {
     /// when the last is on disk.
     #[test]
     fn archives_are_written_one_at_a_time() {
-        let dir = std::env::temp_dir().join(format!("termurion-archive-seq-{}", std::process::id()));
+        let _td = TempDir::new("archive-seq");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("same.itermarchive");
         let done = Arc::new(Mutex::new(0usize));
@@ -297,7 +299,6 @@ mod tests {
         assert!(super::wait_for_archives(std::time::Duration::from_secs(20)), "everything queued was written");
         assert_eq!(*done.lock().unwrap(), 8);
         assert_eq!(std::fs::read(&path).unwrap(), last, "the last queued write is the file, whole");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -317,7 +318,8 @@ mod tests {
     fn restore_reads_a_bounded_file() {
         let restore = body(production(), "    pub(super) fn restore_archive(");
         assert!(restore.contains("read_bounded(") && restore.contains("count_refusal("), "size and counts are checked before anything opens");
-        let dir = std::env::temp_dir().join(format!("termurion-archive-big-{}", std::process::id()));
+        let _td = TempDir::new("archive-big");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("a.itermarchive");
         std::fs::write(&f, b"0123456789").unwrap();
@@ -332,7 +334,6 @@ mod tests {
             assert!(super::read_bounded(&f, 9).unwrap_err().contains("larger"), "the size is checked with a stat, not a read");
             drop(held);
         }
-        let _ = std::fs::remove_dir_all(&dir);
         let arrange = include_str!("arrange_ui.rs");
         let shared = body(arrange, "    pub(super) fn open_arrangement_windows(");
         assert!(shared.contains("needs_question("), "several windows of an unmarked file ask first");
@@ -345,7 +346,8 @@ mod tests {
 
     #[test]
     fn the_writer_reports_back_and_never_probes() {
-        let dir = std::env::temp_dir().join(format!("termurion-archive-{}", std::process::id()));
+        let _td = TempDir::new("archive");
+        let dir = _td.file("d");
         let missing = dir.join("no").join("such").join("a.itermarchive");
         let out: Arc<Mutex<Vec<Result<(), String>>>> = Default::default();
         let o = out.clone();

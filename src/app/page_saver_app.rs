@@ -560,6 +560,7 @@ enum Answer {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::super::browser_test_seam::{Runner, ScriptSeam};
     use super::*;
     use base64::Engine;
@@ -570,11 +571,8 @@ mod tests {
         format!("explorer.exe {}", crate::semantic::explorer_select_arg(&path.to_string_lossy()).unwrap_or_default())
     }
 
-    fn temp_root(tag: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("termurion-psave-{}-{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        root
+    fn temp_root(tag: &str) -> TempDir {
+        TempDir::new(&format!("psave-{tag}"))
     }
 
     /// The app's part played in a test: page and DevTools answers come from the script seam's queue,
@@ -709,7 +707,6 @@ mod tests {
                 assert!(parent == folder || parent == folder.join("resources"), "{p:?}");
             }
         }
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// An existing folder fails the save as Save Failed with the file error, and nothing is written.
@@ -726,7 +723,6 @@ mod tests {
         assert!(h.reveals.is_empty());
         assert_eq!(listing(&folder), vec!["keep.txt"], "an existing folder is never written into or removed");
         assert_eq!(std::fs::read_to_string(folder.join("keep.txt")).unwrap(), "mine");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A resource whose write fails is skipped and the save still reveals `index.html`; a failure of
@@ -763,7 +759,6 @@ mod tests {
         assert!(h3.reveals.is_empty());
         assert_eq!(listing(&folder3), vec!["index.html"], "resources is gone; only the planted folder is left");
         assert!(folder3.join("index.html").is_dir(), "a folder the job did not make is never removed");
-        let _ = std::fs::remove_dir_all(&root3);
     }
 
     /// A navigation mid-save aborts: nothing more is written, the output is removed, one alert.
@@ -783,7 +778,6 @@ mod tests {
         assert!(!folder.exists(), "the folders this save made are gone");
         assert!(h.reveals.is_empty());
         assert_eq!(h.seam.calls.len(), 1, "no resource read after the navigation");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The pane closing (or the person cancelling) drops the job: it removes its output and asks for
@@ -803,7 +797,6 @@ mod tests {
         assert!(h.s.over && h.fails.is_empty() && h.reveals.is_empty());
         // A late answer of the page does nothing.
         assert!(h.s.page_answer(Ok(json!(["https://termurion.test/i.png"])), 7).is_empty());
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A cancel that lands while writes are still queued in the worker (Task 10 review minor 6): the
@@ -826,7 +819,6 @@ mod tests {
         h.exec(queued);
         assert!(!folder.exists(), "{:?}", h.ops);
         assert!(h.fails.is_empty() && h.reveals.is_empty());
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Final review minor 2: the stated caps are the ones that bind. A 6 MiB image (8 MiB of base64
@@ -854,7 +846,6 @@ mod tests {
         assert!(h.fails.is_empty(), "{:?}", h.fails);
         assert!(!folder2.join("resources").join("i.png").exists(), "over MAX_RESOURCE_BYTES is skipped");
         assert!(folder2.join("index.html").exists());
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Final review minor 2, the wiring: the saver's page-world calls are read up to
@@ -911,7 +902,6 @@ mod tests {
         drop(tx);
         page_save_worker(rx, &|_| {});
         assert!(folder.is_dir(), "an existing folder stays");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Final review minor 3, the failure path: the page's script fails while `resources` is being
@@ -949,7 +939,6 @@ mod tests {
         drop(tx);
         worker.join().unwrap();
         assert!(listing(&root).is_empty(), "the failed save left {:?}", listing(&root));
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The app sends the abandon at both unfinished ends, after their operations, and never on a
@@ -992,7 +981,6 @@ mod tests {
         h.go();
         assert_eq!(h.fails, vec![page_saver::save_failed_text(page_saver::NAVIGATED_AWAY)]);
         assert!(!folder.exists() && h.ops.is_empty(), "{:?}", h.ops);
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A saver script or a file name the page chose never reaches the alert unsanitized, and a
@@ -1013,7 +1001,6 @@ mod tests {
             assert!(!crate::inert_files::refused_write(bad), "{bad}");
         }
         assert!(!saved.iter().any(|n| n.ends_with(".url") || n.ends_with(".scf") || n == "desktop.ini"), "{saved:?}");
-        let _ = std::fs::remove_dir_all(&root);
         // Hidden characters in a failure never reach the alert.
         let mut s = Saving::new(PathBuf::from("C:\\x"), String::new(), 1, 1);
         s.io_error = Some("bad \u{202e}name\u{1b}[31m".into());
@@ -1033,7 +1020,6 @@ mod tests {
         assert_eq!(h.fails, vec![page_saver::save_failed_text(crate::inert_files::UNMARKABLE)]);
         assert!(h.reveals.is_empty());
         assert_eq!(listing(&root), Vec::<String>::new(), "the save folder and everything in it are gone");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The alert names the failing operation's own error, never an earlier skipped resource's, and
@@ -1060,7 +1046,6 @@ mod tests {
         let mut h = Harness::new(root.join("site"), vec![Err("Uncaught Error: Your files are encrypted, call 555".into())]);
         h.go();
         assert_eq!(h.fails, vec![page_saver::save_failed_text(page_saver::FAILED_TO_GET_HTML)]);
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Every file the saver writes carries the Mark of the Web (real NTFS stream), with the page's URL.
@@ -1078,7 +1063,6 @@ mod tests {
             assert_eq!(crate::inert_files::zone_of(&text), Some(3), "{f:?}");
             assert!(text.contains("HostUrl=https://termurion.test/\r\n"), "{text:?}");
         }
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// B5: a page that lists 5000 resources is capped (the job's own cap), and the flow asks for no
@@ -1101,7 +1085,6 @@ mod tests {
         let reads = h.seam.calls.iter().filter(|(_, r, t)| *r == Runner::DevTools && t.starts_with("Page.getResourceContent")).count();
         assert!(reads <= page_saver::MAX_RESOURCES, "{reads}");
         assert_eq!(h.reveals.len(), 1, "{:?}", h.fails);
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The wiring: the dialog is the person's pick (no preset folder), the destination is judged

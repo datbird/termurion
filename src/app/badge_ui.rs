@@ -107,8 +107,8 @@ mod tests {
     use crate::globals::Globals;
     use toml::Value;
 
-    fn globals(name: &str) -> Globals {
-        Globals::empty(&std::env::temp_dir().join(format!("termurion-badge-{name}.toml")))
+    fn globals(_name: &str) -> Globals {
+        Globals::empty(std::path::Path::new("/nonexistent-termurion-test/globals.toml"))
     }
 
     /// 13w Task 8 (`PP:1594-1624`): a profile's own badge size wins, key by key; every other

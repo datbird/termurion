@@ -831,6 +831,7 @@ impl InputState {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     #[test]
@@ -1054,8 +1055,8 @@ mod tests {
 
     #[test]
     fn folders_list_sorted_capped_and_filtered() {
-        let root = std::env::temp_dir().join(format!("termurion-chat-input-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let _td = TempDir::new("chat-input");
+        let root = _td.to_path_buf();
         std::fs::create_dir_all(root.join("sub")).unwrap();
         for (name, body) in [("b.txt", "B"), ("a.txt", "A"), ("skip.exe", "X"), ("sub\\c.txt", "C"), ("sub\\d.txt", "D")] {
             std::fs::write(root.join(name), body).unwrap();
@@ -1078,7 +1079,6 @@ mod tests {
         assert_eq!(read_capped(Path::new("\\\\host\\share\\a.txt"), FILE_BYTES_MAX, &room, total), Err(Reason::Network), "a network path is never read");
         assert_eq!(read_capped(&root.join("a.txt"), 0, &room, total), Err(Reason::TooLarge), "over the single file limit");
         assert_eq!(read_capped(&root.join("a.txt"), FILE_BYTES_MAX, &room, 0), Err(Reason::OverTotal), "over what is left of the total");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1124,8 +1124,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_junction_out_of_the_folder_is_skipped_and_reported() {
-        let root = std::env::temp_dir().join(format!("termurion-chat-links-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let _td = TempDir::new("chat-links");
+        let root = _td.to_path_buf();
         let (inner, outer) = (root.join("dropped"), root.join("elsewhere"));
         std::fs::create_dir_all(inner.join("real")).unwrap();
         std::fs::create_dir_all(&outer).unwrap();
@@ -1144,7 +1144,6 @@ mod tests {
         assert!(names.contains(&"to_in\\in.txt".to_string()), "a link to a folder inside is followed: {names:?}");
         assert!(!names.iter().any(|n| n.contains("out.txt")), "nothing from outside: {names:?}");
         assert!(l.skipped.contains(&Skipped { name: "to_out".into(), reason: Reason::Link }), "{:?}", l.skipped);
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Round 3: a dropped or picked item is judged by the one judge (`netpath::judge`), the same
@@ -1247,8 +1246,8 @@ mod tests {
     #[test]
     fn a_failed_read_does_not_use_up_the_total() {
         use std::os::windows::fs::OpenOptionsExt;
-        let root = std::env::temp_dir().join(format!("termurion-chat-lock-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let _td = TempDir::new("chat-lock");
+        let root = _td.to_path_buf();
         std::fs::create_dir_all(&root).unwrap();
         let locked = root.join("locked.txt");
         std::fs::write(&locked, "0123456789").unwrap();
@@ -1258,14 +1257,13 @@ mod tests {
         assert_eq!(read_capped(&locked, FILE_BYTES_MAX, &budget, TOTAL_BYTES_MAX), Err(Reason::Unreadable));
         assert_eq!(budget.used(), 0, "a file that was not read counts for nothing");
         drop(_hold);
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[cfg(windows)]
     #[test]
     fn a_folder_link_back_to_its_parent_is_not_followed_again() {
-        let root = std::env::temp_dir().join(format!("termurion-chat-loop-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let _td = TempDir::new("chat-loop");
+        let root = _td.to_path_buf();
         let top = root.join("d");
         std::fs::create_dir_all(top.join("a")).unwrap();
         std::fs::write(top.join("a\\x.txt"), "X").unwrap();
@@ -1275,7 +1273,6 @@ mod tests {
         let names: Vec<String> = l.files.iter().map(|f| f.strip_prefix(&top).unwrap().to_string_lossy().to_string()).collect();
         assert_eq!(names, ["a\\x.txt"], "the same files are not attached again through the loop");
         assert!(l.skipped.contains(&Skipped { name: "a\\loop".into(), reason: Reason::Link }), "{:?}", l.skipped);
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn world_with(id: &str) -> crate::cockpit_rows::World {

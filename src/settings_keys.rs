@@ -2202,6 +2202,7 @@ pub fn profile_key_mappings(ui: &mut egui::Ui, p: &mut Profile, st: &mut KeysSta
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     /// The text as this OS words it (the Mac's words on macOS), for what the schema now holds.
     fn nw(text: impl AsRef<str>) -> String {
         crate::platform::native_words(text.as_ref()).into_owned()
@@ -3116,7 +3117,8 @@ mod tests {
             assert_eq!(row.label.as_str(), help.lines().next().unwrap(), "{key}");
         }
         // The rules read the four rows, the General one included.
-        let mut g = Globals::empty(&std::env::temp_dir().join("termurion-bidi-rows.toml"));
+        let _td = TempDir::new("bidi-rows");
+        let mut g = Globals::empty(&_td.file("x.toml"));
         assert_eq!(Rules::from_globals(&g), Rules { enabled: true, detect_direction: false, right_justify: true, off_in_alternate: false });
         g.set("Bidi", Value::Boolean(false));
         g.set("DetectParagraphDirection", Value::Boolean(true));

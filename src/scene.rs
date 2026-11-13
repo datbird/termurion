@@ -10082,6 +10082,7 @@ mod painted_cursor_tests {
 #[cfg(test)]
 mod agent_box_tests {
     use super::*;
+    use crate::test_tmp::TempDir;
 
     /// One recorded agent screen with the cursor where `cursors.txt` says; `swap` edits the capture first.
     fn load(name: &str, swap: Option<(&str, &str)>) -> FxPane {
@@ -10159,17 +10160,17 @@ mod agent_box_tests {
         frame.fx.expect("an fx pane").input_box.map(|b| (b.kind, r(b.top), r(b.bottom), r(b.left), r(b.right)))
     }
 
-    fn shipped_store(tag: &str) -> crate::fx_store::Store {
-        let dir = std::env::temp_dir().join(format!("scene_fx_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        crate::fx_store::Store::open(&dir)
+    fn shipped_store(tag: &str) -> (TempDir, crate::fx_store::Store) {
+        let td = TempDir::new(&format!("fx-{tag}"));
+        let store = crate::fx_store::Store::open(&td);
+        (td, store)
     }
 
     /// Parity with 1.0.5: Auto with the shipped profiles finds the box the Shell rules found
     /// (`expected.txt`, never re-blessed) on every recorded tmux layout and agent screen.
     #[test]
     fn auto_detection_keeps_the_1_0_5_input_box() {
-        let st = shipped_store("parity");
+        let (_td, st) = shipped_store("parity");
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tmux-agents/");
         let expected = std::fs::read_to_string(format!("{dir}expected.txt")).unwrap();
         let mut seen = 0;
@@ -10209,7 +10210,7 @@ mod agent_box_tests {
     /// Another agent's name on the screen must not take the box away (a Codex pane that talks about Claude Code).
     #[test]
     fn a_mention_of_another_agent_keeps_the_band() {
-        let st = shipped_store("mention");
+        let (_td, st) = shipped_store("mention");
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/agents/");
         let text = std::fs::read_to_string(format!("{dir}codex.ansi")).unwrap().replace("OpenAI Codex", "Ask Claude Code or Hermes about it");
         let rows: Vec<String> = text.trim_end_matches('\n').split('\n').map(|r| format!("\x1b[0m{r}")).collect();

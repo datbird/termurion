@@ -644,20 +644,14 @@ mod sock {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        use std::os::unix::fs::PermissionsExt;
         use std::sync::mpsc;
 
         /// A private scratch folder for the sockets (never the real runtime folder), removed after.
-        struct Dir(std::path::PathBuf);
-        impl Drop for Dir {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        fn dir() -> Dir {
-            let d = std::env::temp_dir().join(crate::platform::ipc::test_name("launch-sock"));
-            std::fs::DirBuilder::new().mode(0o700).create(&d).unwrap();
-            Dir(d)
+        fn dir() -> crate::test_tmp::TempDir {
+            let d = crate::test_tmp::TempDir::new("lsock");
+            std::fs::set_permissions(&d.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+            d
         }
         fn ok(_: u32) -> Result<(), String> {
             Ok(())

@@ -2859,6 +2859,7 @@ fn register_main_responses(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, tok
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
 
 
     /// Task 7 review I1: the host's cap counts RUNNING downloads. Eight finished ones leave the set, so
@@ -3199,7 +3200,8 @@ mod tests {
     /// repaired on a worker thread, and this call fails so the UI thread never waits for it.
     #[test]
     fn the_owner_only_acl_is_set_once() {
-        let base = std::env::temp_dir().join(format!("termurion-wv2-acl-{}", std::process::id()));
+        let _td = TempDir::new("wv2-acl");
+        let base = _td.to_path_buf();
         let folder = base.join("a").join("Default");
         let calls = || PROTECTED.lock().unwrap().iter().filter(|p| p.starts_with(&base)).count();
         prepare_folder(&folder).unwrap();
@@ -3274,7 +3276,8 @@ mod tests {
     /// Preflight P3: the folder is made owner-only and protected.
     #[test]
     fn folders_are_made_owner_only() {
-        let base = std::env::temp_dir().join(format!("termurion-wv2-{}", std::process::id()));
+        let _td = TempDir::new("wv2");
+        let base = _td.to_path_buf();
         let folder = base.join("a").join("Default");
         prepare_folder(&folder).unwrap();
         let lp = crate::localfs::LocalPath::judge(&folder).unwrap();
@@ -3359,7 +3362,8 @@ mod tests {
         unsafe { RegisterClassW(&wc) };
         let hwnd = unsafe { CreateWindowExW(WINDOW_EX_STYLE(0), class, windows::core::w!("termurion-wv2-test"), WS_OVERLAPPEDWINDOW, 0, 0, 200, 200, None, None, None, None) }.expect("a window");
         assert!(unsafe { IsWindow(Some(hwnd)) }.as_bool());
-        let folder = std::env::temp_dir().join(format!("termurion-wv2-ui-{}", std::process::id()));
+        let _td = TempDir::new("wv2-ui");
+        let folder = _td.to_path_buf();
         let (tx, rx) = mpsc::channel::<Posted>();
         let env_cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
         let cell = env_cell.clone();
@@ -3431,7 +3435,8 @@ mod tests {
         let wc = WNDCLASSW { lpfnWndProc: Some(proc), lpszClassName: class, ..Default::default() };
         unsafe { RegisterClassW(&wc) };
         let hwnd = unsafe { CreateWindowExW(WINDOW_EX_STYLE(0), class, windows::core::w!("termurion-wv2-method"), WS_OVERLAPPEDWINDOW, 0, 0, 200, 200, None, None, None, None) }.expect("a window");
-        let folder = std::env::temp_dir().join(format!("termurion-wv2-method-{}", std::process::id()));
+        let _td = TempDir::new("wv2-method");
+        let folder = _td.to_path_buf();
         let (tx, rx) = mpsc::channel::<Posted>();
         let env_cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
         let cell = env_cell.clone();
@@ -3537,7 +3542,8 @@ mod tests {
         let wc = WNDCLASSW { lpfnWndProc: Some(proc), lpszClassName: class, ..Default::default() };
         unsafe { RegisterClassW(&wc) };
         let hwnd = unsafe { CreateWindowExW(WINDOW_EX_STYLE(0), class, windows::core::w!("termurion-menu-test"), WS_OVERLAPPEDWINDOW, 0, 0, 300, 300, None, None, None, None) }.expect("a window");
-        let folder = std::env::temp_dir().join(format!("termurion-wv2-menu-{}", std::process::id()));
+        let _td = TempDir::new("wv2-menu");
+        let folder = _td.to_path_buf();
         let (tx, rx) = mpsc::channel::<Posted>();
         let env_cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
         let cell = env_cell.clone();
@@ -3589,6 +3595,7 @@ mod tests {
 #[cfg(test)]
 mod probe {
     use super::*;
+    use crate::test_tmp::TempDir;
     use crate::browser_world::{self, ClientWorld, Contexts, Setup};
     use serde_json::{Value, json};
     use std::sync::mpsc;
@@ -3890,7 +3897,8 @@ mod probe {
             unsafe { RegisterClassW(&wc) };
             // Created, never shown: nothing appears on the desktop.
             let hwnd = unsafe { CreateWindowExW(WS_EX_TOOLWINDOW, class, windows::core::w!("termurion-world-probe"), WS_OVERLAPPEDWINDOW, 0, 0, 400, 300, None, None, None, None) }.expect("a window");
-            let folder = std::env::temp_dir().join(format!("termurion-probe-{}-{}", std::process::id(), hex32()));
+            let _td = TempDir::new("probe");
+            let folder = _td.to_path_buf();
             let (tx, rx) = mpsc::channel::<Posted>();
             let mut p = Probe {
                 hwnd,
@@ -5725,7 +5733,8 @@ mod probe {
         let Some(mut p) = Probe::start(&pages, Vec::new()) else { return };
         p.load(TEST_PAGE);
         p.settle(800);
-        let root = std::env::temp_dir().join(format!("termurion-save-probe-{}", hex32()));
+        let _td = TempDir::new("save-probe");
+        let root = _td.to_path_buf();
         std::fs::create_dir_all(&root).expect("a temp root");
         let folder = root.join("site");
         let mut job = Job::new(folder.clone());
@@ -5800,7 +5809,6 @@ mod probe {
         assert!(index.contains("<style") && index.contains("resources/bg.svg"), "the stylesheet is inlined with its url rewritten: {index}; reads {fetched:?}");
         assert_eq!(std::fs::read(folder.join("resources").join("i.svg")).expect("i.svg"), SVG_I.as_bytes());
         assert_eq!(std::fs::read(folder.join("resources").join("bg.svg")).expect("bg.svg"), SVG_BG.as_bytes());
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Main bug from the 13x3 probe review: Chromium's Windows editing behavior extends forward by
@@ -6828,7 +6836,8 @@ window.addEventListener('message', function (e) {
     #[test]
     #[ignore]
     fn file_pages_cannot_read_or_send() {
-        let t = std::env::temp_dir().join(format!("termurion-filepage-{}", hex32()));
+        let _td = TempDir::new("filepage");
+        let t = _td.to_path_buf();
         std::fs::create_dir_all(t.join("site")).expect("site");
         std::fs::create_dir_all(t.join("other")).expect("other");
         std::fs::write(t.join("other").join("secret.txt"), "s3cret").expect("secret");
@@ -6881,7 +6890,6 @@ window.addEventListener('message', function (e) {
         assert_eq!(p.source(), Some(page.clone()), "the view's Source is still the file page");
         assert!(!p.served.is_empty() && p.served.iter().all(|(_, h)| *h == crate::browser_pages::file_headers()), "every answer carried the no-script policy: {:?}", p.served);
         assert!(!p.routed.iter().any(|r| r.body.contains("iterm2-about:settings")), "no message came from the page");
-        std::fs::remove_dir_all(&t).ok();
         p.finish();
     }
 
@@ -6894,7 +6902,8 @@ window.addEventListener('message', function (e) {
     #[ignore]
     fn termurion_loads_leave_a_file_page_for_the_web() {
         use std::io::{Read, Write};
-        let t = std::env::temp_dir().join(format!("termurion-fileexit-{}", hex32()));
+        let _td = TempDir::new("fileexit");
+        let t = _td.to_path_buf();
         std::fs::create_dir_all(&t).expect("folder");
         std::fs::write(t.join("f.html"), "<title>f</title><p>file</p>").expect("page");
         let page = crate::browser_pages::file_url_of(&t.join("f.html"), false);
@@ -6933,7 +6942,6 @@ window.addEventListener('message', function (e) {
         let Some(mut p) = Probe::start_setup(&[], Vec::new(), &["iterm2-file"], setup) else {
             stop.store(true, std::sync::atomic::Ordering::SeqCst);
             let _ = server.join();
-            std::fs::remove_dir_all(&t).ok();
             return;
         };
         p.serve_files = true;
@@ -6958,7 +6966,6 @@ window.addEventListener('message', function (e) {
         assert!(["/ok", "/hop", "/landing"].iter().all(|h| seen.iter().any(|s| s == h)), "the server answered each: {seen:?}");
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = server.join();
-        std::fs::remove_dir_all(&t).ok();
         p.finish();
     }
 
@@ -7423,7 +7430,8 @@ window.addEventListener('message', function (e) {
                 let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"f.bin\"\r\nContent-Length: 10\r\nConnection: close\r\n\r\n0123456789");
             }
         });
-        let dir = std::env::temp_dir().join(format!("termurion-dl-probe-{}", uuid::Uuid::new_v4().simple()));
+        let _td = TempDir::new("dl-probe");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let setup = ViewSetup { guard_local_schemes: true, web_message: true, downloads: true, ..Default::default() };
         let Some(mut p) = Probe::start_setup(&[], Vec::new(), &[], setup) else { return };
@@ -7440,7 +7448,6 @@ window.addEventListener('message', function (e) {
         drop(p);
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = thread.join();
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// An unpacked extension loads through WebView2's own support (13x8 Task 10): its content script
@@ -7470,7 +7477,8 @@ window.addEventListener('message', function (e) {
                 let _ = s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
             }
         });
-        let dir = std::env::temp_dir().join(format!("termurion-ext-probe-{}", uuid::Uuid::new_v4().simple()));
+        let _td = TempDir::new("ext-probe");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("manifest.json"), r#"{"manifest_version":3,"name":"Probe","version":"1.0","content_scripts":[{"matches":["http://127.0.0.1/*"],"js":["c.js"],"run_at":"document_start"}]}"#).unwrap();
         std::fs::write(dir.join("c.js"), "document.addEventListener('DOMContentLoaded', function () { document.title = 'ext'; });").unwrap();
@@ -7502,7 +7510,6 @@ window.addEventListener('message', function (e) {
         drop(p);
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = thread.join();
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn auth_setup() -> ViewSetup {

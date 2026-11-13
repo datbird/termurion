@@ -85,6 +85,7 @@ pub fn ensure(appdata: &std::path::Path) -> std::io::Result<std::path::PathBuf> 
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     #[test]
@@ -106,8 +107,8 @@ mod tests {
 
     #[test]
     fn ensure_writes_and_repairs() {
-        let root = std::env::temp_dir().join(format!("termurion-terminfo-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let _td = TempDir::new("terminfo");
+        let root = _td.to_path_buf();
         let dir = ensure(&root).unwrap();
         assert_eq!(dir, root.join(crate::platform::paths::APP_FOLDER).join("terminfo"));
         for (path, bytes) in FILES {
@@ -123,6 +124,5 @@ mod tests {
         assert_eq!(std::fs::read(&xterm).unwrap(), FILES.iter().find(|(n, _)| *n == "x/xterm").unwrap().1);
         assert_eq!(std::fs::metadata(&other).unwrap().modified().unwrap(), before);
         assert!(ensure(std::path::Path::new(r"\\host\share")).is_err(), "a network path is refused");
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

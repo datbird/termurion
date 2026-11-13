@@ -117,6 +117,7 @@ pub fn change_for(url: &str, s: &Settings) -> Result<Option<Change>, UrlError> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::ssh_url::{Settings, UrlError};
 
@@ -200,7 +201,8 @@ mod tests {
         assert_eq!(command("ftp://bob@h/x").as_deref(), Ok("ftp ftp://bob@h/x"), "a user alone stays");
         assert_eq!(command("ftp://h/a@b:c").as_deref(), Ok("ftp ftp://h/a@b:c"), "an @ in the path is not userinfo");
         // No saved or serialized form of the session copy holds it either.
-        let profile = crate::store::Store::fresh(&std::env::temp_dir().join(format!("termurion-ftp-pw-{}.toml", std::process::id()))).profiles[0].clone();
+        let _td = TempDir::new("ftp-pw");
+        let profile = crate::store::Store::fresh(&_td.file("x.toml")).profiles[0].clone();
         for url in ["ftp://bob:secret@h/x", "telnet://bob:secret@h:23"] {
             let changed = crate::ssh_url::profile_for_url(&profile, url, &settings()).unwrap().unwrap();
             assert!(!format!("{changed:?}").contains("secret"), "{url}");

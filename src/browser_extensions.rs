@@ -392,6 +392,7 @@ pub fn read_folder_manifest(dir: &Path) -> Option<(Manifest, String)> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     fn s(v: &[&str]) -> Vec<String> {
@@ -588,8 +589,8 @@ mod tests {
 
     #[test]
     fn a_folder_manifest_is_read_with_a_limit() {
-        let base = std::env::temp_dir().join(format!("termurion-ext-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let _td = TempDir::new("ext-test");
+        let base = _td.to_path_buf();
         let ok = base.join("ok");
         let big = base.join("big");
         let none = base.join("none");
@@ -606,6 +607,5 @@ mod tests {
         std::fs::create_dir_all(dir_as_manifest.join("manifest.json")).unwrap();
         assert!(read_folder_manifest(&dir_as_manifest).is_none(), "a directory named manifest.json");
         assert!(read_folder_manifest(Path::new(r"\\srv\share\ext")).is_none(), "a network path is never read");
-        let _ = std::fs::remove_dir_all(&base);
     }
 }

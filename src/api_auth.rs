@@ -422,7 +422,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn allow_all_reader_follows_windows() {
-        let dir = std::env::temp_dir().join(format!("termurion-noauth-{}", fresh_key()));
+        let _td = crate::test_tmp::TempDir::new("noauth");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let at = |name: &str| dir.join(name).to_string_lossy().into_owned();
 
@@ -484,7 +485,6 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir(&junction);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

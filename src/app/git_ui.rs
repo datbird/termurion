@@ -994,6 +994,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::git_state::RunResult;
     use std::sync::{Condvar, Mutex};
@@ -1028,16 +1029,16 @@ mod tests {
         assert_eq!(after_exit(exit, false), (Message::Finished, Outcome::Finished { close: false }));
     }
 
-    fn repos(name: &str, n: usize) -> Vec<String> {
-        let root = std::env::temp_dir().join(format!("termurion-git-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        (0..n)
+    fn repos(name: &str, n: usize) -> (TempDir, Vec<String>) {
+        let td = TempDir::new(&format!("git-{name}"));
+        let list = (0..n)
             .map(|i| {
-                let d = root.join(format!("r{i}"));
+                let d = td.join(format!("r{i}"));
                 std::fs::create_dir_all(d.join(".git")).unwrap();
                 d.to_string_lossy().into_owned()
             })
-            .collect()
+            .collect();
+        (td, list)
     }
 
     /// The single-use window runs the wrapper beside Termurion with the git and its arguments
@@ -1093,7 +1094,7 @@ Basic cache: none\nRich cache: none\nPending calls: 0\n"
     fn worker_bounds_threads_and_abandons_stuck_ones() {
         let gate = Arc::new(Gate { open: Mutex::new(false), cv: Condvar::new(), only: None });
         let mut w = GitWorker::new(gate.clone(), Arc::new(|| {}));
-        let paths = repos("worker", MAX_THREADS + 2);
+        let (_td, paths) = repos("worker", MAX_THREADS + 2);
         let git = String::new();
         let timeout = Duration::from_secs(1);
         w.request(paths[0].clone(), git.clone(), timeout);
@@ -1143,7 +1144,7 @@ Basic cache: none\nRich cache: none\nPending calls: 0\n"
     fn a_stuck_path_never_takes_a_second_thread() {
         let gate = Arc::new(Gate { open: Mutex::new(false), cv: Condvar::new(), only: Some("r0") });
         let mut w = GitWorker::new(gate.clone(), Arc::new(|| {}));
-        let paths = repos("stuck", 2);
+        let (_td, paths) = repos("stuck", 2);
         let timeout = Duration::from_secs(1);
         w.request(paths[0].clone(), String::new(), timeout);
         std::thread::sleep(timeout + GRACE + Duration::from_millis(100));

@@ -336,15 +336,15 @@ mod tests {
         assert!(crate::browser_js::resource("onboarding-setup.html").unwrap().contains("onclick=\"enableAdBlocker()\""));
     }
 
-    fn store() -> Store {
-        let dir = std::env::temp_dir().join(format!("termurion-onb-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        Store::load(&dir.join("profiles.toml")).unwrap()
+    fn store() -> (crate::test_tmp::TempDir, Store) {
+        let td = crate::test_tmp::TempDir::new("onb");
+        let st = Store::load(&td.file("profiles.toml")).unwrap();
+        (td, st)
     }
 
     #[test]
     fn profile_effects_follow_iterm2() {
-        let mut st = store();
+        let (_td, mut st) = store();
         assert!(!has_browser_profile(&st));
         let guid = create_browser_profile(&mut st).expect("made");
         let p = st.get(&guid).unwrap();

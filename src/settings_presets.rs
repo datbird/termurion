@@ -719,6 +719,7 @@ pub fn save_preset(g: &mut Globals, profile: &Profile, name: &str, editing_dark:
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::profile::Profile;
 
@@ -882,7 +883,8 @@ mod tests {
 
     #[test]
     fn closing_settings_restores_a_preview() {
-        let mut store = crate::store::Store::fresh(&std::env::temp_dir().join(format!("termurion-presets-{}.toml", std::process::id())));
+        let _td = TempDir::new("presets");
+        let mut store = crate::store::Store::fresh(&_td.file("x.toml"));
         let guid = store.default_guid.clone();
         let before = store.get(&guid).unwrap().values.clone();
         let mut st = State::new(false);
@@ -897,7 +899,8 @@ mod tests {
 
     #[test]
     fn a_preview_is_put_back_when_its_header_is_gone() {
-        let mut store = crate::store::Store::fresh(&std::env::temp_dir().join(format!("termurion-presets-strand-{}.toml", std::process::id())));
+        let _td = TempDir::new("presets-strand");
+        let mut store = crate::store::Store::fresh(&_td.file("x.toml"));
         let guid = store.default_guid.clone();
         let before = store.get(&guid).unwrap().values.clone();
         let mut st = State::new(false);

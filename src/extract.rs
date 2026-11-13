@@ -83,13 +83,12 @@ fn make_dir(p: &LocalPath) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::zip_check::tests::{dir, file, tar_entry, tgz as gz, zip as make_zip};
 
-    fn fresh(name: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("termurion-extract-{name}-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn fresh(name: &str) -> TempDir {
+        TempDir::new(&format!("extract-{name}"))
     }
 
     fn listing(dir: &Path) -> Vec<String> {
@@ -137,7 +136,6 @@ mod tests {
         let at = torn.windows(3).position(|w| w == b"abc").unwrap();
         torn[at] = b'x';
         assert!(zip(&torn, &t.join("torn"), Limits::DEFAULT).is_err());
-        let _ = std::fs::remove_dir_all(&t);
     }
 
     /// A deflated zip as tar.exe writes it (bsdtar's own zip writer) extracts the same bytes.
@@ -153,7 +151,6 @@ mod tests {
         assert_eq!(zip(&bytes, &t.join("out"), Limits::DEFAULT), Ok(5000));
         assert_eq!(std::fs::read_to_string(t.join("out").join("d").join("a.txt")).unwrap(), "a".repeat(5000));
         assert!(read_whole(&t.join("src").join("x.zip"), 10).is_err(), "over the cap");
-        let _ = std::fs::remove_dir_all(&t);
     }
 
     /// One entry's zip with its data as given (`method` 0 stored, 8 deflated), the sizes and CRC
@@ -213,6 +210,5 @@ mod tests {
             assert!(zip(&odd, &t.join(format!("odd{method}")), Limits::DEFAULT).is_err(), "{method} {flags}");
             assert!(!t.join(format!("odd{method}")).exists());
         }
-        let _ = std::fs::remove_dir_all(&t);
     }
 }

@@ -2511,6 +2511,7 @@ pub fn resize_report_bytes(on: bool, tmux: bool, rows: u16, cols: u16, px: (u32,
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     #[test]
     fn buffered_input_waits_for_release() {
         let mut b = super::InputBuffer::default();
@@ -4442,8 +4443,10 @@ mod tests {
     fn coprocess_types_into_the_shell() {
         let mut p = start("cmd.exe");
         assert!(pump_until(&mut p, |p| p.screen.text().contains('>')), "no prompt");
-        p.run_coprocess("echo echo FROM^^CO", false, &std::env::temp_dir(), Arc::new(|| {})).unwrap();
-        assert!(p.run_coprocess("echo x", false, &std::env::temp_dir(), Arc::new(|| {})).is_err(), "one at a time");
+        let _td = TempDir::new("t");
+        p.run_coprocess("echo echo FROM^^CO", false, _td.path(), Arc::new(|| {})).unwrap();
+        let _td = TempDir::new("t");
+        assert!(p.run_coprocess("echo x", false, _td.path(), Arc::new(|| {})).is_err(), "one at a time");
         assert!(pump_until(&mut p, |p| p.screen.all_text().contains("FROMCO")), "{}", p.screen.all_text());
         assert!(pump_until(&mut p, |p| p.coprocess_command().is_none()), "it ends");
         assert_eq!(p.take_coprocess_end().map(|e| e.0), Some("echo echo FROM^^CO".to_string()));
@@ -4453,7 +4456,8 @@ mod tests {
     fn mute_hides_output_from_the_screen() {
         let mut p = start("cmd.exe");
         assert!(pump_until(&mut p, |p| p.screen.text().contains('>')), "no prompt");
-        p.run_coprocess("ping -n 30 127.0.0.1 >NUL", true, &std::env::temp_dir(), Arc::new(|| {})).unwrap();
+        let _td = TempDir::new("t");
+        p.run_coprocess("ping -n 30 127.0.0.1 >NUL", true, _td.path(), Arc::new(|| {})).unwrap();
         p.input(b"echo HID^DEN\r");
         let shown = pump_until(&mut p, |p| p.screen.all_text().contains("HIDDEN"));
         assert!(!shown, "a silent coprocess hides the session's output");

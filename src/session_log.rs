@@ -1075,6 +1075,7 @@ pub fn style_prompt(remembered: Style) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use std::sync::{Arc, Mutex};
 
@@ -1106,10 +1107,10 @@ mod tests {
         p
     }
 
-    fn temp_path(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("termurion-session-log-{}-{name}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        dir.join("log.txt")
+    fn temp_path(name: &str) -> (TempDir, PathBuf) {
+        let td = TempDir::new(&format!("slog-{name}"));
+        let file = td.file("log.txt");
+        (td, file)
     }
 
     #[test]
@@ -1403,7 +1404,7 @@ mod tests {
 
     #[test]
     fn file_sink_appends_or_truncates() {
-        let path = temp_path("append");
+        let (_td, path) = temp_path("append");
         std::fs::write(&path, "old").unwrap();
         let mut s = FileSink::open(&path, true);
         s.wait_ready(Duration::from_secs(5)).unwrap();
@@ -1420,7 +1421,8 @@ mod tests {
 
         // The temp folder is named by process id, which Windows reuses: a file left by an earlier
         // run would be appended to, so it goes first.
-        let made = temp_path("fresh").with_file_name("made.log");
+        let (_td, fresh) = temp_path("fresh");
+        let made = fresh.with_file_name("made.log");
         let _ = std::fs::remove_file(&made);
         let mut s = FileSink::open(&made, true);
         s.wait_ready(Duration::from_secs(5)).unwrap();
@@ -1432,7 +1434,8 @@ mod tests {
     /// A log has no timer: the writer wakes the app when a write fails, and only then.
     #[test]
     fn a_failed_log_wakes_the_app_itself() {
-        let missing = temp_path("wake").parent().unwrap().join("no").join("such").join("a.log");
+        let (_td, wake) = temp_path("wake");
+        let missing = wake.parent().unwrap().join("no").join("such").join("a.log");
         let woke = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let w = woke.clone();
         let s = FileSink::open_with_wake(&missing, true, Some(Arc::new(move || {
@@ -1447,7 +1450,7 @@ mod tests {
         assert!(s.failed().is_some());
         assert_eq!(woke.load(std::sync::atomic::Ordering::SeqCst), 1, "one wake, after the failure was recorded");
         // A log that is fine never wakes anyone.
-        let ok = temp_path("wake-ok");
+        let (_td, ok) = temp_path("wake-ok");
         let quiet = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let q = quiet.clone();
         let mut fine = FileSink::open_with_wake(&ok, false, Some(Arc::new(move || {
@@ -1478,7 +1481,8 @@ mod tests {
 
     #[test]
     fn file_sink_failure_comes_back_without_blocking() {
-        let missing = temp_path("missing").parent().unwrap().join("no").join("such").join("a.log");
+        let (_td, miss) = temp_path("missing");
+        let missing = miss.parent().unwrap().join("no").join("such").join("a.log");
         let started = std::time::Instant::now();
         let mut s = FileSink::open(&missing, true);
         assert!(started.elapsed() < Duration::from_millis(500));
@@ -1614,7 +1618,7 @@ mod tests {
     /// overwrite each other: every write goes to the end of the file.
     #[test]
     fn a_second_writer_never_overwrites_the_first() {
-        let path = temp_path("two-writers");
+        let (_td, path) = temp_path("two-writers");
         let _ = std::fs::remove_file(&path);
         let mut first = FileSink::open(&path, true);
         first.wait_ready(Duration::from_secs(5)).unwrap();
@@ -1639,7 +1643,7 @@ mod tests {
     #[test]
     fn a_dropped_log_is_written_out_by_wait_for_writers() {
         let _one = WRITERS.lock().unwrap_or_else(|e| e.into_inner());
-        let path = temp_path("drained");
+        let (_td, path) = temp_path("drained");
         let _ = std::fs::remove_file(&path);
         let mut sink = FileSink::open(&path, false);
         sink.write(&vec![b'x'; 1_000_000]).unwrap();
@@ -1655,7 +1659,8 @@ mod tests {
         let boom = |_: &Path| -> bool { panic!("probed") };
         assert_eq!(folder_action(Path::new(r"\\srv\logs"), true, &boom), FolderAction::Open);
         assert_eq!(folder_action(Path::new("//srv/logs"), true, &boom), FolderAction::Open);
-        let there = std::env::temp_dir();
+        let _td = TempDir::new("t");
+        let there = _td.to_path_buf();
         let missing = there.join("termurion-no-such-log-folder-13q");
         assert_eq!(folder_action(&missing, false, &|d| d.is_dir()), FolderAction::AskCreate);
         assert_eq!(folder_action(&there, false, &|d| d.is_dir()), FolderAction::Open);

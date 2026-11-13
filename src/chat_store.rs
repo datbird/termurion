@@ -701,6 +701,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_tmp::TempDir;
     use crate::chat_message::Participant;
     use rusqlite::Connection;
 
@@ -1016,7 +1017,7 @@ mod tests {
     #[test]
     fn corrupt_database_does_not_open() {
         // Removed when dropped, a failed assertion included.
-        let dir = crate::util_cli::TempDir::new("termurion-chatdb-corrupt");
+        let dir = TempDir::new("termurion-chatdb-corrupt");
         let path = dir.join(FILE_NAME);
         let garbage: Vec<u8> = (0..8192u32).map(|i| (i * 7 % 251) as u8).collect();
         std::fs::write(&path, &garbage).unwrap();
@@ -1081,7 +1082,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn lock_follows_iterm2() {
-        let dir = crate::util_cli::TempDir::new("termurion-chatdb-lock");
+        let dir = TempDir::new("termurion-chatdb-lock");
         let path = dir.join("sub").join(FILE_NAME);
         let lock = dir.join("sub").join(LOCK_NAME);
         let first = Store::open(&path, &lock).unwrap();

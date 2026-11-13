@@ -392,6 +392,7 @@ impl Drop for Server {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use std::mem::{offset_of, size_of};
 
@@ -487,7 +488,8 @@ mod tests {
     fn handles_are_typed_before_use() {
         let (r, _w) = pipe();
         assert!(check_file(&r).is_ok());
-        let path = std::env::temp_dir().join(format!("termurion-handoff-{}", std::process::id()));
+        let _td = TempDir::new("handoff");
+        let path = _td.to_path_buf();
         std::fs::write(&path, b"x").unwrap();
         let f = std::fs::File::open(&path).unwrap();
         use std::os::windows::io::AsRawHandle;
@@ -495,7 +497,6 @@ mod tests {
         assert!(check_file(&disk).is_err(), "a disk file is not a console handle");
         assert!(check_process(&disk, false).is_err(), "a file is not a process");
         assert!(check_process(&r, false).is_err(), "a pipe is not a process");
-        let _ = std::fs::remove_file(&path);
         let me = Own::dup(HANDLE(unsafe { GetCurrentProcess() })).unwrap();
         assert!(check_process(&me, true).is_err(), "Termurion itself is never the client");
         assert!(Own::dup(HANDLE(0x7777_7770 as *mut c_void)).is_err(), "a handle that is not there");

@@ -151,6 +151,7 @@ impl Db {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::browser_perms::PermissionType::*;
     use Decision::*;
@@ -182,7 +183,8 @@ mod tests {
 
     #[test]
     fn rows_survive_a_second_open_of_one_file() {
-        let dir = std::env::temp_dir().join(format!("termurion-perms-{}", uuid::Uuid::new_v4()));
+        let _td = TempDir::new("perms");
+        let dir = _td.to_path_buf();
         let file = dir.join("browserdb-u.sqlite");
         {
             let db = Db::open(&file).unwrap();
@@ -191,7 +193,6 @@ mod tests {
         let db = Db::open(&file).unwrap();
         assert_eq!(db.get_permission(A, Camera).map(|r| r.decision), Some(Granted));
         drop(db);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

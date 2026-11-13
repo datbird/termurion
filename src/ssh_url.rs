@@ -306,6 +306,7 @@ pub fn profile_for_url(profile: &Profile, url: &str, s: &Settings) -> Result<Opt
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::profile::Profile;
     use toml::Value;
@@ -653,7 +654,8 @@ mod tests {
 
     #[test]
     fn settings_read_the_four_rows() {
-        let dir = std::env::temp_dir().join(format!("termurion-ssh-url-{}", std::process::id()));
+        let _td = TempDir::new("ssh-url");
+        let dir = _td.to_path_buf();
         let mut g = crate::globals::Globals::empty(&dir.join("g.toml"));
         assert_eq!(Settings::from_globals(&g), Settings { integration: false, scheme_path: "ssh".into(), valid_user_chars: "_-+.".into(), support_path: true, ftp_path: "ftp".into(), telnet_path: "telnet".into() });
         g.set("SshIntegrationForURLs", Value::Boolean(true));

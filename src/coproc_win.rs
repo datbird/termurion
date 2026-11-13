@@ -300,6 +300,7 @@ unsafe fn spawn(command: &str, cwd: &std::path::Path, ends: [HANDLE; 3]) -> Resu
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     #[test]
@@ -340,7 +341,8 @@ mod tests {
 
     #[test]
     fn coprocess_round_trip() {
-        let home = std::env::temp_dir();
+        let _td = TempDir::new("t");
+        let home = _td.to_path_buf();
         let mut co = Coprocess::start("findstr .", false, &home, Arc::new(|| {})).unwrap();
         co.write(b"hello\r\n");
         std::thread::sleep(Duration::from_millis(200));
@@ -356,7 +358,8 @@ mod tests {
 
     #[test]
     fn pane_close_ends_the_coprocess() {
-        let home = std::env::temp_dir();
+        let _td = TempDir::new("t");
+        let home = _td.to_path_buf();
         let co = Coprocess::start("ping -n 60 127.0.0.1", false, &home, Arc::new(|| {})).unwrap();
         std::thread::sleep(Duration::from_millis(500));
         let procs = crate::platform::proc::descendants_now(co.pid()).unwrap();
@@ -370,7 +373,8 @@ mod tests {
     #[test]
     fn dropped_names_reach_cmd_as_one_argument() {
         let line = crate::coprocess::drop_command("echo \\(filenames)", &[r"C:\d\a b.txt".to_string()]).unwrap().unwrap();
-        let mut co = Coprocess::start(&line, false, &std::env::temp_dir(), Arc::new(|| {})).unwrap();
+        let _td = TempDir::new("t");
+        let mut co = Coprocess::start(&line, false, _td.path(), Arc::new(|| {})).unwrap();
         let out = String::from_utf8_lossy(&wait_for(&mut co, 10)).to_string();
         assert!(out.contains(r#""C:\d\a b.txt""#), "{out}");
     }

@@ -394,6 +394,7 @@ pub fn remove(_owner: isize) {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use std::collections::HashMap;
     use std::io::{BufRead, BufReader};
@@ -535,7 +536,8 @@ mod tests {
         let _g = BUS.lock().unwrap_or_else(|e| e.into_inner());
         reset();
         let saved = std::env::var_os("DBUS_SESSION_BUS_ADDRESS");
-        let dir = std::env::temp_dir().join(format!("termurion-nobus-{}", std::process::id()));
+        let _td = TempDir::new("nobus");
+        let dir = _td.to_path_buf();
         // SAFETY: the BUS lock keeps the other tests off the environment.
         unsafe { std::env::set_var("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={}/none", dir.display())) };
         let t = Instant::now();
@@ -554,7 +556,8 @@ mod tests {
         let _g = BUS.lock().unwrap_or_else(|e| e.into_inner());
         reset();
         let saved = std::env::var_os("DBUS_SESSION_BUS_ADDRESS");
-        let dir = std::env::temp_dir().join(format!("termurion-nobus2-{}", std::process::id()));
+        let _td = TempDir::new("nobus2");
+        let dir = _td.to_path_buf();
         // SAFETY: the BUS lock keeps the other tests off the environment.
         unsafe { std::env::set_var("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={}/none", dir.display())) };
         assert!(show_with("t", "b", false).is_ok(), "the first show cannot know yet");
@@ -597,7 +600,8 @@ mod tests {
     /// raw id. An AppImage integrator's copy under another file name is found by its class.
     #[test]
     fn the_desktop_entry_hint_needs_an_installed_entry() {
-        let root = std::env::temp_dir().join(format!("termurion-entry-{}", std::process::id()));
+        let _td = TempDir::new("entry");
+        let root = _td.to_path_buf();
         let (home, sys) = (root.join("home"), root.join("sys"));
         for d in [&home, &sys] {
             std::fs::create_dir_all(d.join("applications")).unwrap();
@@ -610,7 +614,6 @@ mod tests {
         assert_eq!(desktop_entry_in(&dirs).as_deref(), Some("appimagekit_ab12-Termurion"));
         std::fs::write(sys.join(format!("applications/{APP_ID}.desktop")), "[Desktop Entry]\n").unwrap();
         assert_eq!(desktop_entry_in(&dirs).as_deref(), Some(APP_ID), "the app id's own file wins");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -258,6 +258,7 @@ pub fn prompt(_owner: isize) -> Answer {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::platform::user_auth::{Gate, Next, THREE_WRONG, TRIES};
 
@@ -313,7 +314,7 @@ mod tests {
 
     /// A scratch PAM service folder with one `auth` line using `module`; None (with the reason
     /// printed) where libpam or the module is missing.
-    fn scratch_service(module: &str) -> Option<(std::path::PathBuf, &'static Pam)> {
+    fn scratch_service(module: &str) -> Option<(TempDir, std::path::PathBuf, &'static Pam)> {
         let p = match pam() {
             Ok(p) if p.start_confdir.is_some() => p,
             _ => {
@@ -326,17 +327,16 @@ mod tests {
             println!("skipped: {module} was not found");
             return None;
         };
-        let dir = std::env::temp_dir().join(format!("termurion-pam-{}-{}", std::process::id(), random_tail()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let td = TempDir::new("pam");
+        let dir = td.to_path_buf();
         std::fs::write(dir.join("termurion-test"), format!("auth required {}\n", path.display())).unwrap();
-        Some((dir, p))
+        Some((td, dir, p))
     }
 
     fn through(module: &str) -> Option<Result<(), String>> {
-        let (dir, p) = scratch_service(module)?;
+        let (_td, dir, p) = scratch_service(module)?;
         let confdir = CString::new(dir.to_str().unwrap()).unwrap();
         let r = run(p, b"termurion-test\0", Some(&confdir), "anyone", &Secret::new("whatever".to_string()));
-        let _ = std::fs::remove_dir_all(&dir);
         Some(r)
     }
 

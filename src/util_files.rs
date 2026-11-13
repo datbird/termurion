@@ -438,6 +438,7 @@ fn real_folder(dir: &crate::localfs::LocalPath) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::inline_file::Download;
     use crate::screen::Screen;
@@ -446,13 +447,12 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     /// A fresh folder for one test: `a.png` holds "PNGDATA", `notes.txt` "hello\n".
-    fn fixture(test: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("termurion-util-files-{test}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+    fn fixture(test: &str) -> (TempDir, PathBuf) {
+        let td = TempDir::new(&format!("uf-{test}"));
+        let dir = td.to_path_buf();
         std::fs::write(dir.join("a.png"), b"PNGDATA").unwrap();
         std::fs::write(dir.join("notes.txt"), b"hello\n").unwrap();
-        dir
+        (td, dir)
     }
 
     /// A run in `dir` with a console stdin.
@@ -485,7 +485,7 @@ mod tests {
 
     #[test]
     fn imgcat_follows_the_script() {
-        let dir = fixture("imgcat");
+        let (_td, dir) = fixture("imgcat");
         let mut h = harness(&dir);
         assert_eq!(h.run("imgcat", &["a.png"]), 0);
         assert_eq!(text(&h.out), A_PNG);
@@ -568,12 +568,11 @@ mod tests {
         assert_eq!(h.run("imgcat", &["sub"]), 0);
         assert_eq!(text(&h.err), "cat: sub: Is a directory\n");
         assert_eq!(text(&h.out), "\x1b]1337;MultipartFile=inline=1;size=0;name=c3Vi\x07\x1b]1337;FileEnd\x07\n");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn imgcat_errors_follow_the_script() {
-        let dir = fixture("imgcat-errors");
+        let (_td, dir) = fixture("imgcat-errors");
         let help = imgcat_help();
 
         let mut h = harness(&dir);
@@ -628,12 +627,11 @@ mod tests {
         assert!(help.ends_with("\n\n"));
         assert!(!help.contains("iTerm2"));
         assert_eq!(help.lines().count(), 40);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn it2cat_follows_the_script() {
-        let dir = fixture("it2cat");
+        let (_td, dir) = fixture("it2cat");
         let help = it2cat_help();
 
         let mut h = harness(&dir);
@@ -682,7 +680,6 @@ mod tests {
         assert!(help.contains("\nDisplay a text file with native rendering.\n"));
         assert!(help.ends_with("\n    $ it2cat -w -t application/json config.json\n\n"));
         assert_eq!(help.lines().count(), 27);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn sorted(mut v: Vec<String>) -> Vec<String> {
@@ -707,7 +704,7 @@ mod tests {
 
     #[test]
     fn it2dl_follows_the_script() {
-        let dir = fixture("it2dl");
+        let (_td, dir) = fixture("it2dl");
 
         // The plain path sends `b64_encode < file` straight to stdout, so macOS base64's
         // newline lands before BEL (the script wins over the brief's text).
@@ -785,7 +782,6 @@ mod tests {
         let mut h = harness(&dir);
         assert_eq!(h.run("it2dl", &["sub\\x.txt"]), 0);
         assert!(text(&h.out).starts_with(&format!("\x1b]1337;File=name={};size=6:", b64(b"x.txt"))));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn png_2x2() -> Vec<u8> {
@@ -797,7 +793,7 @@ mod tests {
 
     #[test]
     fn files_reach_termurion() {
-        let dir = fixture("reach");
+        let (_td, dir) = fixture("reach");
         std::fs::write(dir.join("pic.png"), png_2x2()).unwrap();
         for (term, args) in [(None, &["pic.png"][..]), (Some("tmux-256color"), &["pic.png"][..]), (None, &["-l", "pic.png"][..])] {
             let mut h = harness(&dir);
@@ -822,6 +818,5 @@ mod tests {
             s.feed(&h.out);
             assert_eq!(s.downloads, vec![Download { name: "notes.txt".into(), bytes: b"hello\n".to_vec(), dest: None }], "{term:?}");
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1067,6 +1067,7 @@ pub fn same_outcome(a: &[Out], b: &[Out]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::ai_model::fixture;
     use crate::ai_msg::{Status, TRUNCATED};
@@ -1341,7 +1342,8 @@ mod tests {
 
     #[test]
     fn wire_reads_the_globals() {
-        let g = Globals::empty(&std::env::temp_dir().join("termurion-ai-turn-test.toml"));
+        let _td = TempDir::new("ai-turn-test");
+        let g = Globals::empty(&_td.file("x.toml"));
         assert_eq!(Wire::from_globals(&g), wire());
     }
 

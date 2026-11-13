@@ -169,13 +169,11 @@ mod win {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
-    fn temp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("termurion-crashdump-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn temp(name: &str) -> TempDir {
+        TempDir::new(&format!("crashdump-{name}"))
     }
 
     #[test]
@@ -197,7 +195,6 @@ mod tests {
         let mut left: Vec<String> = std::fs::read_dir(&d).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         left.sort();
         assert_eq!(left, vec!["note.txt", "t-3.dmp", "t-4.dmp", "t-5.dmp", "t-6.dmp", "t-7.dmp"]);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[cfg(windows)]
@@ -214,7 +211,6 @@ mod tests {
         let n = std::fs::read_dir(&d).unwrap().flatten().filter(|e| e.path().extension().is_some_and(|x| x == "dmp")).count();
         assert_eq!(n, KEEP);
         assert!(p.exists(), "the new dump is among the newest");
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[cfg(windows)]

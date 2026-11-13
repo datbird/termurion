@@ -1373,7 +1373,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn export_writes_owner_only_and_replaces() {
-        let dir = std::env::temp_dir().join(format!("termurion-export-{}", std::process::id()));
+        let _td = crate::test_tmp::TempDir::new("export");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let file = crate::localfs::LocalPath::judge(dir.join("t.it2triggers")).expect("a local path");
         write_export(&file, "[1]").unwrap();
@@ -1383,6 +1384,5 @@ mod tests {
         assert_eq!(names.len(), 1, "no temporary file stays: {names:?}");
         let sddl = crate::localfs::dacl_sddl(&file.parent().unwrap().unfollowed("t.it2triggers").unwrap()).unwrap();
         assert!(sddl.contains("D:P(A;;FA;;;"), "owner-only: {sddl}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

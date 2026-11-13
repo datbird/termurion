@@ -681,10 +681,8 @@ mod tests {
     }
 
     #[cfg(windows)]
-    fn temp_card_dir() -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("termurion-card-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn temp_card_dir() -> crate::test_tmp::TempDir {
+        crate::test_tmp::TempDir::new("card")
     }
 
     #[cfg(windows)]
@@ -709,7 +707,6 @@ mod tests {
         let other = Card { city: "Oslo".into(), ..Card::default() };
         save_card(&path, &other).unwrap();
         assert_eq!(load_card(&path), other);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(windows)]
@@ -738,7 +735,6 @@ mod tests {
         f.write_all(&crate::platform::approval_key::dpapi_with(br#"{"first_name":"Alice"}"#, true, CARD_ENTROPY).unwrap()).unwrap();
         drop(f);
         assert_eq!(load_card(&path), Card::default(), "a partial card");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

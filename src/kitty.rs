@@ -355,6 +355,7 @@ impl Screen {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use alacritty_terminal::index::{Column, Line};
     use base64::Engine;
@@ -453,7 +454,8 @@ mod tests {
 
     #[test]
     fn file_media_refuse_what_they_should() {
-        let tmp = std::env::temp_dir();
+        let _td = TempDir::new("t");
+        let tmp = _td.to_path_buf();
         let d = tmp.join(format!("termurion-kitty-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let mut s = Screen::new(20, 6);

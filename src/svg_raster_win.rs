@@ -176,6 +176,7 @@ impl Drop for Rasterizer {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::webhost::{EnvOptions, Posted, Store};
     use std::cell::RefCell;
@@ -259,7 +260,8 @@ mod tests {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         }
-        let folder = std::env::temp_dir().join(format!("termurion-svg-{}", std::process::id()));
+        let _td = TempDir::new("svg");
+        let folder = _td.to_path_buf();
         let (tx, rx) = mpsc::channel::<Posted>();
         let cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
         let c2 = cell.clone();

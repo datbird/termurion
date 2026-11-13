@@ -185,6 +185,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     fn resolve(n: &str) -> Option<PathBuf> {
@@ -292,7 +293,8 @@ mod tests {
         let used = |d: Option<PathBuf>| d.is_some_and(|d| d.to_string_lossy().starts_with(r"\\"));
         assert!(!used(work_dir(Some(Path::new(r"\\srv\s")), &allow)), "a UNC folder is never used");
         assert!(!used(work_dir(Some(Path::new(r"\\?\UNC\srv\s")), &allow)));
-        let temp = std::env::temp_dir();
+        let _td = TempDir::new("t");
+        let temp = _td.to_path_buf();
         assert_eq!(work_dir(Some(&temp), &allow), Some(temp.clone()));
         let refused = |_: &str| false;
         assert_ne!(work_dir(Some(&temp), &refused), Some(temp), "a folder the probe rule refuses is not used");

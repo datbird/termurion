@@ -296,7 +296,7 @@ mod tests {
     use toml::Value;
 
     fn globals() -> Globals {
-        let mut g = Globals::empty(&std::env::temp_dir().join("termurion-ai-safety-test.toml"));
+        let mut g = Globals::empty(std::path::Path::new("/nonexistent-termurion-test/globals.toml"));
         g.set(ENABLE_AI, Value::Boolean(true));
         g
     }

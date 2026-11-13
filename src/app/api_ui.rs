@@ -1272,6 +1272,7 @@ pub(super) fn unix_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::api_auth::*;
 
@@ -1424,8 +1425,8 @@ mod tests {
 
     #[test]
     fn allow_all_file_is_written_as_the_package_reads_it() {
-        let dir = std::env::temp_dir().join(format!("termurion-noauth-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = TempDir::new("noauth");
+        let dir = _td.to_path_buf();
         let path = format!("{}/Library/Application Support/iTerm2/disable-automation-auth", dir.display());
         // The owner step (an elevated Termurion's) works for a normal one too.
         if !crate::platform::IS_WINDOWS {
@@ -1449,7 +1450,6 @@ mod tests {
         std::fs::create_dir(&path).unwrap();
         assert!(write_noauth_file(&path, false).is_err());
         assert_eq!(std::fs::read_dir(parent).unwrap().count(), 1);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The dispatch loop's host with a real server on an ephemeral loopback port, answering

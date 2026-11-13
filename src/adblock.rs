@@ -592,6 +592,7 @@ pub fn proxy_args_ok(args: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     /// What a list means, judged with room for a loaded machine; the budget has its own test.
@@ -833,7 +834,8 @@ mod tests {
 
     #[test]
     fn the_proxy_values_are_bounded_at_the_write_point() {
-        let dir = std::env::temp_dir().join(format!("termurion-adblock-g-{}", std::process::id()));
+        let _td = TempDir::new("adblock-g");
+        let dir = _td.to_path_buf();
         let _ = std::fs::create_dir_all(&dir);
         let mut g = crate::globals::Globals::empty(&dir.join("settings.toml"));
         for bad in ["127.0.0.1 --renderer-cmd-prefix=calc.exe", "a\"b", &"a".repeat(300)] {
@@ -848,7 +850,6 @@ mod tests {
         assert_eq!(g.int("BrowserProxyPort"), 1);
         g.set("AdblockListURL", toml::Value::String("https://x.test/a b".into()));
         assert!(!g.string("AdblockListURL").contains(' '));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A list that cannot be cheap per request (rules with no literal to index by, shaped to make

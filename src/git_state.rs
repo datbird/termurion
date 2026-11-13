@@ -1910,6 +1910,7 @@ pub fn remote_command(args: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use std::fs;
     use std::sync::Mutex;
@@ -1948,18 +1949,17 @@ mod tests {
         RunResult::Exit { code: 0, stdout: out.to_vec(), capped: false }
     }
 
-    fn temp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("termurion-git-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
-        d
+    fn temp(name: &str) -> (TempDir, PathBuf) {
+        let td = TempDir::new(&format!("git-{name}"));
+        let path = td.to_path_buf();
+        (td, path)
     }
 
     /// A temp folder with an empty `.git` folder.
-    fn temp_repo(name: &str) -> PathBuf {
-        let d = temp(name);
+    fn temp_repo(name: &str) -> (TempDir, PathBuf) {
+        let (td, d) = temp(name);
         fs::create_dir(d.join(".git")).unwrap();
-        d
+        (td, d)
     }
 
     const PORC: &[u8] = b"# branch.oid 1234567890abcdef1234567890abcdef12345678\0# branch.head main\0";
@@ -2019,7 +2019,7 @@ mod tests {
     #[test]
     fn repo_state_follows_libgit2() {
         let case = |name: &str, make: &dyn Fn(&Path)| {
-            let g = temp(&format!("state-{name}"));
+            let (_td, g) = temp(&format!("state-{name}"));
             make(&g);
             let got = repo_state(&LocalPath::judge(&g).unwrap());
             fs::remove_dir_all(&g).unwrap();
@@ -2067,7 +2067,7 @@ mod tests {
             assert!(!repo_path_ok(Path::new(d)), "{d}");
             assert!(recent_branches(&fake, Path::new(GIT), Path::new(d), 4 * SEC).is_empty(), "{d}");
         }
-        let d = temp("unc-gitdir");
+        let (_td, d) = temp("unc-gitdir");
         fs::write(d.join(".git"), "gitdir: \\\\server\\x\n").unwrap();
         assert!(!repo_path_ok(&d));
         assert_eq!(fetch_state(&fake, Path::new(GIT), &d, 4 * SEC), fetched(None, false));
@@ -2076,7 +2076,7 @@ mod tests {
         assert!(fake.calls().is_empty(), "git never started: {:?}", fake.calls());
 
         // A worktree's relative `gitdir:` is fine.
-        let d2 = temp("rel-gitdir");
+        let (_td, d2) = temp("rel-gitdir");
         fs::create_dir(d2.join("real.git")).unwrap();
         fs::write(d2.join(".git"), "gitdir: real.git\n").unwrap();
         assert!(repo_path_ok(&d2));
@@ -2084,7 +2084,7 @@ mod tests {
         assert_eq!(fake.calls().len(), 2);
 
         // The git directory rev-parse names is read only when it is local.
-        let merging = temp("merging");
+        let (_td, merging) = temp("merging");
         fs::write(merging.join("MERGE_HEAD"), "x").unwrap();
         let local = format!("{}\n", merging.display());
         let unc = Fake::new(|s| if s == "status" { exit(PORC) } else { exit(b"//server/x/.git\n") });
@@ -2171,14 +2171,13 @@ mod tests {
             ("browser", "[browser \"b\"]\n\tcmd = calc\n"),
         ];
         for (name, text) in cases {
-            let d = temp_repo(&format!("launch-{name}"));
+            let (_td, d) = temp_repo(&format!("launch-{name}"));
             fs::write(d.join(".git").join("config"), text).unwrap();
             fs::write(d.join(".git").join("more.cfg"), "[core]\n\tpager = calc\n").unwrap();
             let v = vet_repo(&d).unwrap_or_else(|| panic!("{name}: still vetted for the poller"));
             assert!(v.launch_refusal().is_some(), "{name}: a launch must be refused");
-            fs::remove_dir_all(&d).unwrap();
         }
-        let d = temp_repo("launch-plain");
+        let (_td, d) = temp_repo("launch-plain");
         fs::write(
             d.join(".git").join("config"),
             "[core]\n\tbare = false\n\trepositoryformatversion = 0\n\tfilemode = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n[remote \"origin\"]\n\turl = https://example.com/r.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n[branch \"main\"]\n\tremote = origin\n\tmerge = refs/heads/main\n[filter \"lfs\"]\n\tclean = git-lfs clean\n[lfs]\n\trepositoryformatversion = 0\n[user]\n\tname = a\n\tsigningKey = ABC\n[commit]\n\tgpgSign = true\n[pull]\n\trebase = true\n[protocol]\n\tversion = 2\n[diff]\n\trenames = true\n",
@@ -2187,7 +2186,6 @@ mod tests {
         let v = vet_repo(&d).unwrap();
         assert_eq!(v.launch_refusal(), None, "a plain config launches (filters are switched off by -c)");
         assert!(v.args.iter().any(|a| a == "filter.lfs.clean="));
-        fs::remove_dir_all(&d).unwrap();
     }
 
     /// Task 6 round 1, items 2 and 3: a launch (and Run Anyway) needs the worker's verdict for the folder:
@@ -2207,11 +2205,10 @@ mod tests {
     #[test]
     #[cfg_attr(not(windows), ignore = "needs a drive-letter temp folder")]
     fn a_folder_outside_any_repository_has_no_root() {
-        let d = temp("no-repo");
+        let (_td, d) = temp("no-repo");
         let v = vet_repo(&d).expect("outside a repository is not unsafe");
         assert_eq!(v.root, None);
         assert!(launch_verdict(Some(&Launch { vet: Some(v), git: Some(PathBuf::from("git")) })).is_some());
-        fs::remove_dir_all(&d).unwrap();
     }
 
     /// The pty launch's argv and environment carry the overrides, and are built in one place.
@@ -2283,7 +2280,7 @@ mod tests {
     #[cfg_attr(not(windows), ignore = "needs a drive-letter temp folder")]
     fn repo_config_cannot_run_programs_or_reach_shares() {
         let fake = Fake::new(|_| exit(PORC));
-        let d = temp_repo("filters");
+        let (_td, d) = temp_repo("filters");
         fs::write(d.join(".git").join("config"), "[core]\n\tbare = false\n[filter \"Ev.il\"]\n\tprocess = calc.exe\n[filter.LEGACY]\n\tclean = x\n[include]\n\tpath = \"more.cfg\" ; a comment\n").unwrap();
         fs::write(d.join(".git").join("more.cfg"), "[filter \"third\"]\nsmudge = y\n").unwrap();
         fetch_state(&fake, Path::new(GIT), &d, 4 * SEC);
@@ -2302,7 +2299,7 @@ mod tests {
             assert!(args[..at].iter().any(|a| a.starts_with("filter.")), "the overrides go before the subcommand");
         }
         let refused = |name: &str, file: &str, text: &str| {
-            let d = temp_repo(name);
+            let (_td, d) = temp_repo(name);
             let p = d.join(".git").join(file);
             fs::create_dir_all(p.parent().unwrap()).unwrap();
             fs::write(&p, text).unwrap();
@@ -2322,7 +2319,7 @@ mod tests {
         assert!(!refused("local-alt", "objects/info/alternates", "# comment\nC:/objects\n../../other/objects\n"));
 
         // A bare repository git would find above the directory is checked too.
-        let bare = temp("bare");
+        let (_td, bare) = temp("bare");
         fs::write(bare.join("HEAD"), "ref: refs/heads/main\n").unwrap();
         fs::write(bare.join("config"), "[core]\n\texcludesFile = //server/x\n").unwrap();
         fs::create_dir(bare.join("sub")).unwrap();
@@ -2337,7 +2334,7 @@ mod tests {
     // paths, so on Linux every temp folder is refused (the suite runs on Windows).
     #[cfg_attr(not(windows), ignore = "needs a drive-letter temp folder")]
     fn fetch_state_shares_one_deadline() {
-        let d = temp_repo("deadline");
+        let (_td, d) = temp_repo("deadline");
         let mut fake = Fake::new(|s| if s == "status" { exit(PORC) } else { exit(b"") });
         fake.delay = ms(50);
         assert_eq!(fetch_state(&fake, Path::new(GIT), &d, 4 * SEC), fetched(Some(main_state()), false));
@@ -2370,7 +2367,6 @@ mod tests {
         assert_eq!(timeout_of(0.2), SEC);
         assert_eq!(timeout_of(-3.0), SEC);
         assert_eq!(timeout_of(f64::NAN), SEC);
-        fs::remove_dir_all(d).unwrap();
     }
 
     #[test]
@@ -2598,7 +2594,7 @@ mod tests {
     /// the marker, and shows nothing on a timeout or off a local path (git never starts).
     #[test]
     fn log_is_hardened_and_truncated_like_iterm2() {
-        let d = temp_repo("log");
+        let (_td, d) = temp_repo("log");
         let capped = Fake::new(|_| RunResult::Exit { code: 0, stdout: b"commit abc\n".to_vec(), capped: true });
         assert_eq!(git_log(&capped, Path::new(GIT), &d, LOG_TIMEOUT), "commit abc\n\n[Truncated]\n");
         let calls = capped.calls();
@@ -2743,7 +2739,7 @@ This often happens in very large repositories or when the working tree is on a s
     #[cfg_attr(not(windows), ignore = "needs a drive-letter temp folder")]
     fn hostile_repos_are_not_polled() {
         let refused = |name: &str, file: &str, text: &str| {
-            let d = temp_repo(name);
+            let (_td, d) = temp_repo(name);
             let p = d.join(".git").join(file);
             fs::create_dir_all(p.parent().unwrap()).unwrap();
             fs::write(&p, text).unwrap();
@@ -2754,7 +2750,7 @@ This often happens in very large repositories or when the working tree is on a s
         // git-lfs, trusted globally, runs extension commands from the repository's config.
         assert!(refused("lfs-ext", "config", "[lfs \"extension.foo\"]\n\tclean = evil %f\n"));
         assert!(refused("lfs-legacy", "config", "[lfs.extension.bar]\n\tsmudge = evil\n"));
-        let d = temp_repo("lfs-included");
+        let (_td, d) = temp_repo("lfs-included");
         fs::write(d.join(".git").join("config"), "[include]\n\tpath = x.cfg\n").unwrap();
         fs::write(d.join(".git").join("x.cfg"), "[lfs \"Extension.z\"]\n\tclean = evil\n").unwrap();
         assert!(!repo_path_ok(&d), "an lfs extension in an included file");
@@ -2770,7 +2766,7 @@ This often happens in very large repositories or when the working tree is on a s
         assert!(!refused("local-paths", "config", "[core]\n\texcludesFile = ~/.gitignore_global\n\tattributesFile = .gitattributes-local\n\thooksPath = C:/hooks\n"));
 
         // A partial clone on git without GIT_NO_LAZY_FETCH is not polled; on 2.44 it is.
-        let d = temp_repo("partial");
+        let (_td, d) = temp_repo("partial");
         fs::write(d.join(".git").join("config"), "[extensions]\n\tpartialClone = origin\n").unwrap();
         assert!(vet_repo(&d).unwrap().partial_clone);
         let old = Fake::new(|s| if s == "version" { exit(b"git version 2.43.0.windows.1\n") } else { exit(PORC) });
@@ -2803,8 +2799,8 @@ This often happens in very large repositories or when the working tree is on a s
     #[cfg(windows)]
     #[test]
     fn links_inside_git_dir_stay_local() {
-        let d = temp_repo("links");
-        let local = temp("links-target");
+        let (_td, d) = temp_repo("links");
+        let (_td, local) = temp("links-target");
         let junction = d.join(".git").join("objects");
         let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&junction).arg(&local).output().unwrap();
         assert!(made.status.success(), "{made:?}");
@@ -2817,8 +2813,6 @@ This often happens in very large repositories or when the working tree is on a s
         if std::os::windows::fs::symlink_dir("\\\\server\\share\\pack", d.join(".git").join("pack-link")).is_ok() {
             assert!(!repo_path_ok(&d), "any entry linked to a share");
         }
-        let _ = fs::remove_dir_all(&d);
-        fs::remove_dir_all(&local).unwrap();
     }
 
     /// A `HEAD` or `config` in the session folder (or a parent) that links to a share is
@@ -2826,7 +2820,7 @@ This often happens in very large repositories or when the working tree is on a s
     #[cfg(windows)]
     #[test]
     fn bare_repo_names_linked_to_a_share_are_refused() {
-        let d = temp("bare-links");
+        let (_td, d) = temp("bare-links");
         fs::write(d.join("HEAD"), "ref: refs/heads/main\n").unwrap();
         assert!(repo_path_ok(&d), "a plain HEAD without config is no repository");
         let sub = d.join("sub");
@@ -2838,7 +2832,6 @@ This often happens in very large repositories or when the working tree is on a s
                 assert!(!repo_path_ok(&sub), "{name} linked to a share in a parent");
             }
         }
-        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -2989,7 +2982,7 @@ u UU N... 100644 100644 100644 100644 aaaa bbbb cccc d.rs\0";
     /// run leaves its field unset and keeps the rest of the state.
     #[test]
     fn fetch_state_with_asks_only_for_what_is_wanted() {
-        let dir = temp_repo("wg-fetch");
+        let (_td, dir) = temp_repo("wg-fetch");
         let tree = "0123456789abcdef0123456789abcdef01234567";
         let porcelain = [PORC, b"1 .M N... 100644 100644 100644 a b f.rs\0".as_slice()].concat();
         let script = |fail_numstat: bool| {
@@ -3050,7 +3043,6 @@ u UU N... 100644 100644 100644 100644 aaaa bbbb cccc d.rs\0";
         assert_eq!(got.file_statuses, Some(vec![st("f.rs", Change::None, Change::Modified)]));
         assert_eq!((got.files_modified, got.lines_inserted), (0, 0));
         assert_eq!(got.branch, "main");
-        let _ = fs::remove_dir_all(dir);
     }
 
     /// 13y1 Task 6 item 1 round 3: git, named as git or as a file that is git, starts only through
@@ -3113,7 +3105,7 @@ u UU N... 100644 100644 100644 100644 aaaa bbbb cccc d.rs\0";
             eprintln!("a_launch_never_recurses_into_a_submodule: git was not found; skipped");
             return;
         };
-        let dir = temp("wg-submodule");
+        let (_td, dir) = temp("wg-submodule");
         let sub = dir.join("sub");
         fs::create_dir_all(&sub).unwrap();
         let g = |at: &Path, args: &[&str]| {
@@ -3145,7 +3137,6 @@ u UU N... 100644 100644 100644 100644 aaaa bbbb cccc d.rs\0";
             assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
             assert!(!marker.exists(), "{args:?} ran the submodule's filter: {argv:?}");
         }
-        let _ = fs::remove_dir_all(dir);
     }
 
     /// 13y1 Task 7 round 4, against real git: a repository's own `log.showSignature = true` and
@@ -3161,7 +3152,7 @@ u UU N... 100644 100644 100644 100644 aaaa bbbb cccc d.rs\0";
             eprintln!("a_launch_never_verifies_a_signature: git was not found; skipped");
             return;
         };
-        let dir = temp("wg-signature");
+        let (_td, dir) = temp("wg-signature");
         let out = |args: &[&str], env: &[(&str, &Path)]| {
             let mut c = Command::new(&git);
             c.current_dir(&dir).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"]).args(args);
@@ -3222,7 +3213,6 @@ u UU N... 100644 100644 100644 100644 aaaa bbbb cccc d.rs\0";
                 }
             }
         }
-        let _ = fs::remove_dir_all(dir);
     }
 
     /// A real repository: staged, unstaged and untracked changes, the base and the stats against real
@@ -3236,7 +3226,7 @@ u UU N... 100644 100644 100644 100644 aaaa bbbb cccc d.rs\0";
             eprintln!("base_and_stats_follow_iterm2: git was not found; skipped");
             return;
         };
-        let dir = temp("wg-real");
+        let (_td, dir) = temp("wg-real");
         let g = |args: &[&str]| {
             let out = Command::new(&git).current_dir(&dir).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"]).args(args).output().expect("git ran");
             assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
@@ -3272,6 +3262,5 @@ u UU N... 100644 100644 100644 100644 aaaa bbbb cccc d.rs\0";
         assert_eq!(nope.file_statuses, Some(vec![st("b.txt", Change::None, Change::Modified)]), "an unresolved base keeps the HEAD list");
         let dash = fetch_state_with(&run, &git, &dir, timeout, Some("-x"), true).state.expect("a state");
         assert_eq!(dash.file_statuses, nope.file_statuses, "an option is no base");
-        let _ = fs::remove_dir_all(dir);
     }
 }

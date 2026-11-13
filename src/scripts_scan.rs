@@ -269,6 +269,7 @@ impl Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_tmp::TempDir;
 
     fn wait_for_done(s: &Scanner, want: &[&str]) -> Vec<String> {
         let until = Instant::now() + Duration::from_secs(6);
@@ -286,24 +287,6 @@ mod tests {
             }
         }
         last
-    }
-
-    /// A fresh temp folder, removed when the test ends, passed or not.
-    struct TempDir(PathBuf);
-
-    impl TempDir {
-        fn new(tag: &str) -> TempDir {
-            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-            let dir = std::env::temp_dir().join(format!("termurion-scripts-{tag}-{}-{nanos}", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
-            TempDir(dir)
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
     }
 
     /// The worker thread ends within 3 s of the scanner going.

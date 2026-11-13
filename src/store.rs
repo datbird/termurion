@@ -295,9 +295,11 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     #[test]
     fn session_guid_maps_to_its_saved_profile() {
-        let path = std::env::temp_dir().join(format!("termurion-store-map-{}.toml", std::process::id()));
+        let _td = TempDir::new("store-map");
+        let path = _td.file("x.toml");
         let mut st = Store::fresh(&path);
         let shared = st.profiles[0].guid();
         st.sessions.push(crate::session_profile::divorce(&st.profiles[0].clone(), "copy".into()));
@@ -308,7 +310,8 @@ mod tests {
 
     #[test]
     fn a_session_copy_is_edited_in_place_and_marked() {
-        let mut st = Store::fresh(&std::env::temp_dir().join(format!("termurion-store-edit-{}.toml", std::process::id())));
+        let _td = TempDir::new("store-edit");
+        let mut st = Store::fresh(&_td.file("x.toml"));
         let saved = st.profiles[0].guid();
         let copy = st.divorce(&saved);
         st.get_mut(&copy).expect("the copy is reachable for editing").set("Columns", toml::Value::Integer(131));
@@ -324,8 +327,9 @@ mod tests {
     }
 
     /// The owner's file: the first macOS beta saved the Windows font into two profiles.
-    fn windows_font_file(tag: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("termurion-store-font-{tag}-{}.toml", std::process::id()));
+    fn windows_font_file(tag: &str) -> (TempDir, PathBuf) {
+        let td = TempDir::new(&format!("font-{tag}"));
+        let path = td.file("x.toml");
         let text = r#"default = "A"
 [[profile]]
 Guid = "A"
@@ -339,12 +343,12 @@ Name = "Two"
 "Non Ascii Font" = "Fira Code 12"
 "#;
         std::fs::write(&path, text).unwrap();
-        path
+        (td, path)
     }
 
     #[test]
     fn another_os_default_font_moves_to_this_os_and_the_file_is_rewritten() {
-        let path = windows_font_file("mac");
+        let (_td, path) = windows_font_file("mac");
         let mut st = Store::load(&path).unwrap();
         assert!(st.migrate_fonts("macOS", &|_| false, "Monaco 12"));
         assert_eq!(st.profiles[0].font("Normal Font").family, "Monaco");
@@ -357,17 +361,15 @@ Name = "Two"
         assert_eq!(back.profiles[0].font("Normal Font").family, "Monaco");
         assert_eq!(back.profiles[1].font("Normal Font").family, "Monaco");
         assert!(!std::fs::read_to_string(&path).unwrap().contains("Cascadia"));
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn a_second_migration_pass_changes_nothing_on_every_os() {
         for (os, default) in [("macOS", "Monaco 12"), ("macOS", "Menlo 12"), ("Linux", "DejaVu Sans Mono 12"), ("Linux", "Liberation Mono 12"), ("Windows", "Cascadia Mono 12")] {
-            let path = windows_font_file("twice");
+            let (_td, path) = windows_font_file("twice");
             let mut st = Store::load(&path).unwrap();
             st.migrate_fonts(os, &|_| false, default);
             assert!(!st.migrate_fonts(os, &|_| false, default), "{os} {default}: the pass settles");
-            let _ = std::fs::remove_file(&path);
         }
     }
 
@@ -375,7 +377,7 @@ Name = "Two"
     /// DejaVu Sans Mono on a box without it, move to the installed default; a user's font stays.
     #[test]
     fn linux_moves_a_missing_shipped_font_to_the_installed_default() {
-        let path = windows_font_file("linux");
+        let (_td, path) = windows_font_file("linux");
         let mut st = Store::load(&path).unwrap();
         assert!(st.migrate_fonts("Linux", &|f| f == "DejaVu Sans Mono", "DejaVu Sans Mono 12"));
         assert_eq!(st.profiles[0].string("Normal Font"), "DejaVu Sans Mono 12");
@@ -384,26 +386,23 @@ Name = "Two"
         assert!(!st.migrate_fonts("Linux", &|f| f == "DejaVu Sans Mono", "DejaVu Sans Mono 12"), "settled");
         assert!(st.migrate_fonts("Linux", &|_| false, "Liberation Mono 12"), "no DejaVu: the installed monospace");
         assert_eq!(st.profiles[0].string("Normal Font"), "Liberation Mono 12");
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn menlo_stands_in_when_monaco_is_the_default_missing() {
-        let path = windows_font_file("menlo");
+        let (_td, path) = windows_font_file("menlo");
         let mut st = Store::load(&path).unwrap();
         assert!(st.migrate_fonts("macOS", &|_| false, "Menlo 12"));
         assert_eq!(st.profiles[0].string("Normal Font"), "Menlo 12");
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn windows_and_an_installed_cascadia_keep_their_font() {
-        let path = windows_font_file("win");
+        let (_td, path) = windows_font_file("win");
         let mut st = Store::load(&path).unwrap();
         assert!(!st.migrate_fonts("Windows", &|_| false, "Cascadia Mono 12"));
         assert!(!st.migrate_fonts("macOS", &|f| f == "Cascadia Mono", "Monaco 12"), "an installed font stays");
         assert_eq!(st.profiles[0].string("Normal Font"), "Cascadia Mono 12");
-        let _ = std::fs::remove_file(&path);
     }
 
     /// m8: on macOS a missing DejaVu Sans Mono is the person's own pick, never a font Termurion
@@ -442,7 +441,8 @@ Name = "Two"
 
     #[test]
     fn sessions_are_not_saved() {
-        let path = std::env::temp_dir().join(format!("termurion-store-{}.toml", std::process::id()));
+        let _td = TempDir::new("store");
+        let path = _td.file("x.toml");
         let mut st = Store::fresh(&path);
         let shared = st.profiles[0].clone();
         let copy = crate::session_profile::divorce(&shared, "session-guid".into());
@@ -452,22 +452,21 @@ Name = "Two"
         let back = Store::load(&path).unwrap();
         assert!(back.get("session-guid").is_none());
         assert_eq!(back.profiles.len(), 1);
-        let _ = std::fs::remove_file(&path);
     }
 
     use super::*;
     use toml::Value;
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("termurion-store-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join("profiles.toml")
+    fn scratch(name: &str) -> (TempDir, PathBuf) {
+        let td = TempDir::new(&format!("store-{name}"));
+        let file = td.file("profiles.toml");
+        (td, file)
     }
 
     #[test]
     fn a_missing_file_gives_one_default_profile() {
-        let s = Store::load(&scratch("missing")).unwrap();
+        let (_td, _f) = scratch("missing");
+        let s = Store::load(&_f).unwrap();
         assert_eq!(s.profiles.len(), 1);
         assert_eq!(s.default_profile().name(), "Default");
         assert_eq!(s.default_guid, s.profiles[0].guid());
@@ -475,7 +474,7 @@ Name = "Two"
 
     #[test]
     fn save_and_load_round_trip() {
-        let path = scratch("roundtrip");
+        let (_td, path) = scratch("roundtrip");
         let mut s = Store::load(&path).unwrap();
         let guid = s.default_guid.clone();
         s.get_mut(&guid).unwrap().set("Columns", Value::Integer(132));
@@ -487,7 +486,8 @@ Name = "Two"
 
     #[test]
     fn tmux_profile_is_made_once() {
-        let dir = std::env::temp_dir().join(format!("termurion-tmuxprof-{}", std::process::id()));
+        let _td = TempDir::new("tmuxprof");
+        let dir = _td.to_path_buf();
         let mut s = Store::fresh(&dir.join("profiles.toml"));
         let (guid, made) = s.tmux_profile();
         assert!(made);
@@ -506,7 +506,7 @@ Name = "Two"
 
     #[test]
     fn saved_files_omit_defaults() {
-        let path = scratch("omit");
+        let (_td, path) = scratch("omit");
         let mut s = Store::load(&path).unwrap();
         let guid = s.default_guid.clone();
         s.get_mut(&guid).unwrap().set("Rows", Value::Integer(25));
@@ -518,7 +518,7 @@ Name = "Two"
 
     #[test]
     fn a_corrupt_file_is_an_error_not_a_reset() {
-        let path = scratch("corrupt");
+        let (_td, path) = scratch("corrupt");
         std::fs::write(&path, "this is [not toml").unwrap();
         let err = Store::load(&path).err().unwrap();
         assert!(err.contains("profiles.toml"), "{err}");
@@ -527,7 +527,7 @@ Name = "Two"
     #[test]
     fn duplicate_and_missing_guids_are_made_unique_on_load() {
         // A hand-copied [[profile]] block repeats a Guid; a hand-written one may have none.
-        let path = scratch("dupes");
+        let (_td, path) = scratch("dupes");
         std::fs::write(&path, "default = \"A\"\n[[profile]]\nGuid = \"A\"\nName = \"one\"\n[[profile]]\nGuid = \"A\"\nName = \"two\"\n[[profile]]\nName = \"three\"\n").unwrap();
         let mut s = Store::load(&path).unwrap();
         let ids: std::collections::HashSet<String> = s.profiles.iter().map(|p| p.guid()).collect();
@@ -541,7 +541,8 @@ Name = "Two"
 
     #[test]
     fn a_duplicate_is_named_and_cleared_as_iterm2_does() {
-        let mut s = Store::load(&scratch("duplicate")).unwrap();
+        let (_td, _f) = scratch("duplicate");
+        let mut s = Store::load(&_f).unwrap();
         let first = s.default_guid.clone();
         let name = s.get(&first).unwrap().name();
         s.get_mut(&first).unwrap().set("Shortcut", Value::String("A".into()));
@@ -558,7 +559,8 @@ Name = "Two"
 
     #[test]
     fn the_last_profile_cannot_be_deleted() {
-        let mut s = Store::load(&scratch("delete")).unwrap();
+        let (_td, _f) = scratch("delete");
+        let mut s = Store::load(&_f).unwrap();
         let first = s.default_guid.clone();
         assert!(!s.delete(&first));
         let second = s.duplicate(&first).unwrap();
@@ -566,20 +568,21 @@ Name = "Two"
         assert_eq!(s.default_guid, second);
         assert_eq!(s.profiles.len(), 1);
     }
-    fn with_bonjour(name: &str) -> (Store, String) {
-        let mut s = Store::fresh(&scratch(name));
+    fn with_bonjour(name: &str) -> (TempDir, Store, String) {
+        let (td, _f) = scratch(name);
+        let mut s = Store::fresh(&_f);
         let mut p = Profile::new("host");
         p.set("Bonjour Service Address", Value::String("10.0.0.5".into()));
         p.set("Tags", Value::Array(vec![Value::String("bonjour".into())]));
         let guid = p.guid();
         s.add(p);
         s.transient.insert(guid.clone());
-        (s, guid)
+        (td, s, guid)
     }
 
     #[test]
     fn transient_profiles_never_reach_file_profiles() {
-        let (mut s, guid) = with_bonjour("transient");
+        let (_td, mut s, guid) = with_bonjour("transient");
         assert_eq!(s.file_profiles().len(), 1, "only the saved profile");
         s.default_guid = guid.clone();
         s.save().unwrap();
@@ -591,7 +594,8 @@ Name = "Two"
 
     #[test]
     fn imported_bonjour_tagged_profile_is_saved() {
-        let mut s = Store::fresh(&scratch("imported"));
+        let (_td, _f) = scratch("imported");
+        let mut s = Store::fresh(&_f);
         let mut p = Profile::new("imported");
         p.set("Bonjour Service Address", Value::String("10.0.0.5".into()));
         p.set("Tags", Value::Array(vec![Value::String("bonjour".into())]));
@@ -601,7 +605,7 @@ Name = "Two"
 
     #[test]
     fn export_all_omits_transient_profiles() {
-        let (s, _) = with_bonjour("export");
+        let (_td, s, _) = with_bonjour("export");
         let snap = crate::remote_prefs::Snapshot::from_local(&Default::default(), &s.saved_default_guid(), &s.file_profiles());
         assert_eq!(snap.profiles.len(), 1);
         assert!(snap.profiles.iter().all(|p| !p.contains_key("Bonjour Service Address")));
@@ -609,7 +613,7 @@ Name = "Two"
 
     #[test]
     fn set_as_default_refuses_a_transient_profile() {
-        let (mut s, guid) = with_bonjour("default");
+        let (_td, mut s, guid) = with_bonjour("default");
         let before = s.default_guid.clone();
         assert!(!s.set_default(&guid));
         assert_eq!(s.default_guid, before);
@@ -619,7 +623,7 @@ Name = "Two"
 
     #[test]
     fn duplicate_of_a_transient_profile_is_saved_without_the_key() {
-        let (mut s, guid) = with_bonjour("dup");
+        let (_td, mut s, guid) = with_bonjour("dup");
         let copy = s.duplicate(&guid).unwrap();
         assert!(!s.transient.contains(&copy));
         let p = s.get(&copy).unwrap();
@@ -630,7 +634,7 @@ Name = "Two"
 
     #[test]
     fn deleting_counts_only_saved_profiles() {
-        let (mut s, guid) = with_bonjour("delete");
+        let (_td, mut s, guid) = with_bonjour("delete");
         let only = s.profiles[0].guid();
         assert!(!s.delete(&only), "the last saved profile stays although a transient one exists");
         assert!(s.delete(&guid));
@@ -638,18 +642,19 @@ Name = "Two"
     }
 
     /// A Dynamic Profile as `dynamic_profiles::merge` makes it: marked, in the list, not in the file.
-    fn with_dynamic(name: &str) -> (Store, String) {
-        let mut s = Store::fresh(&scratch(name));
+    fn with_dynamic(name: &str) -> (TempDir, Store, String) {
+        let (td, _f) = scratch(name);
+        let mut s = Store::fresh(&_f);
         let mut p = Profile::new("dyn");
         p.set("Is Dynamic Profile", Value::Boolean(true));
         let guid = p.guid();
         s.add(p);
-        (s, guid)
+        (td, s, guid)
     }
 
     #[test]
     fn store_never_saves_dynamic_profiles() {
-        let (s, guid) = with_dynamic("dynsave");
+        let (_td, s, guid) = with_dynamic("dynsave");
         assert!(s.unsaved(&guid) && s.transient.is_empty(), "the mark, never the Bonjour set");
         assert_eq!(s.dynamic_guids(), vec![guid.clone()]);
         assert_eq!(s.file_profiles().len(), 1);
@@ -662,7 +667,7 @@ Name = "Two"
 
     #[test]
     fn dynamic_default_is_not_written() {
-        let (mut s, guid) = with_dynamic("dyndefault");
+        let (_td, mut s, guid) = with_dynamic("dyndefault");
         let saved = s.profiles[0].guid();
         assert!(!s.set_default(&guid), "a dynamic profile can never be the default");
         // Even a default that got there another way is written as the first saved Guid.
@@ -674,7 +679,7 @@ Name = "Two"
 
     #[test]
     fn deleting_the_last_saved_profile_with_dynamic_ones_is_refused() {
-        let (mut s, guid) = with_dynamic("dyndelete");
+        let (_td, mut s, guid) = with_dynamic("dyndelete");
         let only = s.profiles[0].guid();
         assert!(!s.delete(&only), "the file would hold no profile");
         assert!(s.delete(&guid), "a dynamic profile itself can go");
@@ -684,13 +689,13 @@ Name = "Two"
     #[test]
     fn exports_leave_dynamic_profiles_out() {
         // The remote-prefs snapshot and Export All both read `file_profiles()`.
-        let (s, guid) = with_dynamic("dynexport");
+        let (_td, s, guid) = with_dynamic("dynexport");
         assert!(s.file_profiles().iter().all(|m| m.get("Guid").and_then(|g| g.as_str()) != Some(guid.as_str())));
     }
 
     #[test]
     fn duplicating_a_dynamic_profile_makes_a_saved_one() {
-        let (mut s, guid) = with_dynamic("dynduplicate");
+        let (_td, mut s, guid) = with_dynamic("dynduplicate");
         s.get_mut(&guid).unwrap().set("Dynamic Profile Parent Name", Value::String("Default".into()));
         let copy = s.duplicate(&guid).unwrap();
         assert!(!s.unsaved(&copy));
@@ -703,7 +708,7 @@ Name = "Two"
     /// them back whole.
     #[test]
     fn a_file_with_the_dynamic_marks_loads_as_saved_profiles() {
-        let path = scratch("marks");
+        let (_td, path) = scratch("marks");
         std::fs::write(
             &path,
             "default = \"A\"\n[[profile]]\nGuid = \"A\"\nName = \"one\"\n\"Is Dynamic Profile\" = true\nRewritable = true\n\"Dynamic Profile Filename\" = \"x.json\"\n[[profile]]\nGuid = \"B\"\nName = \"two\"\n",

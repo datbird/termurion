@@ -389,13 +389,11 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
-    fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("fx_store_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn tmp(tag: &str) -> TempDir {
+        TempDir::new(&format!("fx_store__-{tag}"))
     }
 
     fn named(n: &str) -> String {

@@ -220,6 +220,8 @@ pub mod scripts_scan;
 pub mod util_api;
 pub mod util_osc;
 pub mod util_cli;
+#[cfg(test)]
+mod test_tmp;
 pub mod util_files;
 pub mod util_imgls;
 pub mod util_simple;

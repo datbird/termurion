@@ -761,6 +761,7 @@ pub fn test_api() -> Api {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::test_tmp::TempDir;
 
     /// 13y1 Task 6 item 1 round 3: a git launch's removals reach the child. The block is made the way a
     /// pane's is: the session's variables, the POSIX ones and TERM, the launch's entries applied last
@@ -801,7 +802,8 @@ pub(crate) mod tests {
             let got = super::working_folder(Some(std::path::Path::new(d)));
             assert!(got.as_ref().is_none_or(|g| !g.path().to_string_lossy().eq_ignore_ascii_case(d)), "{d}: {got:?}");
         }
-        let temp = std::env::temp_dir();
+        let _td = TempDir::new("t");
+        let temp = _td.to_path_buf();
         assert_eq!(super::working_folder(Some(&temp)).map(|g| g.into_path_buf()), Some(temp));
         assert_eq!(super::working_folder(None), None);
     }
@@ -981,7 +983,8 @@ pub(crate) mod tests {
         use std::os::windows::process::CommandExt;
         const DETACHED_PROCESS: u32 = 0x0000_0008;
         // What the child prints when it panics, for the failure message.
-        let log = std::env::temp_dir().join(format!("termurion-close-child-{}.log", std::process::id()));
+        let _td = TempDir::new("close-child-log");
+        let log = _td.to_path_buf();
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "pty::tests::close_while_reading_child", "--ignored", "--test-threads=1", "--nocapture"])
             .env("TERMURION_CLOSE_CHILD", "1")
@@ -1005,7 +1008,6 @@ pub(crate) mod tests {
             std::thread::sleep(Duration::from_millis(50));
         };
         let said = std::fs::read_to_string(&log).unwrap_or_default();
-        let _ = std::fs::remove_file(&log);
         assert!(status.success(), "the reading process survived every close: {status:?}: {said}");
     }
 
@@ -1147,7 +1149,8 @@ pub(crate) mod tests {
 
     #[test]
     fn the_child_starts_in_the_given_directory() {
-        let dir = std::env::temp_dir();
+        let _td = TempDir::new("t");
+        let dir = _td.to_path_buf();
         let p = spawn_notify(&shipped(), "cmd.exe /c cd", Some(&dir), &[], 200, 24, Arc::new(|| {})).unwrap();
         let want = dir.to_string_lossy().trim_end_matches('\\').to_string();
         p.read_until(want.as_bytes(), secs(10)).unwrap_or_else(|got| panic!("{:?}", text(&got)));
@@ -1168,8 +1171,8 @@ pub(crate) mod tests {
         assert!(text(&got).contains("[%ITERM_SESSION_ID%]"), "{:?}", text(&got));
 
         // The utilities folder on PATH (`utilities::path_with`) and iTerm2's TERM_PROGRAM.
-        let dir = std::env::temp_dir().join(format!("termurion-env-path-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = TempDir::new("env-path");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("probe.cmd"), "").unwrap();
         let path = crate::utilities::path_with(&std::env::var("PATH").unwrap_or_default(), &dir.display().to_string());
@@ -1181,7 +1184,6 @@ pub(crate) mod tests {
         assert!(got.to_lowercase().contains(&dir.join("probe.cmd").display().to_string().to_lowercase()), "{got:?}");
         assert!(got.contains("[iTerm.app]"), "{got:?}");
         drop(p);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

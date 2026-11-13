@@ -329,6 +329,7 @@ pub fn upload_lines(archive: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use serde_json::json;
 
@@ -460,8 +461,8 @@ mod tests {
 
     #[test]
     fn upload_archive_and_lines() {
-        let dir = std::env::temp_dir().join(format!("termurion-up-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = TempDir::new("up");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("a.txt"), b"alpha").unwrap();
         std::fs::write(dir.join("sub").join("b.txt"), b"beta").unwrap();
@@ -483,7 +484,6 @@ mod tests {
         assert_eq!(parts[0].len(), 76);
         assert!(text.ends_with("\r\r\r"), "the last line's CR, then CR CR");
         assert!(!text.contains('\n'));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -510,8 +510,8 @@ mod tests {
     #[test]
     fn folder_uploads_follow_iterm2() {
         // iTerm2 names entries "./<path>" relative to the base; the tar crate drops the "./".
-        let dir = std::env::temp_dir().join(format!("termurion-up-folders-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = TempDir::new("up-folders");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(dir.join("top").join("a").join("deep")).unwrap();
         std::fs::create_dir_all(dir.join("top").join("b")).unwrap();
         std::fs::write(dir.join("top").join("a").join("deep").join("x.txt"), b"x").unwrap();
@@ -528,7 +528,6 @@ mod tests {
         assert_eq!(entries(&upload_archive(&[top.join("f.txt"), top.join("b")]).unwrap()), ["b", "b/y.txt", "f.txt"]);
         // One file: relative to its folder.
         assert_eq!(entries(&upload_archive(&[top.join("f.txt")]).unwrap()), ["f.txt"]);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

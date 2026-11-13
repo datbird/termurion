@@ -141,6 +141,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_tmp::TempDir;
     use crate::bonjour::Found;
 
     fn found(name: &str, address: &str) -> Event {
@@ -151,13 +152,15 @@ mod tests {
         Event::Lost(bonjour::Lost { name: name.into(), service: service.into(), address: address.into() })
     }
 
-    fn store() -> Store {
-        Store::fresh(&std::env::temp_dir().join(format!("termurion-bonjour-{}.toml", std::process::id())))
+    fn store() -> (TempDir, Store) {
+        let td = TempDir::new("bonjour");
+        let s = Store::fresh(&td.file("x.toml"));
+        (td, s)
     }
 
     #[test]
     fn bonjour_profiles_come_and_go() {
-        let mut s = store();
+        let (_td, mut s) = store();
         let mut live = Vec::new();
         assert!(apply_event(&mut s, &mut live, found("Mac", "10.0.0.5"), "ssh"));
         assert_eq!(s.profiles.len(), 2);
@@ -176,7 +179,7 @@ mod tests {
         assert_eq!(s.profiles.len(), 3);
         // The saved file never holds them.
         s.save().unwrap();
-        let back = Store::load(&std::env::temp_dir().join(format!("termurion-bonjour-{}.toml", std::process::id()))).unwrap();
+        let back = Store::load(&_td.file("x.toml")).unwrap();
         assert_eq!(back.profiles.len(), 1);
         // An ftp goodbye of the same name, and an ssh goodbye from another address, keep the
         // ssh profile; the host's own goodbye removes the profile it made.
@@ -196,12 +199,11 @@ mod tests {
         assert!(remove_all(&mut s, &mut live));
         assert_eq!(s.profiles.iter().map(|p| p.name()).collect::<Vec<_>>(), vec!["Default", "kept"]);
         assert!(s.transient.is_empty() && live.is_empty());
-        let _ = std::fs::remove_file(std::env::temp_dir().join(format!("termurion-bonjour-{}.toml", std::process::id())));
     }
 
     #[test]
     fn bonjour_hosts_are_bounded() {
-        let mut s = store();
+        let (_td, mut s) = store();
         let mut live = Vec::new();
         for i in 0..bonjour::MAX_HOSTS + 50 {
             apply_event(&mut s, &mut live, found(&format!("h{i}"), &format!("10.1.{}.{}", i / 250, i % 250 + 1)), "ssh");
@@ -215,7 +217,7 @@ mod tests {
 
     #[test]
     fn a_deleted_or_replaced_bonjour_profile_frees_its_slot() {
-        let mut s = store();
+        let (_td, mut s) = store();
         let mut live = Vec::new();
         apply_event(&mut s, &mut live, found("Mac", "10.0.0.5"), "ssh");
         // Deleted in Settings or by the API: the live entry goes, and the host can come back.
@@ -233,7 +235,7 @@ mod tests {
 
     #[test]
     fn open_all_skips_bonjour_profiles() {
-        let mut s = store();
+        let (_td, mut s) = store();
         let mut live = Vec::new();
         apply_event(&mut s, &mut live, found("Mac", "10.0.0.5"), "ssh");
         let all: Vec<String> = s.profiles.iter().map(|p| p.guid()).collect();
@@ -243,7 +245,7 @@ mod tests {
 
     #[test]
     fn bonjour_sweeps_leave_dynamic_profiles_alone() {
-        let mut s = store();
+        let (_td, mut s) = store();
         let mut live = Vec::new();
         let mut d = crate::profile::Profile::new("dyn");
         d.set("Is Dynamic Profile", toml::Value::Boolean(true));

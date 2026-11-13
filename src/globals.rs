@@ -320,6 +320,7 @@ impl Globals {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use std::path::PathBuf;
     use toml::Value;
@@ -329,7 +330,7 @@ mod tests {
     /// gone after the next save; a key not renamed is untouched.
     #[test]
     fn renamed_keys_migrate() {
-        let path = scratch("renamed");
+        let (_td, path) = scratch("renamed");
         std::fs::write(&path, "[settings]\ndisableTopRightIndicators = true\nstatusBarHeight = 33\nStatusBarHeight = 40\ntmuxTitlePrefix = \"T> \"\nSomethingElse = 1\n").unwrap();
         let g = Globals::load(&path).unwrap();
         assert!(g.bool("DisableTopRightIndicators"));
@@ -346,11 +347,10 @@ mod tests {
         assert!(text.contains("DisableTopRightIndicators") && text.contains("SomethingElse"), "{text}");
     }
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("termurion-globals-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join("settings.toml")
+    fn scratch(name: &str) -> (TempDir, PathBuf) {
+        let td = TempDir::new(&format!("globals-{name}"));
+        let file = td.file("settings.toml");
+        (td, file)
     }
 
     /// The 13v2 x 13w seam in `Globals::set`: 13w's bounds apply before 13v2's `KEPT_WHEN_DEFAULT`
@@ -358,7 +358,8 @@ mod tests {
     /// a kept key at its default stays present (`raw` sees it); neither table changes the other.
     #[test]
     fn bounds_and_kept_when_default_compose() {
-        let mut g = Globals::empty(&scratch("bounds-kept"));
+        let (_td, _f) = scratch("bounds-kept");
+        let mut g = Globals::empty(&_f);
         g.set("FakeFullyQualifiedDomainName", Value::String("a b".to_string()));
         assert!(g.raw("FakeFullyQualifiedDomainName").is_none(), "a refused bounded value is the default, removed");
         g.set("FakeFullyQualifiedDomainName", Value::String("ok.host".to_string()));
@@ -380,7 +381,8 @@ mod tests {
         for key in ["BrowserPluginPathHint", "WebUserAgent", "SearchCommand", "SearchSuggestURL"] {
             assert!(BOUNDS.iter().any(|(k, _)| *k == key), "{key} is bounded");
         }
-        let mut g = Globals::empty(&scratch("bounds-browser"));
+        let (_td, _f) = scratch("bounds-browser");
+        let mut g = Globals::empty(&_f);
         let def = g.string("SearchCommand");
         g.set("SearchCommand", Value::String("https://duck.test/?q=%@".into()));
         assert_eq!(g.string("SearchCommand"), "https://duck.test/?q=%@");
@@ -394,7 +396,7 @@ mod tests {
         g.set("WebUserAgent", Value::String(format!("A\r\nB{}", "c".repeat(600))));
         assert_eq!(g.string("WebUserAgent").chars().count(), 512);
         // The file at load goes through the same table.
-        let path = scratch("bounds-browser-load");
+        let (_td, path) = scratch("bounds-browser-load");
         std::fs::write(&path, "[settings]\nSearchCommand = \"https://a.test/?q=%@\\u202e\"\n").unwrap();
         assert_eq!(Globals::load(&path).unwrap().string("SearchCommand"), def);
     }
@@ -402,7 +404,8 @@ mod tests {
     /// B4: the fake identity texts are bounded at the one write point (`set`) and at `load`.
     #[test]
     fn globals_bounds_clamp_every_13w_key() {
-        let mut g = Globals::empty(&scratch("bounds-fake"));
+        let (_td, _f) = scratch("bounds-fake");
+        let mut g = Globals::empty(&_f);
         for (key, ok, max) in [("FakeFullyQualifiedDomainName", "fake.host-1", 255), ("FakeBootSessionUUID", "{AB12-cd:34}", 128)] {
             g.set(key, Value::String(ok.to_string()));
             assert_eq!(g.string(key), ok, "{key}");
@@ -417,7 +420,7 @@ mod tests {
             assert_eq!(g.string(key), "", "{key} refuses a non-text value");
         }
         // The file at load goes through the same table.
-        let path = scratch("bounds-fake-load");
+        let (_td, path) = scratch("bounds-fake-load");
         std::fs::write(&path, "[settings]\nFakeFullyQualifiedDomainName = \"bad name\"\nFakeBootSessionUUID = \"ok-1\"\n").unwrap();
         let g = Globals::load(&path).unwrap();
         assert_eq!(g.string("FakeFullyQualifiedDomainName"), "");
@@ -428,7 +431,8 @@ mod tests {
     /// 0.05 s, the flash alpha within 0..=1, anything that is not a finite number is the default.
     #[test]
     fn globals_bounds_clamp_the_bell_numbers() {
-        let mut g = Globals::empty(&scratch("bounds-bell"));
+        let (_td, _f) = scratch("bounds-bell");
+        let mut g = Globals::empty(&_f);
         for (key, low, high) in [("BellRateLimit", 0.05, 60.0), ("IndicatorFlashInitialAlpha", 0.0, 1.0)] {
             g.set(key, Value::Float(-3.0));
             assert_eq!(g.number(key), Some(low), "{key} below");
@@ -449,7 +453,8 @@ mod tests {
     /// B4/B5: the trigger numbers are clamped at the one write point.
     #[test]
     fn globals_bounds_clamp_the_trigger_numbers() {
-        let mut g = Globals::empty(&scratch("bounds-trigger"));
+        let (_td, _f) = scratch("bounds-trigger");
+        let mut g = Globals::empty(&_f);
         for key in ["TriggerRadius", "MaximumNumberOfTriggerCommands"] {
             g.set(key, Value::Integer(1_000_000_000));
             assert_eq!(g.int(key), 64, "{key} above");
@@ -474,7 +479,8 @@ mod tests {
     /// the font a plain family name (never a path, no control character, at most 128).
     #[test]
     fn badge_keys_are_bounded_at_the_write_point() {
-        let mut g = Globals::empty(&scratch("bounds-badge"));
+        let (_td, _f) = scratch("bounds-badge");
+        let mut g = Globals::empty(&_f);
         for key in ["BadgeMaxWidthFraction", "BadgeMaxHeightFraction"] {
             g.set(key, Value::Float(7.0));
             assert_eq!(g.number(key), Some(1.0), "{key} above");
@@ -502,7 +508,7 @@ mod tests {
             g.set("BadgeFont", Value::String(bad.clone()));
             assert_eq!(g.string("BadgeFont"), "Helvetica", "BadgeFont refuses {bad:?}");
         }
-        let path = scratch("bounds-badge-load");
+        let (_td, path) = scratch("bounds-badge-load");
         std::fs::write(&path, "[settings]\nBadgeMaxWidthFraction = 9.0\nBadgeRightMargin = 99999\nBadgeFont = \"C:\\\\x.ttf\"\n").unwrap();
         let g = Globals::load(&path).unwrap();
         assert_eq!(g.number("BadgeMaxWidthFraction"), Some(1.0));
@@ -512,7 +518,8 @@ mod tests {
 
     #[test]
     fn sound_names_are_bounded_at_the_write_point() {
-        let mut g = Globals::empty(&scratch("bounds-sound"));
+        let (_td, _f) = scratch("bounds-sound");
+        let mut g = Globals::empty(&_f);
         for key in ["SuccessSound", "ErrorSound"] {
             g.set(key, Value::String("Windows Ding".into()));
             assert_eq!(g.string(key), "Windows Ding");
@@ -525,7 +532,8 @@ mod tests {
 
     #[test]
     fn defaults_come_from_iterm2() {
-        let g = Globals::empty(&scratch("defaults"));
+        let (_td, _f) = scratch("defaults");
+        let g = Globals::empty(&_f);
         assert_eq!(g.int("SwitchTabModifier"), 4);
         assert_eq!(g.int("SwitchWindowModifier"), 6);
         assert!(g.bool("RemapModifiersGlobally") && g.bool("ReportHorizontalScrollEvents"));
@@ -535,7 +543,7 @@ mod tests {
 
     #[test]
     fn saves_only_changes_and_round_trips() {
-        let path = scratch("round");
+        let (_td, path) = scratch("round");
         let mut g = Globals::empty(&path);
         g.set("FocusFollowsMouse", Value::Boolean(true));
         g.set("SwitchTabModifier", Value::Integer(4));
@@ -547,12 +555,13 @@ mod tests {
 
     #[test]
     fn a_missing_file_is_all_defaults() {
-        assert!(!Globals::load(&scratch("missing")).unwrap().bool("FocusFollowsMouse"));
+        let (_td, f) = scratch("missing");
+        assert!(!Globals::load(&f).unwrap().bool("FocusFollowsMouse"));
     }
 
     #[test]
     fn a_corrupt_file_is_an_error_not_a_reset() {
-        let path = scratch("corrupt");
+        let (_td, path) = scratch("corrupt");
         std::fs::write(&path, "not = [toml").unwrap();
         assert!(Globals::load(&path).is_err());
     }
@@ -570,7 +579,7 @@ mod tests {
         assert!(prevent.optional_bool());
         assert_eq!(prevent.default, None);
         assert!(!crate::schema::find_global("NoSyncDisableOpenURL").unwrap().optional_bool());
-        let path = scratch("optional");
+        let (_td, path) = scratch("optional");
         let mut g = Globals::empty(&path);
         assert_eq!(g.optional_bool("PreventEscapeSequenceFromChangingProfile"), None);
         // A stored No is not the default (there is none), so the file keeps it.
@@ -592,7 +601,7 @@ mod tests {
     /// default; it must stay in the file or the question comes back every time.
     #[test]
     fn decrqcra_no_is_remembered() {
-        let path = scratch("decrqcra");
+        let (_td, path) = scratch("decrqcra");
         let mut g = Globals::empty(&path);
         assert_eq!(g.optional_bool("NoSyncDisableDECRQCRA"), None);
         g.set("NoSyncDisableDECRQCRA", Value::Boolean(true));

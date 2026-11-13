@@ -310,35 +310,6 @@ impl KeyText {
     }
 }
 
-/// A fresh folder under the temp folder for one test, removed when dropped.
-#[cfg(test)]
-pub(crate) struct TempDir(pub PathBuf);
-
-#[cfg(test)]
-impl TempDir {
-    pub fn new(name: &str) -> TempDir {
-        let dir = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        TempDir(dir)
-    }
-}
-
-#[cfg(test)]
-impl std::ops::Deref for TempDir {
-    type Target = std::path::Path;
-    fn deref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-#[cfg(test)]
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 /// A console for tests: records what is written and which modes were set, and replays
 /// `replies` (None: a wait that ran out).
 #[cfg(test)]
@@ -436,6 +407,7 @@ impl Harness {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     fn strings(v: &[&str]) -> Vec<String> {
@@ -513,8 +485,8 @@ mod tests {
         for p in ["\\\\host\\s\\x", "//host/s/x", "/\\host\\s", "\\/host/s", "\\\\?\\UNC\\host\\s", "\\\\.\\pipe\\x", "\\??\\UNC\\host\\s"] {
             assert!(!may_open(Path::new(p)), "{p}");
         }
-        let dir = std::env::temp_dir().join(format!("termurion-util-cli-open-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = TempDir::new("util-cli-open");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         assert!(may_open(&dir.join("a.txt")), "a local path that is not there yet");
         // A verbatim local path is read in its plain form (git_state's link rule); every
@@ -537,15 +509,14 @@ mod tests {
             Err(e) => eprintln!("MEASURED: no symbolic link to a network path made ({e}); git_state's link tests cover the rule"),
         }
         let _ = std::fs::remove_dir(dir.join("net"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn path_folders_are_local() {
         use std::cell::RefCell;
         use std::path::Path;
-        let dir = std::env::temp_dir().join(format!("termurion-util-cli-path-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = TempDir::new("util-cli-path");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let net = dir.join("net");
         #[cfg(windows)]
@@ -591,7 +562,6 @@ mod tests {
         }
         assert_eq!(probed.into_inner(), [PathBuf::from("C:\\w\\bin\\curl.exe")]);
         let _ = std::fs::remove_dir(&net);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

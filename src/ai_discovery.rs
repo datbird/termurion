@@ -716,6 +716,7 @@ pub fn probe_outcome(o: &Outcome, canceled: bool) -> Probe {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::ai_catalog::Feature;
     use crate::ai_models::OLLAMA_ENDPOINT;
@@ -957,7 +958,8 @@ mod tests {
 
     #[test]
     fn discovery_ignores_ai_proxy() {
-        let mut g = Globals::empty(&std::env::temp_dir().join("termurion-ai-discovery-test.toml"));
+        let _td = TempDir::new("ai-discovery-tes");
+        let mut g = Globals::empty(&_td.file("x.toml"));
         g.set("AiProxy", Value::String("proxy.test:8080".into()));
         let t: Table = r#"v = [{name="d", url="https://gpu.test/api/chat", dynamicModels=true}]"#.parse().unwrap();
         g.set(crate::ai_settings::MANUAL_MODELS, t["v"].clone());
@@ -1063,8 +1065,8 @@ mod tests {
 
     #[test]
     fn cache_persists_like_iterm2() {
-        let path = std::env::temp_dir().join(format!("termurion-ollama-models-test-{}.json", std::process::id()));
-        let _ = std::fs::remove_file(&path);
+        let _td = TempDir::new("ollama-models-te");
+        let path = _td.file("x.json");
         let auth = pairs(&[("Authorization", "Bearer t")]);
         let cfg = vec![(OLLAMA_ENDPOINT.to_string(), Vec::new()), (GPU.to_string(), auth.clone())];
         let mut c = Cache::load(&path);
@@ -1106,12 +1108,12 @@ mod tests {
         assert_eq!(d.servers.len(), 1);
         assert_eq!((d.servers[0].endpoint.as_str(), d.servers[0].models.len()), (OLLAMA_ENDPOINT, 2));
         assert_eq!(c.discovered(&cfg).servers.len(), 2);
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn configs_follow_iterm2() {
-        let mut g = Globals::empty(&std::env::temp_dir().join("termurion-ai-discovery-test.toml"));
+        let _td = TempDir::new("ai-discovery-tes");
+        let mut g = Globals::empty(&_td.file("x.toml"));
         assert_eq!(configs(&g), [(OLLAMA_ENDPOINT.to_string(), Vec::new())]);
         let t: Table = r#"v = [{name="a", url="http://a/v1"}, {name="d", url="http://gpu:11434/api/chat", dynamicModels=true, customHeaders=[{name="X-A", value="1"}]}, {name="e", url="", dynamicModels=true}]"#.parse().unwrap();
         g.set(crate::ai_settings::MANUAL_MODELS, t["v"].clone());

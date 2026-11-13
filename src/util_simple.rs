@@ -400,7 +400,8 @@ mod tests {
     use super::*;
     use crate::osc1337::Attention;
     use crate::screen::{Request, Screen};
-    use crate::util_cli::{Harness, TempDir};
+    use crate::test_tmp::TempDir;
+    use crate::util_cli::Harness;
     use crate::util_osc::{TMUX_OSC, TMUX_ST};
 
     /// A fresh folder for one test: `notes.txt` holds "hello\n", `big.bin` 100 bytes.
@@ -513,7 +514,8 @@ mod tests {
     }
 
     fn one(term: Option<&str>, name: &str, args: &[&str]) -> (i32, String, String) {
-        let mut h = harness(&std::env::temp_dir(), term);
+        let _td = TempDir::new("t");
+        let mut h = harness(_td.path(), term);
         let code = h.run(name, args);
         (code, text(&h.out), text(&h.err))
     }

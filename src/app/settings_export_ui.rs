@@ -537,16 +537,15 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     fn stage_import(file: &Path, temp: &Path, appdata: &Path) -> Result<(), String> {
         stage_import_with(file, temp, appdata, &mut |_| {})
     }
 
-    fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("termurion-export-test-{name}-{}", crate::api_auth::fresh_key()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp(name: &str) -> TempDir {
+        TempDir::new(&format!("export-test-{name}"))
     }
 
     fn tar(args: &[&str]) -> String {
@@ -593,7 +592,6 @@ mod tests {
         assert_eq!(back.settings.get("FocusFollowsMouse"), Some(&toml::Value::Boolean(true)));
         assert!(!back.settings.contains_key("NoSyncX"));
         assert_eq!(std::fs::read_to_string(x.join(r"python-runtimes\PythonRuntimes.json")).unwrap(), r#"{"requirements":[],"haveAnyBasicScripts":false}"#);
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Beyond the plan: scripts at the root and in AutoLaunch become zips, a full environment's
@@ -636,7 +634,6 @@ mod tests {
         assert!(x.join(r"app-support\state\Scripts\keep.txt").is_file(), "a nested Scripts folder is kept");
         assert!(!x.join(r"app-support\.hidden").exists());
         assert!(!x.join(r"app-support\Scripts").exists());
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Task 9 review: an entry of the Scripts folder or an AutoLaunch folder that is not local
@@ -673,7 +670,6 @@ mod tests {
         assert_eq!(zips.len(), 1, "only kept.py: {zips:?}");
         assert!(zips[0].starts_with("script "), "{zips:?}");
         assert_eq!(std::fs::read_to_string(x.join(r"python-runtimes\PythonRuntimes.json")).unwrap(), r#"{"requirements":[],"haveAnyBasicScripts":true}"#);
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -725,7 +721,6 @@ mod tests {
         assert!(!termurion.join(se::MARKER).exists());
         assert_eq!(std::fs::read_to_string(termurion.join("settings.toml")).unwrap(), before);
         assert_eq!(std::fs::read_to_string(termurion.join("snippets.json")).unwrap(), "later");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Controller ruling I5: Import All's User Defaults never bring the AI consent switches
@@ -751,7 +746,6 @@ mod tests {
         std::fs::write(termurion.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
         finish_import(&termurion);
         assert!(!termurion.join(se::STATE_IMPORTED).exists(), "no state, no mark");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -784,7 +778,6 @@ mod tests {
             let want = (key == kept).then_some(toml::Value::Integer(2));
             assert_eq!(g.values.get(key), want.as_ref(), "{key}");
         }
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Beyond the plan: the archive's app-support never replaces what Termurion keeps out of an
@@ -810,7 +803,6 @@ mod tests {
         assert!(!termurion.join(crate::workgroup_restore::KEY_FILE).exists(), "an archive never brings the approval key");
         assert_eq!(std::fs::read_to_string(termurion.join("profiles.toml")).unwrap(), "");
         assert!(termurion.join(r"state\s.json").is_file());
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Task 9 findings r2 (Critical), on the real file system: an archive's Application Support
@@ -929,7 +921,6 @@ mod tests {
             let refused = got.as_ref().err().is_some_and(|e| e.starts_with("The archive is not safe to extract") && e.contains("is a link"));
             assert!(after == "ours" && refused && *left == 0 && !marker, "{target} (a file follows: {follow}): canary {after:?}, {got:?}, left {left}; all: {seen:?}");
         }
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Task 9 re-review r2, new minor 2: an existing entry of `%APPDATA%\Termurion` that is itself a
@@ -951,7 +942,6 @@ mod tests {
         assert!(!outside.join("x.txt").exists(), "written through the junction");
         assert_eq!(std::fs::read_to_string(to.join("kept.txt")).unwrap(), "kept", "the rest is imported");
         let _ = std::fs::remove_dir(to.join("notes"));
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -992,7 +982,6 @@ mod tests {
         assert!(!to.join("settings.toml").exists(), "nothing was applied");
         assert!(!staging.exists(), "the staging folder is gone");
         assert!(outside.join("x.txt").exists(), "the junction's target is untouched");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Beyond the plan: an export written by the real tar.exe imported into another Termurion folder
@@ -1035,7 +1024,6 @@ mod tests {
         assert!(stage_import(&bad, &temp_dir, &other).is_err());
         assert!(!other.join(se::MARKER).exists());
         assert!(entries(&temp_dir).is_empty(), "a failed extraction leaves nothing");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Every name under `dir`, relative, folders with a trailing "/" (nothing followed).
@@ -1100,7 +1088,6 @@ mod tests {
         for (what, got, names) in &seen {
             assert!(!names.iter().any(|n| n.ends_with("hidden.url")), "{what}: an unchecked entry was extracted: {got:?} {names:?}; all: {seen:?}");
         }
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Final findings r2 1(c): a gzip tar whose first entry's name is bzip2's magic is read as the gzip tar
@@ -1120,7 +1107,6 @@ mod tests {
         let staging = PathBuf::from(std::fs::read_to_string(to.join(se::MARKER)).unwrap());
         assert_eq!(tree_names(&staging), ["BZh91AY&SY", "user-defaults/"]);
         assert_eq!(std::fs::read(staging.join("BZh91AY&SY")).unwrap(), b"plain");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Final findings r2 1(b): the archive is read once. While another writer swaps the file between a
@@ -1166,6 +1152,5 @@ mod tests {
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         writer.join().unwrap();
         assert_eq!(leaked, None, "an entry the check refused was extracted ({runs} runs)");
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

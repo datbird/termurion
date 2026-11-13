@@ -991,6 +991,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     const A: Option<&str> = Some("a");
@@ -1080,7 +1081,8 @@ mod tests {
 
     #[test]
     fn tab_icon_files_follow_iterm2() {
-        let dir = std::env::temp_dir().join(format!("termurion-tab-icons-{}", std::process::id()));
+        let _td = TempDir::new("tab-icons");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let save = |name: &str, side: u32| {
             let path = dir.join(name);
@@ -1123,7 +1125,6 @@ mod tests {
             assert_eq!(key(&id) >> 62, 1, "{id:?}");
         }
         assert_ne!(key(&ImageId::Tinted("git".into(), [1, 2, 3])), key(&ImageId::Tinted("git".into(), [1, 2, 4])));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

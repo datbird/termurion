@@ -407,6 +407,7 @@ pub fn real_main() -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::platform::pty::conpty::{self, Source};
     use crate::osc1337::Attention;
@@ -663,10 +664,10 @@ mod tests {
         let png = png.into_inner();
         assert!(png.len() > 100 * 1024, "{} bytes", png.len());
         // cmd's special characters in the path (review: the child's words are carried in hex).
-        let path = std::env::temp_dir().join(format!("termurion imgcat 100% & ^ (conpty) {}.png", std::process::id()));
+        let _td = TempDir::new("imgcat-100-conpt");
+        let path = _td.file("x.png");
         std::fs::write(&path, &png).unwrap();
         let (code, _, screen) = run_in_conpty(&["imgcat", &path.to_string_lossy()], &mut |_, _| {});
-        let _ = std::fs::remove_file(&path);
         assert_eq!(code, Some(0));
         assert_eq!(screen.images.by_id.len(), 1);
         let shown = screen.images.by_id.values().next().unwrap();
@@ -703,8 +704,8 @@ mod tests {
         assert!(screen.text().lines().any(|l| l.split_whitespace().any(|w| w == "Default")), "{:?}", screen.text());
         restored(&screen, "it2getvar");
 
-        let root = std::env::temp_dir().join(format!("termurion-it2ul-conpty-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let _td = TempDir::new("it2ul-conpty");
+        let root = _td.to_path_buf();
         let (from, to) = (root.join("from"), root.join("to dir"));
         std::fs::create_dir_all(&from).unwrap();
         std::fs::create_dir_all(&to).unwrap();
@@ -721,7 +722,6 @@ mod tests {
             }
         });
         let got = std::fs::read(to.join("up.bin"));
-        let _ = std::fs::remove_dir_all(&root);
         assert_eq!(code, Some(0), "it2ul: {:?}", screen.text());
         assert_eq!(requests, 1);
         assert_eq!(got.ok(), Some(bytes), "the file arrives with its bytes");
@@ -772,7 +772,8 @@ mod tests {
         // `stty raw min 0 time 10`: dd ends one second after the last byte.
         const READ_REPLY: &str =
             r"stty -echo raw min 0 time 10; printf '\033[1337n\033[5n'; x=$(dd bs=1 count=64 2>/dev/null | od -An -tx1 | tr -d ' \n'); stty sane; echo GOT $x";
-        let script = std::env::temp_dir().join(format!("termurion-it2check-{}", std::process::id()));
+        let _td = TempDir::new("it2check");
+        let script = _td.to_path_buf();
         std::fs::write(&script, std::fs::read("tests/fixtures/iterm2/it2check").unwrap()).unwrap();
         let script_fwd = script.to_string_lossy().replace('\\', "/");
         let mut shells: Vec<(&str, String, String)> = Vec::new();
@@ -802,6 +803,5 @@ mod tests {
             assert_eq!(got, b"TERM2 3.7.0n\x1b[0n", "{name}");
             assert_ne!(code, Some(0), "{name}");
         }
-        let _ = std::fs::remove_file(&script);
     }
 }

@@ -312,6 +312,7 @@ pub fn write_new_checked_with(path: &Path, bytes: &[u8], host_url: Option<&str>,
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
     #[test]
@@ -346,8 +347,8 @@ mod tests {
     /// ruling): a remote program's `x.exe` is never written as `x.exe` by any caller.
     #[test]
     fn the_door_refuses_high_risk_types() {
-        let dir = std::env::temp_dir().join(format!("termurion-door-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = TempDir::new("door");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         for bad in [
             "x.exe", ".exe", "a.pdf.exe", "x.EXE.", "x.ps1 ", "x.com", "x.scr", "x.pif", "x.bat", "x.cmd", "x.psm1", "x.psd1", "x.ps1xml", "x.vbs", "x.vbe", "x.js", "x.jse", "x.wsf",
@@ -360,7 +361,6 @@ mod tests {
         for fine in ["a.txt", "a.log", "notes.md", "export.zip", "a.json", "x.exe.download", "a.pdf", ".bashrc"] {
             write_checked(&dir.join(fine), b"ok").unwrap_or_else(|e| panic!("{fine:?}: {e}"));
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The door reads PATHEXT as `semantic::runnable` does (findings r2 M5): a type the machine
@@ -423,14 +423,14 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_written_file_carries_the_mark() {
-        let dir = std::env::temp_dir().join(format!("termurion-inert-{}", std::process::id()));
+        let _td = TempDir::new("inert");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("a.txt");
         write_marked(&p, b"hi").unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"hi");
         let zone = std::fs::read_to_string(format!("{}:Zone.Identifier", p.display())).unwrap();
         assert_eq!(zone, ZONE_MARK);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -459,8 +459,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_strict_mark_fails_when_it_cannot_be_written() {
-        let dir = std::env::temp_dir().join(format!("termurion-strict-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = TempDir::new("strict");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("a.txt");
         std::fs::write(&p, "x").unwrap();
@@ -473,7 +473,6 @@ mod tests {
         // A folder takes no mark here, nor does a file in a folder that is not there.
         assert!(mark_strict(&dir, None).is_err());
         assert!(mark_strict(&dir.join("no").join("b.txt"), None).is_err());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Every Unicode format character (General_Category Cf) is hidden, not a hand list of them: the
@@ -498,8 +497,8 @@ mod tests {
     /// hold, and a written file carries the Mark of the Web (the real stream, on Windows).
     #[test]
     fn write_new_checked_never_overwrites_and_marks() {
-        let dir = std::env::temp_dir().join(format!("termurion-new-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = TempDir::new("new");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("a.txt");
         write_new_checked(&f, b"one", None).unwrap();
@@ -518,15 +517,14 @@ mod tests {
             let text = crate::localfs::read_to_string(&crate::localfs::judge_io(&stream).unwrap()).expect("a Zone.Identifier stream");
             assert_eq!(zone_of(&text), Some(3), "{text:?}");
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A mark that cannot be written fails the write (Task 10 review I1): the new file is removed
     /// and the error says so; a written file records the page it came from (`HostUrl`).
     #[test]
     fn a_mark_failure_is_a_failed_write() {
-        let dir = std::env::temp_dir().join(format!("termurion-unmarked-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = TempDir::new("unmarked");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("a.png");
         let fail = |_: &Path, _: Option<&str>| Err(std::io::Error::other("no streams on this drive"));
@@ -541,6 +539,5 @@ mod tests {
             let text = crate::localfs::read_to_string(&crate::localfs::judge_io(&stream).unwrap()).unwrap();
             assert_eq!(text, zone_text(Some("https://p.test/page")));
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

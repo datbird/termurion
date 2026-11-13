@@ -357,6 +357,7 @@ impl Screen {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use alacritty_terminal::index::{Column, Line};
 
@@ -507,8 +508,8 @@ mod tests {
 
     #[test]
     fn downloads_get_unique_names() {
-        let d = std::env::temp_dir().join(format!("termurion-dl-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let _td = TempDir::new("dl");
+        let d = _td.to_path_buf();
         std::fs::create_dir_all(&d).unwrap();
         assert_eq!(unique_path(&d, "a.txt"), d.join("a.txt"));
         std::fs::write(d.join("a.txt"), "x").unwrap();
@@ -520,7 +521,8 @@ mod tests {
 
     #[test]
     fn download_names_cannot_hide_their_type() {
-        let d = std::env::temp_dir().join(format!("termurion-dl2-{}", std::process::id()));
+        let _td = TempDir::new("dl2");
+        let d = _td.to_path_buf();
         std::fs::create_dir_all(&d).unwrap();
         assert_eq!(unique_path(&d, "invoice\u{202e}fdp.exe"), d.join("invoicefdp.exe.download"));
         // A high-risk type is kept as bytes but never as its type (the door refuses it).
@@ -587,7 +589,8 @@ mod tests {
 
     #[test]
     fn a_download_named_for_the_shell_is_refused() {
-        let d = std::env::temp_dir().join(format!("termurion-dlref-{}", std::process::id()));
+        let _td = TempDir::new("dlref");
+        let d = _td.to_path_buf();
         std::fs::create_dir_all(&d).unwrap();
         for bad in ["x.url", "X.LNK", "a.library-ms", "desktop.ini", "x.url. ", r"..\evil.scf"] {
             assert!(save(&d, bad, b"[InternetShortcut]").is_err(), "{bad:?}");
@@ -596,12 +599,12 @@ mod tests {
         // A device name is renamed, as before; an ordinary name saves.
         assert_eq!(save(&d, "CON", b"x").unwrap(), d.join("_CON"));
         assert_eq!(save(&d, "notes.txt", b"x").unwrap(), d.join("notes.txt"));
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
     fn saved_downloads_are_marked_as_from_the_internet() {
-        let d = std::env::temp_dir().join(format!("termurion-dl3-{}", std::process::id()));
+        let _td = TempDir::new("dl3");
+        let d = _td.to_path_buf();
         std::fs::create_dir_all(&d).unwrap();
         let p = save(&d, "x.bin", b"hi").unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"hi");

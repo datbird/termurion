@@ -1535,13 +1535,12 @@ pub(super) fn archive_ask(path: &Path) -> super::scripts_alerts::Ask {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::scripts::Node;
 
-    fn temp_dir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("termurion-{tag}-{}", crate::api_auth::fresh_key()));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn temp_dir(tag: &str) -> TempDir {
+        TempDir::new(&format!("t-{tag}"))
     }
 
     fn names(dir: &Path) -> Vec<String> {
@@ -1588,8 +1587,6 @@ mod tests {
         assert!(start.contains("Some(\"its\") if quiet.is_some()"));
         assert_eq!(live.matches("extract_bytes(").count(), 3, "the definition, extract_archive and the confirmed install");
         assert!(live.split("fn its_confirmed").nth(1).unwrap().contains("extract_bytes(&verified.payload"));
-        let _ = std::fs::remove_dir_all(&root);
-        let _ = std::fs::remove_dir_all(&temp);
     }
 
     #[test]
@@ -1631,7 +1628,6 @@ mod tests {
         std::fs::write(root.join("a.zip"), b"x.py\0\0\0ustar").unwrap();
         assert!(extract_archive(&root.join("a.zip"), &root.join("s")).is_err());
         assert!(!root.join("s").exists());
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1654,7 +1650,6 @@ mod tests {
         // A file with a second hard link.
         std::fs::hard_link(staging.join(r"tool\tool\tool.py"), outside.join("other.py")).unwrap();
         assert_eq!(sa::unsafe_entry(&staging, &stage_entries), Some(staging.join(r"tool\tool\tool.py")));
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn script(path: &str, full: bool) -> Node {
@@ -1758,7 +1753,8 @@ mod tests {
     /// environment's export writes metadata into its folder but not into the zip.
     #[test]
     fn export_round_trips_through_tar() {
-        let root = std::env::temp_dir().join(format!("termurion-archive-test-{}", crate::api_auth::fresh_key()));
+        let _td = TempDir::new("archive-test");
+        let root = _td.to_path_buf();
         let (scripts, desktop) = (root.join("Scripts"), root.join("Desktop"));
         std::fs::create_dir_all(&scripts).unwrap();
         std::fs::create_dir_all(&desktop).unwrap();
@@ -1794,12 +1790,12 @@ mod tests {
         // An archive that is not a zip.
         std::fs::write(root.join("bad.zip"), "not a zip").unwrap();
         assert!(extract_archive(&root.join("bad.zip"), &root.join("out3")).unwrap_err().starts_with("Could not unzip archive: "));
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn recovery_follows_iterm2() {
-        let root = std::env::temp_dir().join(format!("termurion-recover-test-{}", crate::api_auth::fresh_key()));
+        let _td = TempDir::new("recover-test");
+        let root = _td.to_path_buf();
         std::fs::create_dir_all(root.join(".installing-X").join("tool")).unwrap();
         let uuid = crate::api_auth::fresh_key();
         // A backup whose script is back: removed. One whose script is gone: restored.
@@ -1819,7 +1815,6 @@ mod tests {
         assert_eq!(names, [".replacing-mine", "done.py", "lost"]);
         assert_eq!(std::fs::read_to_string(root.join("done.py")).unwrap(), "new");
         assert_eq!(std::fs::read_to_string(root.join(r"lost\x")).unwrap(), "kept");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

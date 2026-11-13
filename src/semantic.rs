@@ -1095,6 +1095,7 @@ pub fn needs_live_session(run: &Run) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     /// Final wave item 4: a web URL reaches ShellExecute with no quote, space or control character.
     #[test]
     fn web_links_reach_shellexecute_encoded() {
@@ -1194,9 +1195,9 @@ mod tests {
     }
 
     /// A fresh folder with `files` in it (a trailing slash makes a folder).
-    fn dir(name: &str, files: &[&str]) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("termurion-sem-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+    fn dir(name: &str, files: &[&str]) -> (TempDir, PathBuf) {
+        let td = TempDir::new(&format!("sem-{name}"));
+        let d = td.to_path_buf();
         for f in files {
             let p = d.join(f);
             if f.ends_with('/') {
@@ -1206,7 +1207,7 @@ mod tests {
                 std::fs::write(&p, "x").unwrap();
             }
         }
-        d
+        (td, d)
     }
 
     /// Splits `text` at the `|` that marks the click.
@@ -1217,7 +1218,7 @@ mod tests {
 
     #[test]
     fn finds_a_path_with_line_and_column() {
-        let d = dir("linecol", &["src/main.rs"]);
+        let (_td, d) = dir("linecol", &["src/main.rs"]);
         let (b, a) = click("error at src/ma|in.rs:12:5: oops");
         assert_eq!(find_path(&b, &a, Some(&d), &Probe::default()), Some((d.join("src/main.rs"), Some(12), Some(5))));
         let (b, a) = click("src\\ma|in.rs(7,3): error C2065");
@@ -1228,7 +1229,7 @@ mod tests {
 
     #[test]
     fn finds_an_absolute_path_and_one_with_spaces() {
-        let d = dir("abs", &["my file.txt"]);
+        let (_td, d) = dir("abs", &["my file.txt"]);
         let full = d.join("my file.txt").to_string_lossy().to_string();
         let at = full.len() - 3;
         let (b, a) = (format!("see {}", &full[..at]), format!("{} now", &full[at..]));
@@ -1237,21 +1238,21 @@ mod tests {
 
     #[test]
     fn finds_a_python_traceback_path() {
-        let d = dir("py", &["x.py"]);
+        let (_td, d) = dir("py", &["x.py"]);
         let (b, a) = click("  File \"x|.py\", line 3, in f");
         assert_eq!(find_path(&b, &a, Some(&d), &Probe::default()), Some((d.join("x.py"), Some(3), None)));
     }
 
     #[test]
     fn strips_git_diff_prefixes() {
-        let d = dir("git", &["lib/x.rs"]);
+        let (_td, d) = dir("git", &["lib/x.rs"]);
         let (b, a) = click("+++ b/lib/|x.rs");
         assert_eq!(find_path(&b, &a, Some(&d), &Probe::default()), Some((d.join("lib/x.rs"), None, None)));
     }
 
     #[test]
     fn trailing_punctuation_is_not_part_of_the_path() {
-        let d = dir("punct", &["notes.md", "docs/"]);
+        let (_td, d) = dir("punct", &["notes.md", "docs/"]);
         let (b, a) = click("read no|tes.md.");
         assert_eq!(find_path(&b, &a, Some(&d), &Probe::default()), Some((d.join("notes.md"), None, None)));
         let (b, a) = click("see (not|es.md)!");
@@ -1327,7 +1328,7 @@ mod tests {
 
     #[test]
     fn path_uses_filename_parts() {
-        let d = dir("fnparts", &["x.txt"]);
+        let (_td, d) = dir("fnparts", &["x.txt"]);
         assert_eq!(find_path("see <", "x.txt>", Some(&d), &Probe::default()).map(|(p, _, _)| p), Some(d.join("x.txt")));
         assert_eq!(find_path("a|b ", "x.txt", Some(&d), &Probe::default()).map(|(p, _, _)| p), Some(d.join("x.txt")));
         // The range stays in the coordinates of the text given.
@@ -1339,7 +1340,7 @@ mod tests {
 
     #[test]
     fn second_pass_respects_hard_newlines() {
-        let d = dir("respect", &["b.txt"]);
+        let (_td, d) = dir("respect", &["b.txt"]);
         // Two rows joined (a hard newline between "see a" and "b.txt"): no file. The logical
         // line alone holds b.txt.
         let ctx = ClickContext { before: "see a".into(), after: "b.txt".into(), cwd: Some(d.clone()), ..Default::default() };
@@ -1503,7 +1504,7 @@ mod tests {
         assert_eq!(order_from(true, false), Order::SmartFirst);
         assert_eq!(order_from(false, false), Order::Default);
         // A file and an action: the action first only with SmartFirst.
-        let d = dir("order5", &["example.com"]);
+        let (_td, d) = dir("order5", &["example.com"]);
         let (before, after) = click("exam|ple.com");
         let mut ctx = ClickContext { before, after, cwd: Some(d), ..Default::default() };
         ctx.smart = Some((1, 0, "example.com".into()));
@@ -1533,7 +1534,7 @@ mod tests {
 
     #[test]
     fn resolution_follows_iterm2s_order() {
-        let d = dir("order", &["example.com"]);
+        let (_td, d) = dir("order", &["example.com"]);
         let (before, after) = click("exam|ple.com");
         let mut ctx = ClickContext { before, after, cwd: Some(d.clone()), ..Default::default() };
         ctx.link = Some("https://linked/".into());
@@ -1592,7 +1593,7 @@ mod tests {
 
     #[test]
     fn hover_ranges_cover_the_target() {
-        let d = dir("range", &["src/main.rs"]);
+        let (_td, d) = dir("range", &["src/main.rs"]);
         let (before, after) = click("at src/ma|in.rs:3 and https://a.b/c. x");
         let ctx = ClickContext { before: before.clone(), after: after.clone(), cwd: Some(d), ..Default::default() };
         let text = format!("{before}{after}");
@@ -1616,7 +1617,7 @@ mod tests {
         let t = std::time::Instant::now();
         assert_eq!(find_path("see ", "\\\\10.255.255.1\\x\\y", None, &Probe::default()), None);
         assert_eq!(find_path("go ", "//10.255.255.1/x", None, &Probe::default()), None);
-        let d = dir("unc", &[]);
+        let (_td, d) = dir("unc", &[]);
         let (b, a) = click("at https://10.255.255.1/x|/y now");
         assert_eq!(find_path(&b, &a, Some(&d), &Probe::default()), None);
         assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
@@ -1635,7 +1636,7 @@ mod tests {
 
     #[test]
     fn ignored_paths_are_not_found() {
-        let d = dir("ignored", &["x.txt"]);
+        let (_td, d) = dir("ignored", &["x.txt"]);
         let here = d.to_string_lossy().to_string();
         assert_eq!(find_path("", "x.txt", Some(&d), &Probe::default()).map(|(p, _, _)| p), Some(d.join("x.txt")));
         // Under an ignored folder: the working folder and an absolute path alike.
@@ -1654,7 +1655,7 @@ mod tests {
 
     #[test]
     fn a_click_probes_at_most_120_files() {
-        let d = dir("budget", &[]);
+        let (_td, d) = dir("budget", &[]);
         let words: Vec<String> = (0..60).map(|i| format!("a/w{i}")).collect();
         let (b, a) = (words[..30].join(" ") + " ", words[30..].join(" "));
         PROBES.with(|n| n.set(0));
@@ -1779,7 +1780,7 @@ mod tests {
 
     #[test]
     fn open_file_is_never_a_protocol_open() {
-        let d = dir("openfile", &["a b.txt", "run.exe"]);
+        let (_td, d) = dir("openfile", &["a b.txt", "run.exe"]);
         // Unix shows a file in a folder others can write to; the test must not follow the umask.
         #[cfg(unix)]
         {
@@ -1839,7 +1840,7 @@ mod tests {
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            let d = dir("inject", &[]);
+            let (_td, d) = dir("inject", &[]);
             std::fs::create_dir_all(&d).unwrap();
             let out = std::process::Command::new("cmd.exe").raw_arg(cmd_args(&line)).current_dir(&d).output().unwrap();
             assert!(!d.join("pwned.txt").exists(), "a second command ran: {out:?}");
@@ -1883,7 +1884,7 @@ mod tests {
     #[test]
     fn resolve_on_path_prefers_a_runnable_extension() {
         // VS Code's bin folder holds `code` (a shell script) beside `code.cmd`.
-        let d = dir("resolve", &["code", "code.cmd", "tool.exe", "plain", "x.bat"]);
+        let (_td, d) = dir("resolve", &["code", "code.cmd", "tool.exe", "plain", "x.bat"]);
         let path = std::env::join_paths([&d]).unwrap();
         assert_eq!(resolve_on_path(Path::new("code"), Some(&path)), Some(d.join("code.cmd")));
         assert_eq!(resolve_on_path(Path::new("tool"), Some(&path)), Some(d.join("tool.exe")));
@@ -1973,7 +1974,7 @@ mod tests {
         }
         assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
         // A remote pane probes nothing: an existing file is no target.
-        let d = dir("noprobe", &["a.txt"]);
+        let (_td, d) = dir("noprobe", &["a.txt"]);
         let (before, after) = click("open a.|txt");
         let ctx = ClickContext { before, after, cwd: Some(d), ..Default::default() };
         assert!(matches!(resolve(&ctx), Some(Target::File { .. })));
@@ -1989,7 +1990,7 @@ mod tests {
 
     #[test]
     fn remote_pane_probes_nothing() {
-        let d = dir("remote", &["a.txt"]);
+        let (_td, d) = dir("remote", &["a.txt"]);
         let (before, after) = click("open a.|txt");
         let ctx = ClickContext { before, after, cwd: Some(d), no_probe: true, respecting: Some((String::new(), "a.txt".into())), ..Default::default() };
         let before_count = PROBES.with(|n| n.get());

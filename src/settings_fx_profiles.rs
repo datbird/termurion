@@ -552,13 +552,12 @@ fn editor(ui: &mut egui::Ui, store: &mut Store, state: &mut PageState, screen: O
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::fx_profile::{BoxKindRule, SHIPPED};
 
-    fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("fx_page_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        d
+    fn tmp(tag: &str) -> TempDir {
+        TempDir::new(&format!("fx_page__-{tag}"))
     }
 
     fn agent(name: &str) -> Screen {
@@ -580,7 +579,8 @@ mod tests {
 
     #[test]
     fn new_profile_names_are_unique() {
-        let mut store = Store::open(&tmp("new"));
+        let _td = tmp("new");
+        let mut store = Store::open(&_td);
         let first = new_rules(&store);
         assert_eq!(first.name, "New Profile");
         assert_eq!(first.boxes, store.shell().boxes, "starts from the Shell values");
@@ -591,7 +591,8 @@ mod tests {
 
     #[test]
     fn duplicate_copies_every_rule() {
-        let store = Store::open(&tmp("dup"));
+        let _td = tmp("dup");
+        let store = Store::open(&_td);
         let copy = duplicate_rules(&store, "Codex").expect("codex ships");
         assert_eq!(copy.name, "Codex copy");
         let mut same = copy.clone();
@@ -601,7 +602,8 @@ mod tests {
 
     #[test]
     fn reset_is_only_for_shipped() {
-        let mut store = Store::open(&tmp("reset"));
+        let _td = tmp("reset");
+        let mut store = Store::open(&_td);
         let mine = FxRules { name: "Mine".into(), ..FxRules::default() };
         store.save(&mine, &toml::Table::new(), None).unwrap();
         assert!(can_reset(&store, "Codex"));
@@ -628,7 +630,8 @@ mod tests {
 
     #[test]
     fn a_saved_form_is_clean_and_glyph_codes_parse() {
-        let mut store = Store::open(&tmp("clean"));
+        let _td = tmp("clean");
+        let mut store = Store::open(&_td);
         let l = store.profiles.iter().find(|p| p.rules.name == "Codex").unwrap();
         let mut form = Form::from_loaded(l);
         form.name = "Codex 2".into();

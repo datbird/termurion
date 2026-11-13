@@ -148,22 +148,15 @@ pub fn install_at_startup() {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
 
-    struct Scratch(PathBuf);
+    struct Scratch(PathBuf, TempDir);
 
     impl Scratch {
         fn new(name: &str) -> Scratch {
-            let d = std::env::temp_dir().join(format!("termurion-app-entry-{name}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&d);
-            std::fs::create_dir_all(&d).unwrap();
-            Scratch(d)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+            let td = TempDir::new(&format!("ae-{name}"));
+            Scratch(td.to_path_buf(), td)
         }
     }
 

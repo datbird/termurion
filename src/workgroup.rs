@@ -1075,6 +1075,7 @@ impl Model {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use crate::globals::Globals;
     use serde_json::{json, Value};
@@ -1690,10 +1691,10 @@ mod tests {
         let mut s = session("r", None, Kind::Root);
         s.command = "x\u{0}y".into();
         let evil = encode(&[wg("evil", vec![s]), simple("fine")]);
-        let path = std::env::temp_dir().join(format!("termurion-wg-bound-{}.toml", std::process::id()));
+        let _td = TempDir::new("wg-bound");
+        let path = _td.file("x.toml");
         std::fs::write(&path, toml::to_string(&toml::toml! { [settings] Workgroups = evil }).unwrap()).unwrap();
         let loaded = Globals::load(&path).unwrap();
-        let _ = std::fs::remove_file(&path);
         let ids: Vec<String> = decode(&loaded.string("Workgroups")).unwrap().into_iter().map(|w| w.unique_identifier).collect();
         assert_eq!(ids, ["fine"]);
         // An undecodable but small value is kept as written.

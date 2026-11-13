@@ -268,18 +268,18 @@ impl Memory {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
-    use std::path::PathBuf;
     use std::time::Instant;
 
-    fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("fx_detect_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        d
+    fn tmp(tag: &str) -> TempDir {
+        TempDir::new(&format!("fx_detect__-{tag}"))
     }
 
-    fn store(tag: &str) -> Store {
-        Store::open(&tmp(tag))
+    fn store(tag: &str) -> (TempDir, Store) {
+        let td = tmp(tag);
+        let store = Store::open(&td);
+        (td, store)
     }
 
     fn agent(name: &str) -> Screen {
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn each_recorded_agent_screen_picks_its_own_profile() {
-        let st = store("agents");
+        let (_td, st) = store("agents");
         for (file, want) in [("codex", "Codex"), ("opencode", "opencode"), ("hermes", "Hermes"), ("agy", "agy")] {
             assert_eq!(pick(&st, &agent(file)), want, "{file}");
         }
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn a_claude_code_box_picks_claude_code() {
-        let st = store("claude");
+        let (_td, st) = store("claude");
         let line = "\u{2500}".repeat(80);
         let mut s = Screen::new(80, 30);
         s.feed(format!("\x1b[?25l\x1b[2J\x1b[9;1H{line}\x1b[10;1H\u{276f} \x1b[7m \x1b[0m\x1b[11;1H{line}").as_bytes());
@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn a_plain_shell_picks_shell() {
-        let st = store("shell");
+        let (_td, st) = store("shell");
         let mut s = Screen::new(80, 24);
         s.feed(b"user@host:~$ ls\r\nfile\r\nuser@host:~$ ");
         assert_eq!(pick(&st, &s), "Shell");
@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn two_tmux_panes_pick_per_region() {
-        let st = store("two");
+        let (_td, st) = store("two");
         let mut m = Memory::default();
         let (left, rules) = m.choose(&st, &two_panes(false), None);
         assert_eq!(rules.name, "Claude Code");
@@ -360,7 +360,7 @@ mod tests {
 
     #[test]
     fn a_banner_that_scrolled_away_keeps_its_profile() {
-        let st = store("scroll");
+        let (_td, st) = store("scroll");
         let mut s = agent("codex");
         let mut m = Memory::default();
         assert_eq!(m.choose(&st, &s, None).1.name, "Codex");
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn a_clear_forgets() {
-        let st = store("clear");
+        let (_td, st) = store("clear");
         let mut s = agent("codex");
         let mut m = Memory::default();
         m.forget_cleared(&s);

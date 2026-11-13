@@ -381,6 +381,7 @@ pub fn from_file(path: &Path) -> Result<Vec<Profile>, String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     #[test]
     fn srgb_to_p3_follows_p3_to_srgb() {
         // sRGB red is less saturated in P3; gray stays gray; the two conversions invert each other.
@@ -437,18 +438,19 @@ mod tests {
     #[test]
     fn plist_keys_match_either_spelling() {
         for (name, spelling) in [("cap", "DisableTopRightIndicators"), ("low", "disableTopRightIndicators")] { // old key on purpose
-            let path = std::env::temp_dir().join(format!("termurion-import-spell-{name}-{}.plist", std::process::id()));
+            let _td = TempDir::new(&format!("import-spell-{name}"));
+            let path = _td.file("x.plist");
             std::fs::write(&path, format!(r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict><key>{spelling}</key><true/></dict></plist>"#)).unwrap();
             let got = globals_from_file(&path).unwrap();
-            let _ = std::fs::remove_file(&path);
             assert!(got.iter().any(|(k, v)| k == "DisableTopRightIndicators" && v.as_bool() == Some(true)), "{spelling}: {got:?}");
         }
     }
 
     #[test]
     fn imports_global_keys_only() {
-        let path = std::env::temp_dir().join(format!("termurion-import-globals-{}.plist", std::process::id()));
+        let _td = TempDir::new("import-globals");
+        let path = _td.file("x.plist");
         std::fs::write(&path, r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
   <key>GlobalKeyMap</key><dict><key>0x61-0x100000</key><dict><key>Action</key><integer>13</integer><key>Text</key><string></string></dict></dict>
@@ -569,7 +571,8 @@ mod tests {
     /// `PREF:145`, `:174-176`, `:216`, defaults `PREF:848`, `:873-875`, `:914`.
     #[test]
     fn legacy_keys_read_from_the_plist() {
-        let path = std::env::temp_dir().join(format!("termurion-import-legacy-{}.plist", std::process::id()));
+        let _td = TempDir::new("import-legacy");
+        let path = _td.file("x.plist");
         std::fs::write(&path, r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
   <key>Control</key><integer>2</integer>
@@ -586,7 +589,6 @@ mod tests {
 </dict></plist>"#).unwrap();
         let got = legacy_from_file(&path).unwrap();
         assert_eq!(got, Legacy { auto_hides: false, migrated: true, ..Default::default() });
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -594,7 +596,8 @@ mod tests {
         assert_eq!(defaults_key("TmuxTitlePrefix"), "TmuxTitlePrefix");
         assert_eq!(defaults_key("NoSyncDisableOpenURL"), "NoSyncDisableOpenURL");
         assert_eq!(defaults_key(""), "");
-        let dir = std::env::temp_dir();
+        let _td = TempDir::new("t");
+        let dir = _td.to_path_buf();
         let path = dir.join(format!("termurion-import-defaults-keys-{}.plist", std::process::id()));
         std::fs::write(&path, r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
@@ -613,7 +616,6 @@ mod tests {
 </dict></plist>"#).unwrap();
         let got = globals_from_file(&both).unwrap();
         assert_eq!(got, [("TmuxTitlePrefix".to_string(), Value::String("exact".into()))]);
-        let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&both);
     }
 
@@ -622,7 +624,8 @@ mod tests {
     /// value must not get past it either). The task that converts them sets the mark.
     #[test]
     fn a_plist_never_brings_workgroup_keys() {
-        let path = std::env::temp_dir().join(format!("termurion-import-wg-{}.plist", std::process::id()));
+        let _td = TempDir::new("import-wg");
+        let path = _td.file("x.plist");
         std::fs::write(&path, r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
   <key>Workgroups</key><string>[]</string>
@@ -632,7 +635,6 @@ mod tests {
 </dict></plist>"#).unwrap();
         let got = globals_from_file(&path).unwrap();
         assert_eq!(got.len(), 1, "{got:?}");
-        let _ = std::fs::remove_file(&path);
     }
 
     /// Controller ruling I5: Import from iTerm2, with 13a's capitalized defaults keys and its
@@ -640,7 +642,8 @@ mod tests {
     #[test]
     fn legacy_import_never_brings_the_ai_consent_switches() {
         use crate::ai_settings as ai;
-        let path = std::env::temp_dir().join(format!("termurion-import-ai-legacy-{}.plist", std::process::id()));
+        let _td = TempDir::new("import-ai-legacy");
+        let path = _td.file("x.plist");
         let mut body = String::from("<key>Control</key><integer>2</integer><key>FocusFollowsMouse</key><true/>");
         for key in [ai::ADMIN, ai::ENABLE_AI, ai::AI_COMPLETIONS] {
             body += &format!("<key>{}</key><{}/>", defaults_key(key), if key == ai::ADMIN { "false" } else { "true" });
@@ -652,7 +655,6 @@ mod tests {
 <plist version="1.0"><dict>{body}</dict></plist>"#)).unwrap();
         let mut values = globals_from_file(&path).unwrap();
         migrate_legacy(&mut values, &legacy_from_file(&path).unwrap(), &mut []);
-        let _ = std::fs::remove_file(&path);
         let keys: Vec<&str> = values.iter().map(|(k, _)| k.as_str()).collect();
         assert!(keys.contains(&"FocusFollowsMouse") && keys.contains(&"LeftControl"), "{keys:?}");
         for key in keys {
@@ -662,7 +664,8 @@ mod tests {
 
     #[test]
     fn ai_consent_is_never_imported() {
-        let path = std::env::temp_dir().join(format!("termurion-import-ai-{}.plist", std::process::id()));
+        let _td = TempDir::new("import-ai");
+        let path = _td.file("x.plist");
         std::fs::write(&path, r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
   <key>EnableAI</key><true/>
@@ -678,7 +681,6 @@ mod tests {
   </dict></array>
 </dict></plist>"#).unwrap();
         let mut got = globals_from_file(&path).unwrap();
-        let _ = std::fs::remove_file(&path);
         got.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(got.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["AIManualModelConfigurations", "AIVendor"]);
         let config = &got[0].1[0];

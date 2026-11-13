@@ -1740,6 +1740,7 @@ impl Conductor {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_tmp::TempDir;
     use super::*;
     use Command::Cd;
 
@@ -2806,8 +2807,8 @@ mod tests {
 
     #[test]
     fn payload_order_follows_iterm2() {
-        let home = std::env::temp_dir().join(format!("termurion-conductor-payloads-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
+        let _td = TempDir::new("conductor-payloa");
+        let home = _td.to_path_buf();
         std::fs::create_dir_all(&home).unwrap();
         std::fs::write(home.join(".vimrc"), b"set nu\n").unwrap();
 
@@ -2828,7 +2829,6 @@ mod tests {
         reply(&mut c, &["/usr/bin/zsh\n/home/u\nzsh 5.9"], 0);
         let order: Vec<String> = commands_sent(&mut c, 6).into_iter().filter(|w| w.starts_with("write ")).collect();
         assert_eq!(order, ["write /$HOME", "write /$HOME/.iterm2/shell-integration", "write /$HOME/.iterm2/shell-integration/fish/vendor_conf.d"]);
-        let _ = std::fs::remove_dir_all(&home);
     }
 
     struct Hosts;
@@ -2875,7 +2875,8 @@ mod tests {
 
     #[test]
     fn skipped_files_reach_the_pane() {
-        let missing = std::env::temp_dir().join(format!("termurion-conductor-missing-{}", std::process::id())).join("nothing.txt");
+        let tmp = TempDir::new("cond-missing");
+        let missing = tmp.file("nothing.txt");
         let mut c = Conductor::new(setup("A"), None, "U");
         c.add_path(&missing.to_string_lossy(), "~/", Path::new("C:\\"));
         c.start();
@@ -2959,8 +2960,8 @@ mod tests {
 
     #[test]
     fn level_one_follows_iterm2() {
-        let dir = std::env::temp_dir().join(format!("termurion-conductor-level1-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _td = TempDir::new("conductor-level1");
+        let dir = _td.to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let hello = dir.join("hello.txt");
         std::fs::write(&hello, b"hi\n").unwrap();
@@ -3019,7 +3020,6 @@ mod tests {
         assert!(c.unhooked());
         assert_eq!(level(Some(c)), 1);
         assert!(!c.queue_writes());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// What `write()` puts on the wire for a command under `prefix`.
