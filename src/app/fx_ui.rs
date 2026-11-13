@@ -130,6 +130,8 @@ impl App {
             p.fx_checked = None;
         }
         self.fx_scan = true;
+        // The frame about to be built must already read the right rules.
+        self.tick_fx_profiles();
     }
 }
 
@@ -204,8 +206,8 @@ fn fx_job(jobs: &crate::jobwatch::JobWatch, p: &crate::pane::Pane, gateway: bool
 }
 
 /// Picks the profile of every pane that got output or a key (or all of them when `all`), at
-/// most four times a second each. The time a throttled pane is due again; None when nothing waits.
-fn detect(store: &crate::fx_store::Store, panes: &mut HashMap<PaneId, crate::pane::Pane>, all: bool, now: Instant, on: &dyn Fn(PaneId) -> bool, job: &dyn Fn(PaneId, &crate::pane::Pane) -> Option<String>) -> Option<Instant> {
+/// most four times a second each. Panes whose rules changed are added to `changed`. The time a throttled pane is due again; None when nothing waits.
+fn detect(store: &crate::fx_store::Store, panes: &mut HashMap<PaneId, crate::pane::Pane>, all: bool, now: Instant, on: &dyn Fn(PaneId) -> bool, job: &dyn Fn(PaneId, &crate::pane::Pane) -> Option<String>, changed: &mut Vec<PaneId>) -> Option<Instant> {
     let mut due: Option<Instant> = None;
     let ids: Vec<PaneId> = panes.keys().copied().collect();
     for id in ids {
@@ -230,13 +232,17 @@ fn detect(store: &crate::fx_store::Store, panes: &mut HashMap<PaneId, crate::pan
         let Some(p) = panes.get_mut(&id) else { continue };
         p.fx_dirty = false;
         p.fx_checked = Some(now);
-        p.fx_rules = match picked {
+        let rules = match picked {
             Some(rules) => rules,
             None => {
                 p.fx_memory.forget_cleared(&p.screen);
                 p.fx_memory.choose(store, &p.screen, job.as_deref()).1
             }
         };
+        if !Arc::ptr_eq(&rules, &p.fx_rules) {
+            changed.push(id);
+        }
+        p.fx_rules = rules;
     }
     due
 }
@@ -382,7 +388,13 @@ impl App {
         let tmux = &self.tmux;
         let jobs = &self.jobs;
         let live = self.fx_live_panes();
-        detect(&self.fx_profiles, &mut self.panes, reloaded, Instant::now(), &|id| live.contains(&id), &|id, p| fx_job(jobs, p, tmux.contains_key(&id)))
+        let mut changed = Vec::new();
+        let due = detect(&self.fx_profiles, &mut self.panes, reloaded, Instant::now(), &|id| live.contains(&id), &|id, p| fx_job(jobs, p, tmux.contains_key(&id)), &mut changed);
+        // New rules change what the effects read: that pane's window draws again.
+        for id in changed {
+            self.redraw_pane_window(id);
+        }
+        due
     }
 }
 
@@ -416,11 +428,32 @@ mod tests {
         panes.insert(1, p);
         let now = Instant::now();
         let none = |_: PaneId, _: &crate::pane::Pane| None;
-        assert_eq!(detect(&store, &mut panes, false, now, &|_| true, &none), None, "idle");
+        assert_eq!(detect(&store, &mut panes, false, now, &|_| true, &none, &mut Vec::new()), None, "idle");
         panes.get_mut(&1).unwrap().fx_dirty = true;
-        assert_eq!(detect(&store, &mut panes, false, now, &|_| true, &none), None, "ran, nothing left");
+        assert_eq!(detect(&store, &mut panes, false, now, &|_| true, &none, &mut Vec::new()), None, "ran, nothing left");
         panes.get_mut(&1).unwrap().fx_dirty = true;
-        assert_eq!(detect(&store, &mut panes, false, now, &|_| true, &none), Some(now + DETECT_EVERY), "throttled, due again");
+        assert_eq!(detect(&store, &mut panes, false, now, &|_| true, &none, &mut Vec::new()), Some(now + DETECT_EVERY), "throttled, due again");
+    }
+
+    #[test]
+    fn a_redraw_is_asked_only_when_the_rules_change() {
+        let dir = std::env::temp_dir().join(format!("fx_ui_chg_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = crate::fx_store::Store::open(&dir);
+        let mut p = crate::pane::Pane::recording(1, 80, 24);
+        p.screen = codex_screen();
+        p.fx_dirty = true;
+        let mut panes = HashMap::new();
+        panes.insert(1, p);
+        let none = |_: PaneId, _: &crate::pane::Pane| None;
+        let mut changed = Vec::new();
+        detect(&store, &mut panes, false, Instant::now(), &|_| true, &none, &mut changed);
+        assert_eq!(changed, vec![1], "Shell to Codex");
+        changed.clear();
+        panes.get_mut(&1).unwrap().fx_dirty = true;
+        panes.get_mut(&1).unwrap().fx_checked = None;
+        detect(&store, &mut panes, false, Instant::now(), &|_| true, &none, &mut changed);
+        assert!(changed.is_empty(), "same rules, no redraw");
     }
 
     #[test]
@@ -438,12 +471,12 @@ mod tests {
             jobs_read.set(jobs_read.get() + 1);
             None
         };
-        detect(&store, &mut panes, true, Instant::now(), &|_| false, &job);
+        detect(&store, &mut panes, true, Instant::now(), &|_| false, &job, &mut Vec::new());
         assert_eq!(panes[&1].fx_rules.name, "Shell", "not picked while effects are off");
         assert!(!panes[&1].fx_dirty && panes[&1].fx_checked.is_none());
         assert_eq!(jobs_read.get(), 0);
         panes.get_mut(&1).unwrap().fx_dirty = true;
-        detect(&store, &mut panes, false, Instant::now(), &|_| true, &job);
+        detect(&store, &mut panes, false, Instant::now(), &|_| true, &job, &mut Vec::new());
         assert_eq!(panes[&1].fx_rules.name, "Codex", "picked once effects are on");
     }
 
@@ -465,7 +498,7 @@ mod tests {
         p.fx_dirty = true;
         let mut panes = HashMap::new();
         panes.insert(1, p);
-        detect(&store, &mut panes, false, Instant::now(), &|_| true, &|_, _| None);
+        detect(&store, &mut panes, false, Instant::now(), &|_| true, &|_, _| None, &mut Vec::new());
         panes[&1].fx_rules.name.clone()
     }
 

@@ -58,12 +58,12 @@ pub struct Store {
     book_err: Option<String>,
 }
 
-/// FNV-1a 64 as 16 hex digits.
 /// A `.toml` name in any letter case (Windows and macOS folders keep what the person typed).
 fn is_toml(name: &str) -> bool {
     name.len() > 5 && name.get(name.len() - 5..).is_some_and(|t| t.eq_ignore_ascii_case(".toml"))
 }
 
+/// FNV-1a 64 as 16 hex digits.
 fn hash(bytes: &[u8]) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in bytes {
