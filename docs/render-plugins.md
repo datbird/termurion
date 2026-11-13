@@ -52,7 +52,8 @@ works over ssh and inside tmux:
 
 Each FX profile can change these times, the keys that count as Enter, and whether OSC 133 counts, in its `[done]` table. Inside
 tmux, Termurion watches only the tmux pane you typed in. Output in another tmux pane does not
-delay or start your done effect.
+delay or start your done effect. The effects also stay in the pane you type in when that pane is too short to
+show the bottom line of its input box.
 
 Under **Effects**, the **Claude Code** group turns each part on or off for every app, not only Claude Code: the Enter surge, the
 done surge, the input box lines in the effect's color, input box lines that are always alive,
