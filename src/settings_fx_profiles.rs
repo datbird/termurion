@@ -49,8 +49,27 @@ pub struct Form {
     busy: u64,
 }
 
+/// Glyphs as the field shows them. The settings font has no box drawing or block glyphs, so
+/// those show as `U+2500` codes; anything else shows as itself.
 fn glyphs(v: &[char]) -> String {
-    v.iter().collect()
+    let coded = |c: &char| ('\u{2500}'..='\u{259f}').contains(c);
+    if !v.iter().any(coded) {
+        return v.iter().collect();
+    }
+    v.iter().map(|c| if coded(c) { format!("U+{:04X}", *c as u32) } else { c.to_string() }).collect::<Vec<_>>().join(" ")
+}
+
+/// The glyphs a field says: plain characters, and `U+XXXX` codes (separated by spaces).
+fn parse_glyphs(s: &str) -> Vec<char> {
+    let mut out = Vec::new();
+    for tok in s.split_whitespace() {
+        let code = tok.strip_prefix("U+").or_else(|| tok.strip_prefix("u+")).filter(|h| (4..=6).contains(&h.len())).and_then(|h| u32::from_str_radix(h, 16).ok()).and_then(char::from_u32);
+        match code {
+            Some(c) => out.push(c),
+            None => out.extend(tok.chars()),
+        }
+    }
+    out
 }
 
 fn lines(v: &[String]) -> String {
@@ -130,7 +149,7 @@ impl Form {
     /// The rules the fields say, checked by the same parser a load uses. Err is the reason.
     fn build(&self, others: &[String]) -> Result<FxRules, String> {
         let list = |s: &str| s.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect::<Vec<_>>();
-        let chars = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<Vec<_>>();
+        let chars = parse_glyphs;
         let mut r = self.draft.clone();
         r.name = self.name.trim().to_string();
         valid_name(&r.name, others)?;
@@ -200,6 +219,11 @@ fn save_form(store: &mut Store, form: &mut Form) -> Result<Option<(String, Strin
     let others: Vec<String> = store.profiles.iter().filter(|p| p.file != form.file).map(|p| p.rules.name.clone()).collect();
     let rules = form.build(&others)?;
     store.save(&rules, &form.keep, Some(&form.file)).map_err(|e| e.to_string())?;
+    // The form now stands on what the store reloaded, so it is clean and sees later edits.
+    if let Some(l) = store.profiles.iter().find(|p| p.file == form.file) {
+        form.base = l.rules.clone();
+        form.keep = l.raw.clone();
+    }
     let old = std::mem::replace(&mut form.from, rules.name.clone());
     Ok((old != rules.name).then_some((old, rules.name)))
 }
@@ -329,7 +353,7 @@ fn list(ui: &mut egui::Ui, store: &mut Store, state: &mut PageState, actions: &m
                 }
             }
         }
-        if ui.add_enabled(name.is_some(), egui::Button::new("Delete")).on_hover_text("Remove the selected profile's file.").clicked() {
+        if ui.add_enabled(name.as_deref().is_some_and(|n| n != "Shell"), egui::Button::new("Delete")).on_hover_text("Remove the selected profile's file. The Shell profile stays.").clicked() {
             if let Some(n) = &name {
                 if confirm("Delete Profile?", &format!("Delete the FX profile {n}?")) {
                     match store.delete(n) {
@@ -399,8 +423,12 @@ fn editor(ui: &mut egui::Ui, store: &mut Store, state: &mut PageState, screen: O
     let d = FxRules::default();
     let others: Vec<String> = store.profiles.iter().filter(|p| p.file != form.file).map(|p| p.rules.name.clone()).collect();
     ui.strong("Match");
-    egui::Grid::new("fx_match").num_columns(2).show(ui, |ui| {
-        text_row(ui, "Name", "The name the menu and the list show: 1 to 64 characters, one of a kind. Shell default: Shell.", &mut form.name, false);
+    egui::Grid::new("fx_match").num_columns(2).min_col_width(170.0).show(ui, |ui| {
+        if form.from == "Shell" {
+            row(ui, "Name", "The Shell profile is the fallback for everything, so its name stays.", |ui| ui.add_enabled(false, egui::TextEdit::singleline(&mut form.name).desired_width(280.0)));
+        } else {
+            text_row(ui, "Name", "The name the menu and the list show: 1 to 64 characters, one of a kind. Shell default: Shell.", &mut form.name, false);
+        }
         text_row(ui, "Programs", "Program names (one per line) that make Auto pick this profile when one runs in the pane. Shell default: none.", &mut form.programs, true);
         text_row(ui, "Texts", "Texts (one per line) that make Auto pick this profile when they show on the screen. Shell default: none.", &mut form.texts, true);
         text_row(ui, "Prompt glyphs", "Prompt glyphs that make Auto pick this profile when one starts the cursor's row. Shell default: none.", &mut form.prompt, false);
@@ -417,7 +445,7 @@ fn editor(ui: &mut egui::Ui, store: &mut Store, state: &mut PageState, screen: O
         });
     });
     ui.strong("Cursor");
-    egui::Grid::new("fx_cursor").num_columns(2).show(ui, |ui| {
+    egui::Grid::new("fx_cursor").num_columns(2).min_col_width(170.0).show(ui, |ui| {
         row(ui, "Kind", "Which cursor the effects follow: the real one, one the app paints, or either. Shell default: either.", |ui| {
             egui::ComboBox::from_id_salt("fx_ckind")
                 .selected_text(match form.draft.cursor.kind {
@@ -436,7 +464,7 @@ fn editor(ui: &mut egui::Ui, store: &mut Store, state: &mut PageState, screen: O
         row(ui, "Echo anchor", "Keep the effect on the typed text while it echoes. Shell default: on.", |ui| ui.checkbox(&mut form.draft.cursor.echo_anchor, ""));
     });
     ui.strong("Input Box");
-    egui::Grid::new("fx_box").num_columns(2).show(ui, |ui| {
+    egui::Grid::new("fx_box").num_columns(2).min_col_width(170.0).show(ui, |ui| {
         row(ui, "Kind", "The box around the input: lines above and below, a shaded band, either, or none. Shell default: either.", |ui| {
             egui::ComboBox::from_id_salt("fx_bkind")
                 .selected_text(box_kind_name(form.draft.boxes.kind))
@@ -447,31 +475,31 @@ fn editor(ui: &mut egui::Ui, store: &mut Store, state: &mut PageState, screen: O
                 })
                 .response
         });
-        text_row(ui, "Line glyphs", "Characters a box line is drawn with. Shell default: \u{2500}\u{2501}.", &mut form.line_glyphs, false);
-        row(ui, "Line fill", &format!("How much of a row a box line must cover, 0 to 1. Shell default: {}.", d.boxes.line_fill), |ui| ui.add(egui::DragValue::new(&mut form.draft.boxes.line_fill).range(0.0..=1.0).speed(0.01)));
-        row(ui, "Bottom within", &format!("How many rows below the cursor the bottom line may be. Shell default: {}.", d.boxes.bottom_within), |ui| ui.add(egui::DragValue::new(&mut form.draft.boxes.bottom_within).range(0..=50)));
-        row(ui, "Band rows", &format!("The fewest and most rows a band has. Shell default: {} to {}.", d.boxes.band_rows.0, d.boxes.band_rows.1), |ui| {
+        text_row(ui, "Line glyphs", "Characters a box line is drawn with; write box glyphs as codes like U+2500. Shell default: U+2500 U+2501.", &mut form.line_glyphs, false);
+        row(ui, "Line fill", &format!("How much of a row a box line must cover, 0.1 to 1. Shell default: {}.", d.boxes.line_fill), |ui| ui.add(egui::DragValue::new(&mut form.draft.boxes.line_fill).range(0.1..=1.0).speed(0.01)));
+        row(ui, "Bottom within", &format!("How many rows below the cursor the bottom line may be, 0 to 50. Shell default: {}.", d.boxes.bottom_within), |ui| ui.add(egui::DragValue::new(&mut form.draft.boxes.bottom_within).range(0..=50)));
+        row(ui, "Band rows", &format!("The fewest and most rows a band has, each 1 to 50. Shell default: {} to {}.", d.boxes.band_rows.0, d.boxes.band_rows.1), |ui| {
             ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut form.draft.boxes.band_rows.0).range(1..=200));
+                ui.add(egui::DragValue::new(&mut form.draft.boxes.band_rows.0).range(1..=50));
                 ui.label("to");
-                ui.add(egui::DragValue::new(&mut form.draft.boxes.band_rows.1).range(1..=200)).on_hover_text("The most rows a band has.")
+                ui.add(egui::DragValue::new(&mut form.draft.boxes.band_rows.1).range(1..=50)).on_hover_text("The most rows a band has.")
             })
             .inner
         });
-        row(ui, "Band max screen", &format!("The most of the screen's height a band may fill, 0 to 1. Shell default: {}.", d.boxes.band_max_screen), |ui| ui.add(egui::DragValue::new(&mut form.draft.boxes.band_max_screen).range(0.0..=1.0).speed(0.01)));
-        row(ui, "Band min width", &format!("The least of the width a band must cover, 0 to 1. Shell default: {}.", d.boxes.band_min_width), |ui| ui.add(egui::DragValue::new(&mut form.draft.boxes.band_min_width).range(0.0..=1.0).speed(0.01)));
-        row(ui, "Band tolerance", &format!("How many rows may differ in color inside a band. Shell default: {}.", d.boxes.band_tolerance), |ui| ui.add(egui::DragValue::new(&mut form.draft.boxes.band_tolerance).range(0..=20)));
-        text_row(ui, "Edge glyphs", "Half block characters that end a band as an edge row. Shell default: \u{2580}.", &mut form.edge_glyphs, false);
+        row(ui, "Band max screen", &format!("The most of the screen's height a band may fill, 0 to 1. Shell default: {}.", d.boxes.band_max_screen), |ui| ui.add(egui::DragValue::new(&mut form.draft.boxes.band_max_screen).range(0.1..=1.0).speed(0.01)));
+        row(ui, "Band min width", &format!("The least of the width a band must cover, 0 to 1. Shell default: {}.", d.boxes.band_min_width), |ui| ui.add(egui::DragValue::new(&mut form.draft.boxes.band_min_width).range(0.1..=1.0).speed(0.01)));
+        row(ui, "Band tolerance", &format!("How many rows may differ in color inside a band, 0 to 50. Shell default: {}.", d.boxes.band_tolerance), |ui| ui.add(egui::DragValue::new(&mut form.draft.boxes.band_tolerance).range(0..=20)));
+        text_row(ui, "Edge glyphs", "Half block characters that end a band as an edge row; write them as codes like U+2580. Shell default: U+2580.", &mut form.edge_glyphs, false);
     });
     ui.strong("Prompt Mark");
-    egui::Grid::new("fx_mark").num_columns(2).show(ui, |ui| {
+    egui::Grid::new("fx_mark").num_columns(2).min_col_width(170.0).show(ui, |ui| {
         text_row(ui, "Glyphs", "Characters that count as the prompt mark at the start of the input. Shell default: \u{276f}>\u{203a}.", &mut form.prompt_marks, false);
     });
     ui.strong("Done");
-    egui::Grid::new("fx_done").num_columns(2).show(ui, |ui| {
+    egui::Grid::new("fx_done").num_columns(2).min_col_width(170.0).show(ui, |ui| {
         text_row(ui, "Enter", "What the Enter key sends, with \\r, \\n, \\t, \\\\ and \\xNN. Shell default: \\r.", &mut form.enter, false);
-        row(ui, "Quiet (ms)", &format!("How long the output must stay still before the answer counts as done. Shell default: {}.", d.done.quiet.as_millis()), |ui| ui.add(egui::DragValue::new(&mut form.quiet).range(0..=600_000)));
-        row(ui, "Busy (ms)", &format!("How long output after Enter must last before the program counts as busy. Shell default: {}.", d.done.busy.as_millis()), |ui| ui.add(egui::DragValue::new(&mut form.busy).range(0..=600_000)));
+        row(ui, "Quiet (ms)", &format!("How long the output must stay still before the answer counts as done, 100 to 60000. Shell default: {}.", d.done.quiet.as_millis()), |ui| ui.add(egui::DragValue::new(&mut form.quiet).range(100..=60_000)));
+        row(ui, "Busy (ms)", &format!("How long output after Enter must last before the program counts as busy, 0 to 60000. Shell default: {}.", d.done.busy.as_millis()), |ui| ui.add(egui::DragValue::new(&mut form.busy).range(0..=60_000)));
         row(ui, "Shell marks (OSC 133)", "Believe the shell's own prompt and command marks. Shell default: on.", |ui| ui.checkbox(&mut form.draft.done.osc133, ""));
     });
     let built = form.build(&others);
@@ -590,6 +618,22 @@ mod tests {
         other.matching.text = vec!["nothing like it".into()];
         other.matching.prompt.clear();
         assert_eq!(preview(&s, &other)[0], "Match: no match");
+    }
+
+    #[test]
+    fn a_saved_form_is_clean_and_glyph_codes_parse() {
+        let mut store = Store::open(&tmp("clean"));
+        let l = store.profiles.iter().find(|p| p.rules.name == "Codex").unwrap();
+        let mut form = Form::from_loaded(l);
+        form.name = "Codex 2".into();
+        form.line_glyphs = "U+2550 -".into();
+        save_form(&mut store, &mut form).unwrap();
+        assert_eq!(form.build(&[]).unwrap(), *form.base, "clean after the save");
+        let l = store.profiles.iter().find(|p| p.file == form.file).unwrap();
+        assert!(Arc::ptr_eq(&form.base, &l.rules));
+        assert_eq!(parse_glyphs("U+2500 u+2501 \u{203a}>"), vec!['\u{2500}', '\u{2501}', '\u{203a}', '>']);
+        assert_eq!(glyphs(&['\u{2500}', '>']), "U+2500 >");
+        assert_eq!(parse_glyphs(&glyphs(&['\u{2580}'])), vec!['\u{2580}']);
     }
 
     #[test]
