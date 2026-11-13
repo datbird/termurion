@@ -621,10 +621,10 @@ pub fn page_size(html: &str) -> (f64, f64) {
 }
 
 /// Writes the page for `regex` to the temp folder and opens it in the system browser (a judged
-/// local file, opened through `localfs::open_with_shell`). The file is the same one each time, so
-/// none piles up. The error is the reason it did not open.
+/// local file, opened through `localfs::open_with_shell`). The file is the same one each time,
+/// across runs too, so none piles up. The error is the reason it did not open.
 pub fn open(regex: &str, dark: bool) -> Result<(), String> {
-    let path = std::env::temp_dir().join(format!("termurion-regex-{}.html", std::process::id()));
+    let path = std::env::temp_dir().join("termurion-regex.html");
     let local = crate::localfs::judge(&path).ok_or("The temp folder is not a local folder.")?;
     crate::localfs::write(&local, page(regex, dark)).map_err(|e| e.to_string())?;
     crate::localfs::open_with_shell(&local, None, false).map_err(|e| e.to_string())
