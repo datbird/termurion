@@ -117,7 +117,7 @@ const MAX_GLYPHS: usize = 32;
 const MAX_TEXTS: usize = 16;
 const MAX_TEXT_LEN: usize = 200;
 const MAX_PROGRAMS: usize = 16;
-const MAX_NAME: usize = 100;
+pub const MAX_NAME: usize = 64;
 
 const TOP_KEYS: &[&str] = &["name", "match", "cursor", "box", "prompt_mark", "done"];
 const MATCH_KEYS: &[&str] = &["program", "text", "prompt", "shape"];
@@ -493,6 +493,13 @@ pub fn union(rules: &[&FxRules]) -> FxRules {
 mod tests {
     use super::*;
     use crate::palette::rgb;
+
+    #[test]
+    fn a_name_is_at_most_64_characters() {
+        assert!(parse(&format!("name = \"{}\"", "n".repeat(MAX_NAME))).is_ok());
+        let e = parse(&format!("name = \"{}\"", "n".repeat(MAX_NAME + 1))).unwrap_err();
+        assert!(e.message.contains("1 to 64"), "{}", e.message);
+    }
 
     #[test]
     fn an_empty_file_is_the_shell_rules() {

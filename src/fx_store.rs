@@ -59,6 +59,11 @@ pub struct Store {
 }
 
 /// FNV-1a 64 as 16 hex digits.
+/// A `.toml` name in any letter case (Windows and macOS folders keep what the person typed).
+fn is_toml(name: &str) -> bool {
+    name.len() > 5 && name.get(name.len() - 5..).is_some_and(|t| t.eq_ignore_ascii_case(".toml"))
+}
+
 fn hash(bytes: &[u8]) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in bytes {
@@ -185,7 +190,7 @@ impl Store {
             .flatten()
             .filter_map(|e| {
                 let n = e.file_name().to_string_lossy().into_owned();
-                if !n.ends_with(".toml") || n == BOOKKEEPING {
+                if !is_toml(&n) || n == BOOKKEEPING {
                     return None;
                 }
                 let m = e.metadata().ok()?;
@@ -204,9 +209,17 @@ impl Store {
         if let Some(m) = &self.book_err {
             self.errors.push((self.dir.join(BOOKKEEPING), ParseError { line: None, message: m.clone() }));
         }
-        for (n, _, _) in &self.stamp {
+        for (n, len, _) in &self.stamp {
             let path = self.dir.join(n);
             let fail = |line, message: String| ParseError { line, message };
+            if self.profiles.len() >= MAX_PROFILES {
+                self.errors.push((path, fail(None, format!("more than {MAX_PROFILES} profiles"))));
+                continue;
+            }
+            if *len > MAX_IMPORT {
+                self.errors.push((path, fail(None, format!("the file is over {} KiB, so it was not read", MAX_IMPORT / 1024))));
+                continue;
+            }
             let text = match std::fs::read_to_string(&path) {
                 Ok(t) => t,
                 Err(e) => {
@@ -225,10 +238,6 @@ impl Store {
                     continue;
                 }
             };
-            if self.profiles.len() >= MAX_PROFILES {
-                self.errors.push((path, fail(None, format!("more than {MAX_PROFILES} profiles"))));
-                continue;
-            }
             if self.profiles.iter().any(|p| p.rules.name == rules.name) {
                 self.errors.push((path, fail(None, format!("duplicate name \"{}\"", rules.name))));
                 continue;
@@ -308,7 +317,8 @@ impl Store {
         let base = slug(name);
         let mut p = self.dir.join(format!("{base}.toml"));
         let mut n = 2;
-        while p.exists() {
+        // A shipped file name stays the shipped profile's, even when that file is gone.
+        while p.exists() || SHIPPED.iter().any(|(f, _)| p.file_name().is_some_and(|x| x == *f)) {
             p = self.dir.join(format!("{base}-{n}.toml"));
             n += 1;
         }
@@ -601,6 +611,45 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(s.by_name("Big").is_none());
+    }
+
+    #[test]
+    fn a_file_just_over_64_kib_is_an_error_and_not_read() {
+        let d = tmp("bigfile");
+        Store::open(&d);
+        let over = format!("name = \"Big\"\n# {}\n", "x".repeat(64 * 1024));
+        std::fs::write(d.join("big.toml"), &over).unwrap();
+        let just = format!("name = \"Fits\"\n# {}\n", "x".repeat(64 * 1024 - 20));
+        assert!(just.len() as u64 <= MAX_IMPORT);
+        std::fs::write(d.join("fits.toml"), just).unwrap();
+        let s = Store::open(&d);
+        assert!(s.by_name("Big").is_none() && s.by_name("Fits").is_some());
+        let e = s.errors.iter().find(|(p, _)| p.ends_with("big.toml")).expect("an error for the big file");
+        assert!(e.1.message.contains("over 64 KiB"), "{}", e.1.message);
+    }
+
+    #[test]
+    fn toml_in_any_case_is_a_profile_file() {
+        let d = tmp("case");
+        Store::open(&d);
+        std::fs::write(d.join("Up.TOML"), named("Up")).unwrap();
+        std::fs::write(d.join("broken.Toml"), "name = ").unwrap();
+        let s = Store::open(&d);
+        assert!(s.by_name("Up").is_some());
+        assert!(s.errors.iter().any(|(p, _)| p.ends_with("broken.Toml")));
+        assert!(is_toml("a.toml") && !is_toml(".toml") && !is_toml("a.toml.bak"));
+    }
+
+    #[test]
+    fn a_user_profile_named_like_a_deleted_shipped_file_is_not_shipped() {
+        let d = tmp("shippedname");
+        let mut s = Store::open(&d);
+        s.delete("Codex").unwrap();
+        let mut r = FxRules::default();
+        r.name = "codex".into();
+        let p = s.save(&r, &toml::Table::new(), None).unwrap();
+        assert!(!p.ends_with("codex.toml"), "{p:?}");
+        assert!(s.profiles.iter().find(|l| l.rules.name == "codex").unwrap().shipped.is_none());
     }
 
     #[test]
