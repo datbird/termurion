@@ -813,6 +813,7 @@ impl SettingsWindow {
 
     pub fn redraw(&mut self, store: &mut Store, globals: &mut Globals, snippets: &mut crate::snippets::Store, fx_store: &mut crate::fx_store::Store, fx_screen: Option<&crate::screen::Screen>) -> Edit {
         let mut edit = Edit::None;
+        let owner = self.host.hwnd();
         let selected = self.selected.get_or_insert_with(|| store.default_guid.clone()).clone();
         // Edit Session: the page edits the profile the session uses (its own copy once it has one);
         // the list keeps the saved profile selected, as the destination of Copy Current Settings.
@@ -1114,7 +1115,7 @@ impl SettingsWindow {
                                 }
                             }
                             Page::FxProfiles => {
-                                fx_actions.extend(crate::settings_fx_profiles::page(ui, fx_store, fx, fx_screen));
+                                fx_actions.extend(crate::settings_fx_profiles::page(ui, fx_store, fx, fx_screen, owner));
                                 false
                             }
                             _ => settings_keys::pointer_page(ui, globals, keys, &profiles),

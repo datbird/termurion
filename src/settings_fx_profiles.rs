@@ -25,7 +25,7 @@ pub struct PageState {
     note: Option<String>,
 }
 
-const MAX_NAME: usize = 64;
+use crate::fx_profile::MAX_NAME;
 
 /// The editor's copy of one profile: the rules plus text buffers for the list fields.
 pub struct Form {
@@ -263,8 +263,9 @@ fn preview(screen: &Screen, rules: &FxRules) -> Vec<String> {
     vec![format!("Match: {m}"), format!("Cursor: {cursor}"), format!("Input box: {input_box}"), format!("Prompt mark: {mark}")]
 }
 
-fn confirm(title: &str, text: &str) -> bool {
-    crate::platform::dialog::message(None, title, text, crate::platform::dialog::Kind::ConfirmOkCancel) == crate::platform::dialog::Answer::Ok
+/// The question belongs to the Settings window (`owner`), so it cannot open behind it.
+fn confirm(owner: Option<isize>, title: &str, text: &str) -> bool {
+    crate::platform::dialog::message(owner, title, text, crate::platform::dialog::Kind::ConfirmOkCancel) == crate::platform::dialog::Answer::Ok
 }
 
 fn mark_of(l: &Loaded) -> &'static str {
@@ -279,7 +280,7 @@ fn mark_of(l: &Loaded) -> &'static str {
     }
 }
 
-pub fn page(ui: &mut egui::Ui, store: &mut Store, state: &mut PageState, screen: Option<&Screen>) -> Vec<PageAction> {
+pub fn page(ui: &mut egui::Ui, store: &mut Store, state: &mut PageState, screen: Option<&Screen>, owner: Option<isize>) -> Vec<PageAction> {
     let mut actions = Vec::new();
     // The folder is polled by the app each frame; keep frames coming while the page is open.
     ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
@@ -302,7 +303,7 @@ pub fn page(ui: &mut egui::Ui, store: &mut Store, state: &mut PageState, screen:
         ui.horizontal_top(|ui| {
             ui.vertical(|ui| {
                 ui.set_width(250.0);
-                list(ui, store, state, &mut actions);
+                list(ui, store, state, &mut actions, owner);
             });
             ui.separator();
             ui.vertical(|ui| editor(ui, store, state, screen, &mut actions));
@@ -311,7 +312,7 @@ pub fn page(ui: &mut egui::Ui, store: &mut Store, state: &mut PageState, screen:
     actions
 }
 
-fn list(ui: &mut egui::Ui, store: &mut Store, state: &mut PageState, actions: &mut Vec<PageAction>) {
+fn list(ui: &mut egui::Ui, store: &mut Store, state: &mut PageState, actions: &mut Vec<PageAction>, owner: Option<isize>) {
     ui.strong("Profiles");
     let mut pick = None;
     for l in &store.profiles {
@@ -360,7 +361,7 @@ fn list(ui: &mut egui::Ui, store: &mut Store, state: &mut PageState, actions: &m
         }
         if ui.add_enabled(name.as_deref().is_some_and(|n| n != "Shell"), egui::Button::new("Delete")).on_hover_text("Remove the selected profile's file. The Shell profile stays.").clicked() {
             if let Some(n) = &name {
-                if confirm("Delete Profile?", &format!("Delete the FX profile {n}?")) {
+                if confirm(owner, "Delete Profile?", &format!("Delete the FX profile {n}?")) {
                     match store.delete(n) {
                         Ok(()) => {
                             state.selected = None;
@@ -381,7 +382,7 @@ fn list(ui: &mut egui::Ui, store: &mut Store, state: &mut PageState, actions: &m
         let shipped = name.as_deref().is_some_and(|n| can_reset(store, n));
         if ui.add_enabled(shipped, egui::Button::new("Reset")).on_hover_text("Put a shipped profile back to the text Termurion ships.").clicked() {
             if let Some(n) = &name {
-                if confirm("Reset Profile?", &format!("Put {n} back to its shipped rules? Your edits to it are lost.")) {
+                if confirm(owner, "Reset Profile?", &format!("Put {n} back to its shipped rules? Your edits to it are lost.")) {
                     state.note = store.reset(n).err().map(|e| e.to_string());
                     state.form = None;
                 }
@@ -493,7 +494,7 @@ fn editor(ui: &mut egui::Ui, store: &mut Store, state: &mut PageState, screen: O
         });
         row(ui, "Band max screen", &format!("The most of the screen's height a band may fill, 0.1 to 1. Shell default: {}.", d.boxes.band_max_screen), |ui| ui.add(egui::DragValue::new(&mut form.draft.boxes.band_max_screen).range(0.1..=1.0).speed(0.01)));
         row(ui, "Band min width", &format!("The least of the width a band must cover, 0.1 to 1. Shell default: {}.", d.boxes.band_min_width), |ui| ui.add(egui::DragValue::new(&mut form.draft.boxes.band_min_width).range(0.1..=1.0).speed(0.01)));
-        row(ui, "Band tolerance", &format!("How many rows may differ in color inside a band, 0 to 50. Shell default: {}.", d.boxes.band_tolerance), |ui| ui.add(egui::DragValue::new(&mut form.draft.boxes.band_tolerance).range(0..=50)));
+        row(ui, "Band tolerance", &format!("The column tolerance in cells: how far the left and right edges of one band row may differ from the next row's. 0 to 50. Shell default: {}.", d.boxes.band_tolerance), |ui| ui.add(egui::DragValue::new(&mut form.draft.boxes.band_tolerance).range(0..=50)));
         text_row(ui, "Edge glyphs", "Half block characters that end a band as an edge row; write them as codes like U+2580. Shell default: U+2580.", &mut form.edge_glyphs, false);
     });
     ui.strong("Prompt Mark");

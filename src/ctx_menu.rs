@@ -442,9 +442,6 @@ fn main_rows(m: &mut Vec<Row>, c: &Ctx) {
     }
 }
 
-/// The Profiles of New Window (`action` "newwin") or New Tab ("newtab") (`PT:7234-7262`, `iTermController
-/// addBookmarksToMenu:`): a profile by guid, a tag folder as a submenu, and "Open All" after a line
-/// for the folder at `path`. The profile's shortcut is not shown: iTerm2 shows none in this menu.
 /// The FX Profile submenu: Auto, then every loaded profile, the pick checked. A pick that no
 /// longer loads shows as missing (and the pane runs Auto).
 pub fn fx_profile_rows(names: &[String], pick: Option<&str>) -> Vec<Row> {
@@ -459,6 +456,9 @@ pub fn fx_profile_rows(names: &[String], pick: Option<&str>) -> Vec<Row> {
     rows
 }
 
+/// The Profiles of New Window (`action` "newwin") or New Tab ("newtab") (`PT:7234-7262`, `iTermController
+/// addBookmarksToMenu:`): a profile by guid, a tag folder as a submenu, and "Open All" after a line
+/// for the folder at `path`. The profile's shortcut is not shown: iTerm2 shows none in this menu.
 pub fn profile_rows(nodes: &[crate::profile_menu::Node], action: &str) -> Vec<Row> {
     use crate::profile_menu::Node;
     let mut out = Vec::new();

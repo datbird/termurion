@@ -41,7 +41,7 @@ Each key is shown with its Shell default and its limit. A glyph list is one stri
 
 | Key | Default | Meaning |
 |---|---|---|
-| `name` | `"Shell"` | The name the lists and menus show. 1 to 100 characters in the file (the page allows 64). |
+| `name` | `"Shell"` | The name the lists and menus show. 1 to 64 characters. |
 
 ### `[match]`
 
@@ -75,7 +75,7 @@ The box around the input.
 | `band_rows` | `[2, 12]` | The fewest and most rows a band has. Each 1 to 50, the first not over the second. |
 | `band_max_screen` | `0.5` | The most of the screen's height a band may fill. 0.1 to 1. |
 | `band_min_width` | `0.5` | The least of the width a band must cover. 0.1 to 1. |
-| `band_tolerance` | `2` | How many rows may differ in color inside a band. 0 to 50. |
+| `band_tolerance` | `2` | The column tolerance in cells: how far the left and right edges of one band row may differ from the next row's. 0 to 50. |
 | `edge_glyphs` | `"▀"` (U+2580) | Half block characters that end a band as an edge row. Up to 32 glyphs. |
 
 ### `[prompt_mark]`
