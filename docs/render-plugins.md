@@ -50,7 +50,7 @@ works over ssh and inside tmux:
   draws until the answer is in) stays quiet for 1.2 seconds. With shell integration, a long
   shell command's end (OSC 133;D) plays it at once.
 
-Each FX profile can change these times, or turn a signal off, in its `[done]` table. Inside
+Each FX profile can change these times, the keys that count as Enter, and whether OSC 133 counts, in its `[done]` table. Inside
 tmux, Termurion watches only the tmux pane you typed in. Output in another tmux pane does not
 delay or start your done effect.
 
