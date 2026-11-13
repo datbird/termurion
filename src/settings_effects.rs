@@ -87,7 +87,7 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
 }
 
 /// Shows a folder in the file manager.
-fn open_folder(dir: &std::path::Path) {
+pub(crate) fn open_folder(dir: &std::path::Path) {
     #[cfg(windows)]
     let program = std::env::var_os("SystemRoot").map(|r| std::path::PathBuf::from(r).join("System32")).and_then(|s| crate::semantic::explorer_in(&s));
     #[cfg(target_os = "macos")]

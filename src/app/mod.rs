@@ -1330,6 +1330,8 @@ pub struct App {
     fx_focus: Option<PaneId>,
     /// Look at the profile folder on the next tick (the window gained focus).
     fx_scan: bool,
+    /// The profiles the panes last picked from, as the FX Profiles page sees the store change.
+    fx_seen: Vec<usize>,
     settings: Option<SettingsWindow>,
     profiles_win: Option<SettingsWindow>,
     /// When unsaved settings edits are due to be written.
@@ -2749,6 +2751,7 @@ pub fn run() {
         fx_profiles,
         fx_focus: None,
         fx_scan: false,
+        fx_seen: Vec::new(),
         settings: None,
         save_due: None,
         logout_armed: false,
@@ -8150,6 +8153,11 @@ impl ApplicationHandler<UserEvent> for App {
         }
         let window_exists = self.current_window().is_some() && !self.resident;
         // The unsaved settings notice compares every setting: only for the Settings window's own redraw.
+        // The FX Profiles page looks at the folder each frame it is drawn, so a hand edit shows.
+        let fx_page = matches!(event, WindowEvent::RedrawRequested) && self.settings.as_ref().is_some_and(|s| s.id() == id && s.shows_fx_profiles());
+        if fx_page {
+            self.fx_profiles_poll();
+        }
         let unsaved_notice = if matches!(event, WindowEvent::RedrawRequested) && self.settings.as_ref().is_some_and(|s| s.id() == id) { self.prefs_unsaved(false) } else { None };
         for profiles in [false, true] {
             let slot = if profiles { &mut self.profiles_win } else { &mut self.settings };
@@ -8183,7 +8191,9 @@ impl ApplicationHandler<UserEvent> for App {
                     {
                         win.fonts = g.renderer.installed_families();
                     }
-                    let edit = win.redraw(&mut self.store, &mut self.globals, &mut self.snippets);
+                    let fx_screen = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).map(|p| &p.screen);
+                    let edit = win.redraw(&mut self.store, &mut self.globals, &mut self.snippets, &mut self.fx_profiles, fx_screen);
+                    let fx_actions = std::mem::take(&mut win.fx_actions);
                     // "(recommended for this font)" is answered from the font's own table.
                     let asked = std::mem::take(&mut win.font_questions);
                     let named = std::mem::take(&mut win.font_info_questions);
@@ -8224,6 +8234,7 @@ impl ApplicationHandler<UserEvent> for App {
                         other => other,
                     };
                     self.apply_edit(edit);
+                    self.fx_page_actions(fx_actions, fx_page);
                     self.settings_warnings_answered(answered);
                     if let Some(guid) = setup {
                         self.open_status_setup(statusbar_ui::SetupTarget::Shared(guid), None, false, event_loop);

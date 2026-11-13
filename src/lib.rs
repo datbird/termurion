@@ -390,6 +390,7 @@ pub mod settings_triggers;
 pub mod settings_lists;
 pub mod settings_effects;
 pub mod settings_arrangements;
+pub mod settings_fx_profiles;
 pub mod settings_shortcuts;
 pub mod settings_hotkey;
 pub mod settings_ssh;

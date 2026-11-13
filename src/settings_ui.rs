@@ -121,6 +121,7 @@ pub enum Page {
     Keys,
     Shortcuts,
     Pointer,
+    FxProfiles,
     Advanced,
     Appearance,
     Arrangements,
@@ -523,6 +524,9 @@ pub struct SettingsWindow {
     advanced: crate::settings_advanced_pane::AdvancedState,
     /// Settings > General > AI: its sub-tab and whether it was just revealed.
     pub ai: crate::settings_ai::State,
+    /// Settings > FX Profiles: the form, and what its buttons ask of the app (taken after each frame).
+    fx: crate::settings_fx_profiles::PageState,
+    pub fx_actions: Vec<crate::settings_fx_profiles::PageAction>,
     /// The warning shown over the window (iTerm2's sheet), until it is answered.
     sheet: Option<settings_keys::SheetWarning>,
     /// "Always show alerts with remembered selections"; the app sets it before each redraw.
@@ -587,6 +591,11 @@ impl SettingsWindow {
         self.ai.reveal = true;
         self.host.window.request_redraw();
         apply
+    }
+
+    /// Whether the FX Profiles page is the one shown.
+    pub fn shows_fx_profiles(&self) -> bool {
+        self.mode == Mode::Settings && self.page == Page::FxProfiles
     }
 
     /// Whether Settings > General > AI > General shows, where the model popup, the Ollama
@@ -713,6 +722,8 @@ impl SettingsWindow {
             sleep_status: String::new(),
             advanced: Default::default(),
             ai: Default::default(),
+            fx: Default::default(),
+            fx_actions: Vec::new(),
             sheet: None,
             show_remembered: false,
             unsaved: None,
@@ -800,7 +811,7 @@ impl SettingsWindow {
         self.host.event(event)
     }
 
-    pub fn redraw(&mut self, store: &mut Store, globals: &mut Globals, snippets: &mut crate::snippets::Store) -> Edit {
+    pub fn redraw(&mut self, store: &mut Store, globals: &mut Globals, snippets: &mut crate::snippets::Store, fx_store: &mut crate::fx_store::Store, fx_screen: Option<&crate::screen::Screen>) -> Edit {
         let mut edit = Edit::None;
         let selected = self.selected.get_or_insert_with(|| store.default_guid.clone()).clone();
         // Edit Session: the page edits the profile the session uses (its own copy once it has one);
@@ -887,6 +898,7 @@ impl SettingsWindow {
         let sleep_status = &self.sleep_status;
         let advanced = &mut self.advanced;
         let ai = &mut self.ai;
+        let (fx, fx_actions) = (&mut self.fx, &mut self.fx_actions);
         let sheet = &mut self.sheet;
         let show_remembered = self.show_remembered;
         let unsaved = self.unsaved;
@@ -1005,7 +1017,7 @@ impl SettingsWindow {
                                 }
                             });
                         }
-                        for (p, name) in [(Page::General, "General"), (Page::Appearance, "Appearance"), (Page::Profiles, "Profiles"), (Page::Keys, "Keys"), (Page::Shortcuts, "Shortcuts"), (Page::Pointer, "Pointer"), (Page::Arrangements, "Arrangements"), (Page::Advanced, "Advanced")] {
+                        for (p, name) in [(Page::General, "General"), (Page::Appearance, "Appearance"), (Page::Profiles, "Profiles"), (Page::Keys, "Keys"), (Page::Shortcuts, "Shortcuts"), (Page::Pointer, "Pointer"), (Page::FxProfiles, "FX Profiles"), (Page::Arrangements, "Arrangements"), (Page::Advanced, "Advanced")] {
                             if ui.selectable_label(page == p, name).clicked() {
                                 page = p;
                             }
@@ -1100,6 +1112,10 @@ impl SettingsWindow {
                                         false
                                     }
                                 }
+                            }
+                            Page::FxProfiles => {
+                                fx_actions.extend(crate::settings_fx_profiles::page(ui, fx_store, fx, fx_screen));
+                                false
                             }
                             _ => settings_keys::pointer_page(ui, globals, keys, &profiles),
                         };

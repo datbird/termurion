@@ -252,6 +252,74 @@ impl App {
         true
     }
 
+    /// The FX Profiles page may have changed the store (a save, delete, import, or the folder):
+    /// when the profiles differ from what the panes picked from, the union is rebuilt and every
+    /// pane picks again.
+    fn fx_profiles_sync(&mut self) {
+        self.fx_profiles_poll();
+        let seen: Vec<usize> = self.fx_profiles.profiles.iter().map(|l| Arc::as_ptr(&l.rules) as usize).collect();
+        if seen == self.fx_seen {
+            return;
+        }
+        self.fx_seen = seen;
+        self.fx_find = self.fx_profiles.find_rules();
+        for p in self.panes.values_mut() {
+            p.fx_dirty = true;
+            p.fx_checked = None;
+        }
+        self.fx_scan = true;
+    }
+
+    /// What the FX Profiles page asked for: a rename the picks follow, the folder, import, export.
+    pub(super) fn fx_page_actions(&mut self, actions: Vec<crate::settings_fx_profiles::PageAction>, open: bool) {
+        use crate::settings_fx_profiles::PageAction;
+        for a in actions {
+            match a {
+                PageAction::Rename { old, new } => self.rename_fx_profile(&old, &new),
+                PageAction::ShowFolder => {
+                    let dir = crate::fx_store::user_dir();
+                    if let Ok(judged) = crate::localfs::judge_io(&dir) {
+                        let _ = crate::localfs::create_dir_all(&judged);
+                    }
+                    crate::settings_effects::open_folder(&dir);
+                }
+                PageAction::Import => self.import_fx_profile(),
+                PageAction::Export(name) => self.export_fx_profile(&name),
+            }
+        }
+        if open {
+            self.fx_profiles_sync();
+        }
+    }
+
+    fn import_fx_profile(&mut self) {
+        use crate::fx_store::ImportError;
+        let dialog = rfd::FileDialog::new().set_title("Import FX Profile").add_filter("FX profile", &["toml"]);
+        let Some(path) = crate::localfs::pick_file(dialog) else { return };
+        let mut result = self.fx_profiles.import(path.path(), false);
+        if let Err(ImportError::Exists(name)) = &result {
+            if !super::close_ui::confirm(self.hwnd(), "Replace Profile?", &format!("A profile named {name} exists. Replace it with the imported file?")) {
+                return;
+            }
+            result = self.fx_profiles.import(path.path(), true);
+        }
+        match result {
+            Ok(name) => self.banners.set("window", format!("Imported the FX profile {name}.")),
+            Err(ImportError::Exists(_)) => {}
+            Err(ImportError::Invalid(e)) => self.banners.set("window", format!("Not an FX profile: {}{}", e.line.map_or(String::new(), |n| format!("line {n}: ")), e.message)),
+            Err(ImportError::Io(e)) => self.banners.set("window", format!("Could not import: {e}")),
+        }
+    }
+
+    fn export_fx_profile(&mut self, name: &str) {
+        let dialog = rfd::FileDialog::new().set_title("Export FX Profile").set_file_name(format!("{name}.toml")).add_filter("FX profile", &["toml"]);
+        let Some(path) = crate::localfs::save_file(dialog) else { return };
+        match self.fx_profiles.export(name, path.path()) {
+            Ok(()) => self.banners.set("window", format!("Exported the FX profile {name}.")),
+            Err(e) => self.banners.set("window", format!("Could not export: {e}")),
+        }
+    }
+
     /// A profile was renamed in the GUI: the panes that picked it follow, and pick again now.
     pub(super) fn rename_fx_profile(&mut self, old: &str, new: &str) {
         if rename_picks(&mut self.panes, old, new) {

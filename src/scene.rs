@@ -1076,6 +1076,37 @@ pub fn effects_cursor(screen: &Screen, rules: &FxRules) -> Option<(usize, usize,
     }
 }
 
+/// What a set of FX rules finds in a screen, for the settings preview. Rows and columns count
+/// from 0; the box rows are the first and last row it covers.
+#[derive(Debug, PartialEq)]
+pub struct FxFound {
+    pub cursor: Option<(usize, usize, bool)>,
+    pub input_box: Option<(BoxKind, usize, usize)>,
+    pub prompt_mark: Option<(usize, usize, char)>,
+}
+
+/// Runs the same cursor, box and prompt mark reading the effects use, with these rules.
+pub fn fx_found(screen: &Screen, rules: &FxRules) -> FxFound {
+    let (cell, rows, cols) = ((10.0_f32, 20.0_f32), screen.term().screen_lines(), screen.term().columns());
+    let rect = Rect { x: 0.0, y: 0.0, w: cols as f32 * cell.0, h: rows as f32 * cell.1 };
+    let draw = DrawPrefs { fx_cursor: Some(crate::palette::rgb(255, 0, 0)), fx_rules: Some(std::sync::Arc::new(rules.clone())), ..Default::default() };
+    let mut frame = Frame::default();
+    pane_with(&mut frame, screen, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &draw, None, crate::render::DEFAULT_FACE);
+    let row_of = |y: f32| (y / cell.1).floor().max(0.0) as usize;
+    let fx = frame.fx;
+    let input_box = fx.as_ref().and_then(|f| f.input_box).map(|b| {
+        // A half row edge ends in the middle of its row, a whole row at the next one's top.
+        let last = if b.bottom % cell.1 == 0.0 { row_of(b.bottom).saturating_sub(1) } else { row_of(b.bottom) };
+        (b.kind, row_of(b.top), last)
+    });
+    let term = screen.term();
+    let prompt_mark = fx.and_then(|f| f.prompt_mark).map(|m| {
+        let (row, col) = (row_of(m[1]), (m[0] / cell.0).floor() as usize);
+        (row, col, glyph(term, term.grid().display_offset(), row, col))
+    });
+    FxFound { cursor: effects_cursor(screen, rules), input_box, prompt_mark }
+}
+
 /// Whether the cursor blinks where someone can see it: a program that hid it (DECTCEM) or
 /// scrolled it off the view leaves nothing to blink, so no blink clock runs for it.
 pub fn cursor_blinks_shown(screen: &Screen) -> bool {

@@ -361,7 +361,7 @@ pub fn parse(text: &str) -> Result<(FxRules, Vec<String>), ParseError> {
     Ok((r, rd.warnings))
 }
 
-fn parse_mark(s: &str) -> Option<PaintedMark> {
+pub(crate) fn parse_mark(s: &str) -> Option<PaintedMark> {
     if s == "reverse" {
         return Some(PaintedMark::Reverse);
     }
