@@ -973,6 +973,22 @@ pub fn painted_cursor(screen: &Screen, rules: &FxRules) -> Option<(usize, usize,
     };
     let whole = (0, term.columns().saturating_sub(1));
     let lines = term.screen_lines();
+    // tmux leaves the hidden cursor on the active pane's caret, which is the painted cell. That
+    // pane wins, even when it is too short to show its box's bottom line.
+    let point = term.grid().cursor.point;
+    let at = point.line.0 + offset as i32;
+    if at >= 0 && (at as usize) < lines {
+        let (row, col) = (at as usize, point.column.0);
+        let cell = &term.grid()[Line(row as i32 - offset as i32)][Column(col)];
+        if marked(cell) {
+            let pane = pane_cols(term, offset, row, col);
+            let top = (0..row).rev().find(|&r| box_line(term, offset, r, pane, bx) || box_line(term, offset, r, whole, bx));
+            // One painted cell between the box's top line and the caret: not a selection.
+            if top.is_some_and(|top| reverse(top + 1..row + 1).all(|(r, c, _)| c < pane.0 || c > pane.1 || (r, c) == (row, col))) {
+                return Some((row, col, cell.flags.contains(Flags::WIDE_CHAR)));
+            }
+        }
+    }
     // Every box with one reverse cell in it: tmux panes stacked or side by side can each hold
     // a Claude Code. Whole-width boxes are read from the bottom up.
     let mut found: Vec<(usize, usize, bool)> = Vec::new();
@@ -10580,6 +10596,40 @@ mod agent_box_tests {
         s.feed(b"\x1b[10;3Hx\x1b[7m \x1b[0m\x1b[23;1HScurrying");
         assert_eq!(painted_cursor(&s, &FxRules::default()), Some((9, 3, false)));
         assert_eq!(fx_of(&s).input_box.map(|b| [b.top, b.bottom]), Some([170.0, 210.0]), "the effects ring the top box");
+    }
+
+    /// Three Claude Code panes stacked in tmux, the real cursor hidden. The bottom pane is too
+    /// short for its box's bottom line, so its prompt sits on the row above tmux's status bar.
+    /// tmux leaves the hidden cursor on the bottom pane's caret, as tmux 3.4 does.
+    fn crowded() -> crate::screen::Screen {
+        let mut s = crate::screen::Screen::new(80, 30);
+        let line = "\u{2500}".repeat(80);
+        s.feed(format!("\x1b[?25l\x1b[2J\x1b[7;1H{line}\x1b[8;1H\u{276f} \x1b[7m \x1b[0m\x1b[9;1H{line}\x1b[11;1H{line}\x1b[16;1H{line}\x1b[17;1H\u{276f} \x1b[7m \x1b[0m\x1b[18;1H{line}\x1b[20;1H{line}\x1b[28;1H{line}\x1b[29;1H\u{276f} \x1b[7m \x1b[0m\x1b[30;1H\x1b[42m status \x1b[0m\x1b[29;3H").as_bytes());
+        s
+    }
+
+    #[test]
+    fn a_crowded_bottom_pane_keeps_the_effects() {
+        let s = crowded();
+        assert_eq!(painted_cursor(&s, &FxRules::default()), Some((28, 2, false)), "the bottom pane, not the one above it");
+        assert_eq!(fx_of(&s).cursor.map(|c| (c.rect[0], c.rect[1])), Some((20.0, 560.0)));
+    }
+
+    #[test]
+    fn a_crowded_middle_pane_keeps_the_effects() {
+        // The middle pane is active: tmux left the hidden cursor on its caret.
+        let mut s = crowded();
+        s.feed(b"\x1b[17;3H");
+        assert_eq!(painted_cursor(&s, &FxRules::default()), Some((16, 2, false)));
+    }
+
+    #[test]
+    fn a_hidden_cursor_on_a_selection_is_not_a_caret() {
+        // Two painted cells in the box: a selection, so the cursor's cell alone does not decide.
+        let line = "\u{2500}".repeat(80);
+        let mut s = crate::screen::Screen::new(80, 15);
+        s.feed(format!("\x1b[?25l\x1b[2J\x1b[11;1H{line}\x1b[12;1H\u{276f} \x1b[7mhe\x1b[0mllo\x1b[12;3H").as_bytes());
+        assert_eq!(painted_cursor(&s, &FxRules::default()), None);
     }
 
     #[test]
