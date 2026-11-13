@@ -9,7 +9,7 @@ release, is out on Windows, macOS, and Linux.
 
 | | |
 |---|---|
-| Release | 1.1.0 (2026-11-12), the current stable release, on Windows, macOS, and Linux. It adds FX profiles ([`help/fx-profiles.md`](help/fx-profiles.md)) |
+| Release | 1.1.1 (2026-11-13), the current stable release, on Windows, macOS, and Linux. 1.1.0 added FX profiles ([`help/fx-profiles.md`](help/fx-profiles.md)) |
 | Milestones done | 0 to 14, including 13a to 13y2 and the AI browser tools |
 | Tests | 7,473 (`#[test]` functions in `src` and `tests`) |
 | Rust | about 547,000 lines (`src`, `crates`, and `tests`) |

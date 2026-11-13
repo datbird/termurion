@@ -12,7 +12,7 @@ the same settings, the same menus, the same mouse, the same tmux integration, th
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D4?style=flat-square)
 ![Language](https://img.shields.io/badge/Rust-2024%20edition-B7410E?style=flat-square)
 ![Renderer](https://img.shields.io/badge/renderer-wgpu-5b8cff?style=flat-square)
-![Status](https://img.shields.io/badge/release-1.1.0-7a5cff?style=flat-square)
+![Status](https://img.shields.io/badge/release-1.1.1-7a5cff?style=flat-square)
 
 [Why Termurion](#why-termurion) ·
 [Features](#features) ·
@@ -31,7 +31,7 @@ the same settings, the same menus, the same mouse, the same tmux integration, th
 
 ## Why Termurion
 
-Termurion 1.1.0 is the current stable release. It runs on Windows 10 and 11, on macOS (Apple
+Termurion 1.1.1 is the current stable release. It runs on Windows 10 and 11, on macOS (Apple
 Silicon), and on Linux (x86_64), from one code base.
 
 If you live in iTerm2 on a Mac, every Windows terminal feels like a step down. Some have tabs and
@@ -220,23 +220,23 @@ flowchart LR
 
 ## Download
 
-Termurion 1.1.0 is the current stable release. Get it from
-[Releases](https://github.com/datbird/termurion/releases) (the 1.1.0 release is marked Latest). There is one file for each system. [Installing](docs/help/installing.md) has the steps in full. Report bugs in [Issues](https://github.com/datbird/termurion/issues).
+Termurion 1.1.1 is the current stable release. Get it from
+[Releases](https://github.com/datbird/termurion/releases) (the 1.1.1 release is marked Latest). There is one file for each system. [Installing](docs/help/installing.md) has the steps in full. Report bugs in [Issues](https://github.com/datbird/termurion/issues).
 
 **Windows 10 or 11 (x64)**
 
-- `Termurion-1.1.0-win64-installer.exe` installs for your user (no admin prompt), adds Start Menu entries, and upgrades earlier betas in place.
-- `Termurion-1.1.0-win64-portable.zip` is the portable build. Unzip it anywhere and run `termurion.exe`. Keep all the files together.
+- `Termurion-1.1.1-win64-installer.exe` installs for your user (no admin prompt), adds Start Menu entries, and upgrades earlier betas in place.
+- `Termurion-1.1.1-win64-portable.zip` is the portable build. Unzip it anywhere and run `termurion.exe`. Keep all the files together.
 - The files are not code-signed yet. If SmartScreen says they are unrecognized, choose More info, then Run anyway.
 
 **macOS (Apple Silicon)**
 
-- `Termurion-1.1.0-macos-arm64.zip` holds `Termurion.app`. Unzip it and move the app to Applications.
+- `Termurion-1.1.1-macos-arm64.zip` holds `Termurion.app`. Unzip it and move the app to Applications.
 - The app is ad hoc signed and not notarized, so the first open is blocked. Open System Settings > Privacy & Security, choose Open Anyway, then open the app again.
 
 **Linux (x86_64)**
 
-- `Termurion-1.1.0-linux-x86_64.AppImage`. Run `chmod +x` on it, then run it. The first run adds Termurion to the app launcher with its icon.
+- `Termurion-1.1.1-linux-x86_64.AppImage`. Run `chmod +x` on it, then run it. The first run adds Termurion to the app launcher with its icon.
 - It needs FUSE (`fusermount3`), which most desktops have. Where FUSE is missing, start it with `--appimage-extract-and-run`.
 - Tested on Ubuntu 26.04 with GNOME on Wayland. X11 also works. System-wide hotkeys work on X11 only.
 

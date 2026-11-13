@@ -1,6 +1,6 @@
 # Termurion Help
 
-These pages describe Termurion 1.1.0 on Windows, macOS, and Linux. The shortcuts are written for Windows and Linux, where Open Settings is Ctrl+Shift+, . The app Shortcut Key (the key iTerm2 calls Cmd) defaults to Ctrl+Shift there. You can change it to Ctrl+Alt in Settings > Keys. Option is Alt. No shortcut uses the Win key, which Windows keeps. On macOS the Shortcut Key is Cmd and Option is Option, so every shortcut is iTerm2's own: read Ctrl+Shift as Cmd.
+These pages describe Termurion 1.1.1 on Windows, macOS, and Linux. The shortcuts are written for Windows and Linux, where Open Settings is Ctrl+Shift+, . The app Shortcut Key (the key iTerm2 calls Cmd) defaults to Ctrl+Shift there. You can change it to Ctrl+Alt in Settings > Keys. Option is Alt. No shortcut uses the Win key, which Windows keeps. On macOS the Shortcut Key is Cmd and Option is Option, so every shortcut is iTerm2's own: read Ctrl+Shift as Cmd.
 
 A few features are not on macOS and Linux yet (for example coprocesses and the browser pane). Each page says so where it matters, and [Installing](installing.md) lists them. The chords that need three of iTerm2's modifiers have keys of their own, listed in [Shortcut keys on Windows](copy-mode.md#shortcut-keys-on-windows).
 
