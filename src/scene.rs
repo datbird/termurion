@@ -5397,9 +5397,80 @@ pub fn fps_meter(frame: &mut Frame, text: &str, pane_inner: Rect, cell: (f32, f3
     Some(r)
 }
 
+/// The hover URL's box in `pane` for a text of `chars` characters: of the bottom left, bottom
+/// right, top left and top right corners, the first that covers the least of `anchor`, the
+/// link under the pointer (`SessionView.m:1320-1400`). It floats over the pane and takes no
+/// room, so the link stays under the pointer.
+pub fn url_preview_rect(chars: usize, pane: Rect, anchor: Rect, cell: (f32, f32)) -> Rect {
+    const INSET: f32 = 4.0;
+    let w = (chars as f32 * cell.0 + 16.0).min((pane.w - 2.0 * INSET).max(0.0));
+    let h = cell.1 + 8.0;
+    let (left, right) = (pane.x + INSET, pane.x + pane.w - w - INSET);
+    let (top, bottom) = (pane.y + INSET, pane.y + pane.h - h - INSET);
+    let covered = |x: f32, y: f32| {
+        let ow = ((x + w).min(anchor.x + anchor.w) - x.max(anchor.x)).max(0.0);
+        let oh = ((y + h).min(anchor.y + anchor.h) - y.max(anchor.y)).max(0.0);
+        ow * oh
+    };
+    let mut best = (left, bottom);
+    for (x, y) in [(right, bottom), (left, top), (right, top)] {
+        if covered(x, y) < covered(best.0, best.1) {
+            best = (x, y);
+        }
+    }
+    Rect { x: best.0, y: best.1, w, h }
+}
+
+/// The hover URL in its box (`url_preview_rect`), cut with U+2026 when the pane is narrower
+/// than the text. Its box goes in `popups` with the pane's text under it cut out.
+pub fn url_preview(frame: &mut Frame, text: &str, pane: Rect, anchor: Rect, cell: (f32, f32)) -> Rect {
+    let cols = (((pane.w - 24.0) / cell.0.max(1.0)) as usize).max(1);
+    let shown: String = if text.chars().count() > cols { text.chars().take(cols - 1).chain(std::iter::once('\u{2026}')).collect() } else { text.to_string() };
+    let r = url_preview_rect(shown.chars().count(), pane, anchor, cell);
+    cut_out(frame, r, cell.1);
+    frame.popups.push(Quad { rect: r, color: rgba(STAMP_BG, 1.0) });
+    let span = Span { text: shown, color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+    frame.rows.push(TextRow { x: r.x + 8.0, y: r.y + 4.0, spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
+    r
+}
+
 #[cfg(test)]
 mod broadcast_tests {
     use super::*;
+
+    #[test]
+    fn url_preview_takes_the_bottom_left_corner() {
+        let pane = Rect { x: 10.0, y: 20.0, w: 400.0, h: 300.0 };
+        let far = Rect { x: 10.0, y: 40.0, w: 400.0, h: 16.0 };
+        let r = url_preview_rect(10, pane, far, (8.0, 16.0));
+        assert_eq!(r, Rect { x: 14.0, y: 20.0 + 300.0 - 24.0 - 4.0, w: 96.0, h: 24.0 });
+    }
+
+    #[test]
+    fn url_preview_leaves_the_link_under_the_pointer_alone() {
+        let pane = Rect { x: 10.0, y: 20.0, w: 400.0, h: 300.0 };
+        // The link is on the pane's last rows, full width: both bottom corners would cover it.
+        let link = Rect { x: 10.0, y: 290.0, w: 400.0, h: 30.0 };
+        let r = url_preview_rect(10, pane, link, (8.0, 16.0));
+        assert_eq!((r.x, r.y), (14.0, 24.0), "top left");
+        // A link on the left of the last row only: the bottom right corner is free.
+        let left = Rect { x: 10.0, y: 290.0, w: 150.0, h: 30.0 };
+        let r = url_preview_rect(10, pane, left, (8.0, 16.0));
+        assert_eq!((r.x + r.w, r.y + r.h), (406.0, 316.0), "bottom right");
+    }
+
+    #[test]
+    fn url_preview_draws_a_popup_and_cuts_a_long_url() {
+        let pane = Rect { x: 0.0, y: 0.0, w: 200.0, h: 300.0 };
+        let mut f = Frame::default();
+        let r = url_preview(&mut f, &"x".repeat(100), pane, Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 }, (8.0, 16.0));
+        assert_eq!(f.popups.len(), 1);
+        assert_eq!(f.popups[0].rect, r);
+        assert!(f.quads.is_empty(), "a popup box, so the pane's text under it is cut and its own text shows");
+        assert!(r.x >= 4.0 && r.x + r.w <= 196.0, "{r:?} stays inside the pane");
+        let text = &f.rows[0].spans[0].text;
+        assert!(text.ends_with('\u{2026}') && text.chars().count() as f32 * 8.0 + 16.0 <= r.w, "{text}");
+    }
 
     #[test]
     fn fps_meter_sits_right_aligned_on_row_zero() {

@@ -22,6 +22,8 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
 
 ## Done
 
+25. **Holding the Shortcut Key over a link moved the link away.** Seen 2026-11-14 on macOS; every system did it. The URL preview used the error bar, which takes a row from the window, so every pane lost a row, the text moved up and the click missed the link. Done in 1.1.2: the URL shows in a small box in a corner of the pane, the bottom left unless the link is there, as in iTerm2 (`scene::url_preview_rect`, tests `url_preview_leaves_the_link_under_the_pointer_alone` and `the_url_preview_takes_no_room_from_the_window`). The box takes no room, so the text stays where it is.
+
 24. **A copy failed now and then on macOS with "NSPasteboard#writeObjects: returned false".** Seen 2026-11-11 after the Mac was left locked. The pasteboard refused one write, and the clipboard handle made at launch had no second try. Done in 1.0.3: a refused write tries once more on a fresh handle (`platform::unix::clipboard::again`, tests `a_refused_write_goes_through_on_a_fresh_handle` and three more). Copy with styles and password copies get the same retry.
 
 23. **Restored text with tabs came back with its columns spread out.** Seen 2026-11-10 on the macOS port. A saved row held each tab and the blanks it skipped, so replay moved the cursor twice. Done in 1.0.2: text that keeps every cell writes the tab's first cell as a blank (`styled_copy::cell_char`, test `a_restored_tab_row_keeps_its_columns`). Rows saved before 1.0.2 stay spread out until they leave the history.

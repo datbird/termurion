@@ -563,6 +563,8 @@ pub struct App {
     /// The Win-click target under the pointer while Win is held.
     hover: Option<(PaneId, crate::find::Match)>,
     /// A Win-click target is under the pointer (the hand shows even with the underline off).
+    /// The URL shown while hovering, and its pane (`update_hover`).
+    hover_preview: Option<(PaneId, String)>,
     hover_hand: bool,
     /// What `update_hover` last computed for: pane, cell and the two hover keys (P2).
     hover_key: Option<(PaneId, i32, usize, bool, bool)>,
@@ -2391,6 +2393,7 @@ pub fn run() {
         title_press: None,
         pane_move: None,
         hover: None,
+        hover_preview: None,
         hover_hand: false,
         hover_key: None,
         command_click: None,
@@ -7081,6 +7084,11 @@ impl App {
                     && let Some(text) = self.fps_overlay() {
                         fps_rect = scene::fps_meter(&mut frame, &text, self.text_rect(id, rect), cell);
                     }
+                // The hover URL keeps off the pointer's row, where the link is.
+                if let Some((_, text)) = self.hover_preview.as_ref().filter(|(h, _)| *h == id) {
+                    let link = Rect { x: rect.x, y: self.cursor.1 - cell.1, w: rect.w, h: 2.0 * cell.1 };
+                    scene::url_preview(&mut frame, text, rect, link, cell);
+                }
                 self.draw_inline_progress(&mut frame, id, rect);
                 for row in frame.rows[rows_from..].iter_mut().filter(|r| r.face == crate::render::DEFAULT_FACE) {
                     row.face = face;

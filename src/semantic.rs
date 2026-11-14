@@ -62,7 +62,7 @@ pub enum Pass {
 /// `MaxSemanticHistoryPrefixOrSuffix`'s default: iTerm2 looks this far each way from the click.
 pub const DEFAULT_MAX_CONTEXT: usize = 2000;
 
-/// What the hover banner shows for a target (`TVA:733-748`).
+/// What the hover preview shows for a target (`TVA:733-748`).
 pub fn preview_text(target: &Target, smart_open_url: Option<&str>, show_preview: bool) -> Option<String> {
     let text = match target {
         Target::Link(url) => url.as_str(),
@@ -73,7 +73,7 @@ pub fn preview_text(target: &Target, smart_open_url: Option<&str>, show_preview:
     Some(shown_preview(text))
 }
 
-/// The most characters a hover banner shows.
+/// The most characters a hover preview shows.
 pub const PREVIEW_MAX: usize = 512;
 
 /// Program-controlled text (an OSC 8 URI) as a banner shows it: control, bidirectional and

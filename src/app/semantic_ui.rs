@@ -551,14 +551,13 @@ impl App {
             let text = found.as_ref().and_then(|(id, c, _, t)| {
                 semantic::preview_text(t, self.smart_open_url(*id, c, t).as_deref(), preview)
             });
-            match text {
-                Some(t) => self.banners.set("hover", t),
-                None => self.banners.clear("hover"),
-            }
+            // It floats in a corner of the pane: a bar would take a row and move the link.
+            let shown = text.zip(found.as_ref().map(|(id, ..)| *id)).map(|(t, id)| (id, t));
             self.hover_hand = found.is_some();
             let hover = found.and_then(|(id, _, cells, _)| hover_cells(cells, underline).map(|m| (id, m)));
-            if hover != self.hover {
+            if hover != self.hover || shown != self.hover_preview {
                 self.hover = hover;
+                self.hover_preview = shown;
                 self.redraw();
             }
         }
@@ -1066,6 +1065,17 @@ mod tests {
 
 #[cfg(test)]
 mod hover_tests {
+    /// The preview once took the error bar's row from the window, so every pane shrank and the
+    /// link moved from under the pointer.
+    #[test]
+    fn the_url_preview_takes_no_room_from_the_window() {
+        let src = include_str!("semantic_ui.rs");
+        let body = &src[src.find("pub(super) fn update_hover").unwrap()..src.find("mod hover_tests").unwrap()];
+        let body = &body[..body.find("\n    }\n").unwrap()];
+        assert!(!body.contains("banners"), "the preview is not a banner");
+        assert!(body.contains("self.hover_preview"));
+    }
+
     use super::*;
     use crate::find::Pos;
 

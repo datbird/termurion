@@ -18,6 +18,8 @@ pub(super) struct WinSlot {
     pointer_down: Option<PointerDown>,
     hover: Option<(PaneId, crate::find::Match)>,
     /// A Win-click target is under the pointer (the hand shows even with the underline off).
+    /// The URL shown while hovering, and its pane.
+    hover_preview: Option<(PaneId, String)>,
     hover_hand: bool,
     /// What `update_hover` last computed for: pane, cell and the two hover keys (P2).
     hover_key: Option<(PaneId, i32, usize, bool, bool)>,
@@ -170,6 +172,7 @@ impl WinSlot {
             drag: Drag::None,
             pointer_down: None,
             hover: None,
+            hover_preview: None,
             hover_hand: false,
             hover_key: None,
             command_click: None,
@@ -299,6 +302,7 @@ impl App {
         swap(&mut self.drag, &mut s.drag);
         swap(&mut self.pointer_down, &mut s.pointer_down);
         swap(&mut self.hover, &mut s.hover);
+        swap(&mut self.hover_preview, &mut s.hover_preview);
         swap(&mut self.hover_hand, &mut s.hover_hand);
         swap(&mut self.hover_key, &mut s.hover_key);
         swap(&mut self.command_click, &mut s.command_click);
@@ -1167,6 +1171,7 @@ impl WinSlot {
             drag: Drag::None,
             pointer_down: None,
             hover: None,
+            hover_preview: None,
             hover_hand: false,
             hover_key: None,
             command_click: None,
