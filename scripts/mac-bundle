@@ -14,7 +14,8 @@ cat > "$rscript" <<'REMOTE'
 set -euo pipefail
 cd src/termurion
 step() { echo "mac-bundle: $1 failed" >&2; exit 1; }
-~/.cargo/bin/cargo build --release --bins >&2 || step build
+# Background priority: the VM also runs Messages and the iMessage bridge, and the build must yield to them.
+/usr/sbin/taskpolicy -b ~/.cargo/bin/cargo build --release --bins >&2 || step build
 ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 [ -n "$ver" ] || step version
 app=target/release/Termurion.app
