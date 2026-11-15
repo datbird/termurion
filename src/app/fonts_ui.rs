@@ -16,7 +16,7 @@ use crate::render::{FaceKey, Renderer};
 pub fn face_key_for(p: &Profile, scale: f32, resolve: &dyn Fn(&str) -> String) -> FaceKey {
     let normal = p.font("Normal Font");
     let alt = p.bool("Use Non-ASCII Font").then(|| resolve(&p.font("Non Ascii Font").family));
-    let px = normal.size_pt * 4.0 / 3.0 * scale;
+    let px = profile::text_px(normal.size_pt, scale);
     let mut key = FaceKey::new(&resolve(&normal.family), alt.as_deref(), px, p.float("Horizontal Spacing") as f32, p.float("Vertical Spacing") as f32);
     // The font menu's stylistic sets and Contextual Alternates choice, kept in the stored font strings.
     key.ascii_features = normal.features.clone();
@@ -570,13 +570,16 @@ mod tests {
         let k = face_key_for(&p, 1.5, &same);
         assert_eq!(k.family, "Cascadia Mono");
         assert_eq!(k.alt_family.as_deref(), Some("MS Gothic"));
-        assert_eq!(k.px(), 28.0);
+        assert_eq!(k.px(), 21.0);
+        // A point is one pixel at scale 1, as in iTerm2: Monaco 12 is 12 pixels there too.
+        assert_eq!(face_key_for(&profile(&[("Normal Font", "Monaco 12".into())]), 1.0, &same).px(), 12.0);
+        assert_eq!(face_key_for(&profile(&[("Normal Font", "Monaco 12".into())]), 2.0, &same).px(), 24.0);
         assert_eq!((k.h_bits, k.v_bits), (1.1f32.to_bits(), 1.0f32.to_bits()));
         let off = profile(&[("Normal Font", "Cascadia Mono 14".into()), ("Use Non-ASCII Font", false.into())]);
         assert_eq!(face_key_for(&off, 1.0, &same).alt_family, None);
         // A size outside the drawn range is drawn at the range's end.
         let huge = profile(&[("Normal Font", "Cascadia Mono 500".into())]);
-        assert_eq!(face_key_for(&huge, 1.0, &same).px(), crate::render::quantize_px(128.0 * 4.0 / 3.0));
+        assert_eq!(face_key_for(&huge, 1.0, &same).px(), 128.0);
         // Names go through the resolver.
         let up = |s: &str| s.to_uppercase();
         assert_eq!(face_key_for(&p, 1.0, &up).family, "CASCADIA MONO");

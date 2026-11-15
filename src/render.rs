@@ -863,7 +863,7 @@ impl Renderer {
             .iter()
             .map(|e| {
                 let family = self.resolve_family(&e.font_name);
-                TableFont { family: self.has_family(&family).then_some(family), px: e.point_size.map(|pt| quantize_px(pt as f32 * 4.0 / 3.0 * self.scale)) }
+                TableFont { family: self.has_family(&family).then_some(family), px: e.point_size.map(|pt| quantize_px(crate::profile::text_px(pt as f32, self.scale))) }
             })
             .collect();
         (Some(std::sync::Arc::new(config)), fonts)
@@ -2896,7 +2896,7 @@ mod tests {
             for pt in [9.0f32, 11.0, 12.0, 13.0, 14.0, 17.0, 19.0] {
                 for scale in [1.0f32, 2.0] {
                     for h in [1.0f32, 0.9, 1.1, 1.25] {
-                        let px = quantize_px(pt * 4.0 / 3.0 * scale);
+                        let px = quantize_px(crate::profile::text_px(pt, scale));
                         let mut r = fixture_renderer(&device, &queue);
                         r.set_fonts(family, None, px, h, 1.0);
                         let n = 200;

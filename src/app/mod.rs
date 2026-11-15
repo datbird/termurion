@@ -5136,7 +5136,7 @@ impl App {
         let bold_difference = self.globals.int("MinimumWeightDifferenceForBoldFont") as i32;
         let calt = self.globals.bool("EnableContextualAlternates");
         let Some(g) = self.gpu.as_mut() else { return };
-        let px = normal.size_pt * 4.0 / 3.0 * g.window.scale_factor() as f32;
+        let px = profile::text_px(normal.size_pt, g.window.scale_factor() as f32);
         // The other panes' faces re-measure in place at a new scale (their ids stay valid).
         g.renderer.set_scale(g.window.scale_factor() as f32);
         g.renderer.set_generous_list(&generous);

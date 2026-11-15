@@ -55,6 +55,12 @@ pub fn default_font() -> &'static str {
 }
 
 /// The keys that hold a font as "<family> <size>".
+/// The pixel size of terminal text of `pt` points at the window's `scale`. A point is one pixel at
+/// scale 1, as in iTerm2, so "Monaco 12" is the same size in both apps.
+pub fn text_px(pt: f32, scale: f32) -> f32 {
+    pt * scale
+}
+
 pub const FONT_KEYS: [&str; 2] = ["Normal Font", "Non Ascii Font"];
 
 /// A saved font value that names a default Termurion shipped on this OS (the Cascadia Mono it
