@@ -7307,6 +7307,7 @@ impl App {
         // Window numbers show from 1 in the saved logs (P20).
         let window_n = self.window_number() + 1;
         let focused_window = self.focused;
+        let fx_pacing = crate::render_fx::Pacing::from_setting(self.globals.int("EffectsAnimation"));
         // Render plugins: the focused pane's Enter and done signals (done fires on quiet here).
         let signals_on = self.gpu.as_ref().and_then(|g| g.fx.as_ref()).is_some_and(|f| f.signals);
         let fx_signals = self.tabs.get(self.active).map(|t| t.focused).and_then(|id| self.panes.get_mut(&id)).filter(|_| signals_on).map(|p| {
@@ -7380,9 +7381,14 @@ impl App {
             }
             None => gpu.renderer.draw_with(&frame, &view, raw.as_ref(), w, h),
         };
-        // Animated effects keep the window drawing while they run.
-        if gpu.fx.as_ref().is_some_and(|f| f.wants_frame(fx_now, focused_window)) {
-            gpu.window.request_redraw();
+        // Animated effects keep the window drawing while they run, at the pace "Effects
+        // animation" allows; a frame not due yet waits in the idle loop (`fx_frame_tick`).
+        if let Some(fx) = gpu.fx.as_mut() {
+            fx.due = fx.next_frame(fx_now, focused_window, fx_pacing);
+            if fx.due.is_some_and(|t| t <= Instant::now()) {
+                fx.due = None;
+                gpu.window.request_redraw();
+            }
         }
         if let Some(t) = draw_start {
             self.draw_timers.stats[2].add(t.elapsed().as_secs_f64(), 1);
@@ -7997,7 +8003,8 @@ impl ApplicationHandler<UserEvent> for App {
         let egui_due = crate::egui_host::delayed_repaints(Instant::now());
         let gpu_due = self.gpu_recovery_tick();
         let fx_due = self.tick_fx_profiles();
-        let wake = [fx_due, gpu_due, egui_due, tray_due, workgroup_due, jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, badge_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, panels_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let fx_frame_due = self.fx_frame_tick();
+        let wake = [fx_due, fx_frame_due, gpu_due, egui_due, tray_due, workgroup_due, jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, badge_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, panels_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),

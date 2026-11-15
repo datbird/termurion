@@ -26,6 +26,16 @@ On Linux, with the setting on, a computer whose integrated GPU has no usable Vul
 
 host.log records the choice, for example `renderer: Dx12 on <GPU> (Prefer integrated to discrete GPU is on: asked for the low-power GPU; got IntegratedGpu; honored)`. If the system hands out a different kind of GPU than the setting asks for, the line says `NOT honored`.
 
+## Effects animation
+
+Settings > General > GPU Renderer > "Effects animation" sets how hard animated effects (render plugins whose animation is `always`) may drive the GPU. Such an effect redraws the whole window, so on an older GPU it can keep the GPU busy with nobody at the machine, and slow other programs that use the same GPU (a video encoder, screen sharing). The change applies to the next frame.
+
+- Full: as fast as the GPU allows, and it never stops (Termurion before 1.1.4).
+- Balanced (the default): up to 30 frames a second. The effect pauses after 2 minutes with no typing, no output and no focus change.
+- Light (older hardware): up to 15 frames a second, and it pauses after 30 seconds.
+
+A paused effect holds its last frame and starts again with the next key or output. Effects whose animation is `auto` or `off` are only capped, never paused.
+
 ## If the GPU is lost
 
 A driver update or reset, a timeout, a removed GPU or a laptop switching GPUs can take the graphics device away. Termurion makes a new one for every terminal window, using the same API order and GPU setting as at start, and redraws. Your sessions are not affected. host.log says `renderer: recovered on <API> <GPU>`. If a try fails, Termurion waits a moment and tries again, then moves down the API order. If every API fails, a banner asks you to restart Termurion. Settings and prompt windows that were open at the time may stop drawing; close and reopen them.

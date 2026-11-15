@@ -59,6 +59,50 @@ pub enum Animation {
     Off,
 }
 
+/// How hard animated effects may drive the GPU ("Effects animation", General > GPU Renderer).
+/// An `Always` effect redraws the whole window every frame, which keeps an older GPU busy with
+/// nobody at the machine; Balanced and Light cap the frame rate and pause it when idle.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Pacing {
+    /// As fast as the GPU allows, never paused (before 1.1.4).
+    Full,
+    /// Up to 30 frames a second; pauses after 2 minutes with no change.
+    #[default]
+    Balanced,
+    /// Up to 15 frames a second; pauses after 30 seconds. For older hardware.
+    Light,
+}
+
+impl Pacing {
+    /// The `EffectsAnimation` setting's value: 0 Full, 1 Balanced, 2 Light.
+    pub fn from_setting(v: i64) -> Pacing {
+        match v {
+            0 => Pacing::Full,
+            2 => Pacing::Light,
+            _ => Pacing::Balanced,
+        }
+    }
+
+    /// The shortest time between two animation frames; None draws as fast as the GPU allows.
+    pub fn frame_gap(self) -> Option<Duration> {
+        match self {
+            Pacing::Full => None,
+            Pacing::Balanced => Some(Duration::from_micros(33_333)),
+            Pacing::Light => Some(Duration::from_micros(66_667)),
+        }
+    }
+
+    /// How long an `Always` animation runs on with no cursor change (a key, output, a signal)
+    /// and no focus change. None never pauses.
+    pub fn idle_pause(self) -> Option<Duration> {
+        match self {
+            Pacing::Full => None,
+            Pacing::Balanced => Some(Duration::from_secs(120)),
+            Pacing::Light => Some(Duration::from_secs(30)),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Manifest {
     pub name: String,
@@ -647,6 +691,26 @@ impl Clock {
         self.last_change = Some(now);
     }
 
+    /// When the animation's next frame is due under `pacing`, or None when it needs none: not
+    /// animating, or an `Always` animation paused for idleness. A time at or before `now` means
+    /// draw at once. The idle clock is the last change (`frame` sets it when the cursor moves or
+    /// changes color, and on a focus change), else the first frame.
+    pub fn next_frame(&self, animation: Animation, now: Instant, focused: bool, pacing: Pacing) -> Option<Instant> {
+        if !self.wants_frame(animation, now, focused) {
+            return None;
+        }
+        if animation == Animation::Always
+            && let Some(limit) = pacing.idle_pause()
+            && now.saturating_duration_since(self.last_change.or(self.first).unwrap_or(now)) >= limit
+        {
+            return None;
+        }
+        Some(match (pacing.frame_gap(), self.last) {
+            (Some(gap), Some(last)) => (last + gap).max(now),
+            _ => now,
+        })
+    }
+
     /// Whether another frame should be drawn now only for the animation.
     pub fn wants_frame(&self, animation: Animation, now: Instant, focused: bool) -> bool {
         match animation {
@@ -957,6 +1021,48 @@ mod tests {
         assert!(clock.wants_frame(Animation::Always, t0 + Duration::from_secs(60), true));
         assert!(!clock.wants_frame(Animation::Always, t0, false), "always stops while unfocused");
         assert!(!clock.wants_frame(Animation::Off, t0, true));
+    }
+
+    #[test]
+    fn pacing_caps_the_frame_rate() {
+        let t0 = Instant::now();
+        let mut clock = Clock::default();
+        let mut u = Uniforms::default();
+        clock.frame(&mut u, t0, (10, 10), None, true);
+        assert_eq!(clock.next_frame(Animation::Always, t0, true, Pacing::Full), Some(t0), "full draws at once");
+        assert_eq!(clock.next_frame(Animation::Always, t0, true, Pacing::Balanced), Some(t0 + Duration::from_micros(33_333)));
+        assert_eq!(clock.next_frame(Animation::Always, t0, true, Pacing::Light), Some(t0 + Duration::from_micros(66_667)));
+        let late = t0 + Duration::from_millis(500);
+        assert_eq!(clock.next_frame(Animation::Always, late, true, Pacing::Light), Some(late), "an overdue frame draws now");
+        assert_eq!(clock.next_frame(Animation::Off, t0, true, Pacing::Light), None);
+        assert_eq!(clock.next_frame(Animation::Always, t0, false, Pacing::Full), None, "unfocused draws nothing extra");
+    }
+
+    #[test]
+    fn pacing_pauses_an_idle_always_animation() {
+        let t0 = Instant::now();
+        let mut clock = Clock::default();
+        let mut u = Uniforms::default();
+        clock.frame(&mut u, t0, (10, 10), None, true);
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        assert!(clock.next_frame(Animation::Always, at(29), true, Pacing::Light).is_some());
+        assert_eq!(clock.next_frame(Animation::Always, at(30), true, Pacing::Light), None, "light pauses after 30 s");
+        assert!(clock.next_frame(Animation::Always, at(119), true, Pacing::Balanced).is_some());
+        assert_eq!(clock.next_frame(Animation::Always, at(120), true, Pacing::Balanced), None, "balanced pauses after 2 min");
+        assert!(clock.next_frame(Animation::Always, at(3600), true, Pacing::Full).is_some(), "full never pauses");
+        // A cursor that moves (a key, output) wakes it.
+        let c = Cursor { rect: [1.0, 1.0, 1.0, 1.0], color: [1.0; 4], style: 0, visible: true };
+        clock.frame(&mut u, at(200), (10, 10), Some(c), true);
+        assert!(clock.next_frame(Animation::Always, at(201), true, Pacing::Light).is_some(), "a change wakes it");
+    }
+
+    #[test]
+    fn pacing_reads_the_setting() {
+        assert_eq!(Pacing::from_setting(0), Pacing::Full);
+        assert_eq!(Pacing::from_setting(1), Pacing::Balanced);
+        assert_eq!(Pacing::from_setting(2), Pacing::Light);
+        assert_eq!(Pacing::from_setting(7), Pacing::Balanced, "an unknown value takes the default");
+        assert_eq!(Pacing::default(), Pacing::Balanced);
     }
 
     #[test]

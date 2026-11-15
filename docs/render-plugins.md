@@ -108,7 +108,7 @@ cursor_color = "#9fd0fe"       # optional
 ```
 
 - `auto`: the window keeps redrawing for 2 seconds after the cursor moves or focus changes.
-- `always`: the window redraws every frame while it has focus.
+- `always`: the window redraws every frame while it has focus, at the pace Settings > General > GPU Renderer > "Effects animation" allows (see [GPU Renderer](help/gpu-renderer.md#effects-animation)).
 - `off`: the effect draws only when the terminal draws.
 
 A folder with the same name as a built-in effect replaces the built-in one.

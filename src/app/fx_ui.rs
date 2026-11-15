@@ -23,6 +23,9 @@ pub(super) struct FxRuntime {
     animation: Animation,
     /// The first plugin's preset cursor color (cursor-fx effects are made for one).
     preset: Option<[f32; 3]>,
+    /// When the animation's next frame is due ("Effects animation" caps the rate); the idle
+    /// loop asks for it then (`App::fx_frame_tick`).
+    pub(super) due: Option<Instant>,
 }
 
 /// The strongest animation among the plugins: always over auto over off.
@@ -53,6 +56,33 @@ fn xterm_256(i: usize) -> [f32; 3] {
 }
 
 impl App {
+    /// Asks every window whose effect frame is due for it, and returns when the next one is
+    /// due. A capped animation waits here instead of asking from inside its own frame.
+    pub(super) fn fx_frame_tick(&mut self) -> Option<Instant> {
+        let now = Instant::now();
+        let mut next: Option<Instant> = None;
+        let mut wake = |gpu: &mut Gpu| {
+            let Some(fx) = gpu.fx.as_mut() else { return };
+            match fx.due {
+                Some(t) if t <= now => {
+                    fx.due = None;
+                    gpu.window.request_redraw();
+                }
+                Some(t) => next = Some(next.map_or(t, |n| n.min(t))),
+                None => {}
+            }
+        };
+        if let Some(g) = self.gpu.as_mut() {
+            wake(g);
+        }
+        for (_, w) in self.windows.parked_mut() {
+            if let Some(g) = w.gpu.as_mut() {
+                wake(g);
+            }
+        }
+        next
+    }
+
     /// The plugin ids the focused pane's profile lists, in order, and its shared switches (in
     /// `render_fx::SWITCHES` order).
     fn fx_wanted(&self) -> (Vec<String>, Vec<bool>) {
@@ -117,7 +147,7 @@ impl App {
                 }
             }
         };
-        gpu.fx = Some(FxRuntime { ids: wanted, chain, clock: Clock::default(), uniforms: Uniforms::default(), animation: strongest(&animations), preset, keep_alpha, signals });
+        gpu.fx = Some(FxRuntime { ids: wanted, chain, clock: Clock::default(), uniforms: Uniforms::default(), animation: strongest(&animations), preset, keep_alpha, signals, due: None });
         if errors.is_empty() {
             self.banners.clear(BANNER);
         } else {
@@ -185,9 +215,12 @@ impl FxRuntime {
         self.chain.as_mut().map(|c| (c, &self.uniforms))
     }
 
-    /// Whether the animation wants another frame now.
-    pub(super) fn wants_frame(&self, now: Instant, focused: bool) -> bool {
-        self.active() && self.clock.wants_frame(self.animation, now, focused)
+    /// When the animation's next frame is due under `pacing`; None when it needs none.
+    pub(super) fn next_frame(&self, now: Instant, focused: bool, pacing: render_fx::Pacing) -> Option<Instant> {
+        if !self.active() {
+            return None;
+        }
+        self.clock.next_frame(self.animation, now, focused, pacing)
     }
 }
 

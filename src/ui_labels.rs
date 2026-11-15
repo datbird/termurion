@@ -119,6 +119,7 @@ const EXEMPT: &[(&str, &[&str], &str)] = &[
     ("global", &["OpenNoWindowsAtStartup"], "an item of the Window restoration policy popup (Only Restore Hotkey Window), not a row of its own"),
     ("global", &["WordSelectionMode", "CustomScriptsFolder", "PrefsCustomFolder"], "iTerm2's popup or text field has no label of its own; the row beside it carries the title"),
     ("global", &["TmuxDashboardLimit", "OpenTmuxDashboardIfHiddenWindows"], "Termurion's tmux dashboard rows; iTerm2 has no such controls"),
+    ("global", &["EffectsAnimation"], "Termurion's animated effects (render plugins); iTerm2 has no such control"),
     (
         "global",
         &[

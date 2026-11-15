@@ -3219,6 +3219,17 @@ type = "bool"
 default = true
 help = "Disable GPU renderer in low power mode\nTermurion always draws with the GPU; stored for settings you bring from iTerm2."
 
+# Termurion's own (iTerm2 has no animated effects): how hard animated effects may drive the GPU.
+[[setting]]
+key = "EffectsAnimation"
+tab = "General"
+section = "GPU Renderer"
+label = "Effects animation"
+type = "enum"
+default = 1
+choices = [ { value = 0, label = "Full" }, { value = 1, label = "Balanced" }, { value = 2, label = "Light (older hardware)" } ]
+help = "How hard animated effects (Render Plugins) may drive the GPU. Full draws as fast as the GPU allows and never stops. Balanced draws up to 30 frames a second and pauses after 2 minutes with no typing or output. Light draws up to 15 frames a second and pauses after 30 seconds. A paused effect starts again with the next key or output."
+
 [[setting]]
 key = "preferIntegratedGPU"
 tab = "General"
