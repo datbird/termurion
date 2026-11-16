@@ -570,16 +570,18 @@ mod tests {
         let k = face_key_for(&p, 1.5, &same);
         assert_eq!(k.family, "Cascadia Mono");
         assert_eq!(k.alt_family.as_deref(), Some("MS Gothic"));
-        assert_eq!(k.px(), 21.0);
-        // A point is one pixel at scale 1, as in iTerm2: Monaco 12 is 12 pixels there too.
-        assert_eq!(face_key_for(&profile(&[("Normal Font", "Monaco 12".into())]), 1.0, &same).px(), 12.0);
-        assert_eq!(face_key_for(&profile(&[("Normal Font", "Monaco 12".into())]), 2.0, &same).px(), 24.0);
+        // macOS: a point is one pixel at scale 1, as in iTerm2. Windows and Linux: 4/3 of a pixel,
+        // as in Windows Terminal and the GTK terminals.
+        let mac = cfg!(target_os = "macos");
+        assert_eq!(k.px(), if mac { 21.0 } else { 28.0 });
+        assert_eq!(face_key_for(&profile(&[("Normal Font", "Monaco 12".into())]), 1.0, &same).px(), if mac { 12.0 } else { 16.0 });
+        assert_eq!(face_key_for(&profile(&[("Normal Font", "Monaco 12".into())]), 2.0, &same).px(), if mac { 24.0 } else { 32.0 });
         assert_eq!((k.h_bits, k.v_bits), (1.1f32.to_bits(), 1.0f32.to_bits()));
         let off = profile(&[("Normal Font", "Cascadia Mono 14".into()), ("Use Non-ASCII Font", false.into())]);
         assert_eq!(face_key_for(&off, 1.0, &same).alt_family, None);
         // A size outside the drawn range is drawn at the range's end.
         let huge = profile(&[("Normal Font", "Cascadia Mono 500".into())]);
-        assert_eq!(face_key_for(&huge, 1.0, &same).px(), 128.0);
+        assert_eq!(face_key_for(&huge, 1.0, &same).px(), crate::render::quantize_px(profile::text_px(128.0, 1.0)));
         // Names go through the resolver.
         let up = |s: &str| s.to_uppercase();
         assert_eq!(face_key_for(&p, 1.0, &up).family, "CASCADIA MONO");

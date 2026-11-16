@@ -54,13 +54,19 @@ pub fn default_font() -> &'static str {
     default_font_for(crate::platform::OS_NAME, std::path::Path::new("/System/Library/Fonts/Monaco.ttf").exists())
 }
 
-/// The keys that hold a font as "<family> <size>".
-/// The pixel size of terminal text of `pt` points at the window's `scale`. A point is one pixel at
-/// scale 1, as in iTerm2, so "Monaco 12" is the same size in both apps.
+/// Pixels per point at scale 1, the way this OS's own apps size type. macOS counts 72 points to
+/// its logical inch, so a point is one pixel (iTerm2's Monaco 12 is 12 pixels). Windows and Linux
+/// (GTK, Qt, fontconfig) count 96 pixels to the inch, so a point is 4/3 of a pixel (Windows
+/// Terminal's Cascadia Mono 12 and Ptyxis's DejaVu Sans Mono 12 are 16 pixels).
+pub const PX_PER_PT: f32 = if cfg!(target_os = "macos") { 1.0 } else { 4.0 / 3.0 };
+
+/// The pixel size of terminal text of `pt` points at the window's `scale`, so a size matches the
+/// same font and size in the OS's own terminal.
 pub fn text_px(pt: f32, scale: f32) -> f32 {
-    pt * scale
+    pt * PX_PER_PT * scale
 }
 
+/// The keys that hold a font as "<family> <size>".
 pub const FONT_KEYS: [&str; 2] = ["Normal Font", "Non Ascii Font"];
 
 /// A saved font value that names a default Termurion shipped on this OS (the Cascadia Mono it

@@ -239,7 +239,7 @@ pub fn group(ui: &mut egui::Ui, profile: &mut Profile, families: &[String], bidi
     changed
 }
 
-/// The size in pixels per em a font of `size_pt` points is drawn at  at scale 1, the
+/// The size in pixels per em a font of `size_pt` points is drawn at, at scale 1, the
 /// key the app answers the "(recommended for this font)" question under.
 pub fn ppem(size_pt: f32) -> u16 {
     crate::profile::text_px(size_pt, 1.0).round().clamp(1.0, 4096.0) as u16
