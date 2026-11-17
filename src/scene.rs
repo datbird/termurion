@@ -10303,7 +10303,15 @@ mod agent_box_tests {
         let img = crate::images::Image { width_px: 20, height_px: 20, cols: 3, rows: 2, frames: vec![crate::images::Frame { rgba: std::sync::Arc::new(vec![9; 20 * 20 * 4]), delay_ms: 0 }], broken: false, keep_aspect: false, uid: 0, filename: None, paused: None };
         s.place_image(img, true);
         s.feed(b"text below the picture\r\nmore");
-        cases.push(("image-with-text-below".into(), plain(&s), true));
+        // The picture's id comes from a counter every test shares: zero it.
+        let shot = plain(&s);
+        let mut lines: Vec<String> = shot.lines().map(String::from).collect();
+        for i in 1..lines.len() {
+            if lines[i - 1].trim() == "key: (" {
+                lines[i] = "0,".to_string();
+            }
+        }
+        cases.push(("image-with-text-below".into(), lines.join("\n"), true));
 
         let mut s = crate::screen::Screen::new(30, 4);
         s.feed(b"\x1b[31mdefault red\x1b[0m\r\n\x1b]4;1;rgb:00/ff/00\x07\x1b[31mnow green\x1b[0m\r\n\x1b[48;5;1mbg one\x1b[0m");

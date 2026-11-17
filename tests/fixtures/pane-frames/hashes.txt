@@ -1,7 +1,7 @@
 scroll-chunk-100 len=26297 fnv=d6834f743e767def
 scroll-last len=26297 fnv=3183327769ef8a0f
 scroll-back-7 len=26512 fnv=56ad8dee879f3b6e
-image-with-text-below len=192192 fnv=afdf760a24c73ce1
+image-with-text-below len=192096 fnv=78f36bbae2874e5d
 tmux-mx-agy len=549864 fnv=c50e3e83d91aac3d
 tmux-mx-codex len=264068 fnv=484960d6de8f7f8f
 tmux-mx-codex-after len=303361 fnv=77afcf1b3d5c9e36
