@@ -10238,6 +10238,127 @@ mod agent_box_tests {
         assert_eq!(out, std::fs::read_to_string(&file).unwrap());
     }
 
+    /// What `pane_with` draws for a set of screens, pinned before rows were built one by one:
+    /// the whole `Frame` for each small case, a stable hash of it for the big ones.
+    /// `TERMURION_BLESS=1` rewrites the fixtures.
+    #[test]
+    fn pane_frames_match_the_recorded_baseline() {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let rect = crate::layout::Rect { x: 4.0, y: 6.0, w: 800.0, h: 480.0 };
+        let cell = (10.0, 20.0);
+        let face = crate::render::DEFAULT_FACE;
+        let hl = || Highlights { matches: &[], color: crate::palette::rgb(255, 255, 0), hover: None, link: crate::palette::rgb(0, 0, 255), labels: &[], notes: &[], dim: crate::dim::Dim::NONE, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[], command_region: None, shade: None, outline: [crate::palette::rgb(1, 2, 3), crate::palette::rgb(4, 5, 6)] };
+        let draw_of = |s: &crate::screen::Screen, focused: bool, look: &CursorLook, draw: &DrawPrefs, h: Option<&Highlights>| {
+            let mut f = Frame::default();
+            pane_with(&mut f, s, rect, cell, focused, look, draw, h, face);
+            format!("{f:#?}")
+        };
+        let plain = |s: &crate::screen::Screen| draw_of(s, true, &CursorLook::shown(true), &DrawPrefs::default(), None);
+        let p = |row: i32, col: usize| Point::new(Line(row), Column(col));
+        // (name, full text); `big` cases keep a hash only.
+        let mut cases: Vec<(String, String, bool)> = Vec::new();
+
+        let mut s = crate::screen::Screen::new(80, 24);
+        for n in 0..200 {
+            s.feed(format!("line {n} of the scroll\r\n").as_bytes());
+            if n == 100 {
+                cases.push(("scroll-chunk-100".into(), plain(&s), true));
+            }
+        }
+        cases.push(("scroll-last".into(), plain(&s), true));
+        s.term_mut().scroll_display(alacritty_terminal::grid::Scroll::Delta(7));
+        cases.push(("scroll-back-7".into(), plain(&s), true));
+
+        let mut s = crate::screen::Screen::new(30, 6);
+        s.feed(b"first line here\r\nsecond \x1b[1;31mred bold\x1b[0m line\r\nthird\x1b[4m under\x1b[0m\r\nlink \x1b]8;;http://x\x07here\x1b]8;;\x07 ok");
+        s.term_mut().selection = Some(Selection::new(SelectionType::Simple, p(0, 3), Side::Left));
+        s.term_mut().selection.as_mut().unwrap().update(p(2, 4), Side::Right);
+        cases.push(("selection".into(), plain(&s), false));
+        s.term_mut().selection = None;
+        let matches = [crate::find::Match { start: crate::find::Pos { row: 0, col: 6 }, end: crate::find::Pos { row: 0, col: 9 } }, crate::find::Match { start: crate::find::Pos { row: 1, col: 0 }, end: crate::find::Pos { row: 1, col: 5 } }];
+        let hover = crate::find::Match { start: crate::find::Pos { row: 3, col: 5 }, end: crate::find::Pos { row: 3, col: 8 } };
+        let h = Highlights { matches: &matches, hover: Some(hover), ..hl() };
+        cases.push(("matches-and-hover".into(), draw_of(&s, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&h)), false));
+        let labels = [(crate::find::Pos { row: 2, col: 2 }, "ab".to_string())];
+        let notes = [(crate::find::Match { start: crate::find::Pos { row: 0, col: 0 }, end: crate::find::Pos { row: 0, col: 4 } }, Some("a note".to_string())), (crate::find::Match { start: crate::find::Pos { row: 1, col: 7 }, end: crate::find::Pos { row: 2, col: 2 } }, None)];
+        let h = Highlights { labels: &labels, notes: &notes, ..hl() };
+        cases.push(("label-and-note".into(), draw_of(&s, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&h)), false));
+        let h = Highlights { dim: crate::dim::Dim { amount: 0.5, only_text: true }, ..hl() };
+        cases.push(("unfocused-dim-only-text".into(), draw_of(&s, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&h)), false));
+        cases.push(("unfocused-legacy-dim".into(), draw_of(&s, false, &CursorLook::shown(true), &DrawPrefs::default(), None), false));
+        let extra = [crate::seltext::Sub { start: crate::find::Pos { row: 1, col: 2 }, end: crate::find::Pos { row: 1, col: 6 }, mode: crate::seltext::Mode::Character, window: None, connected: false }];
+        let h = Highlights { selections: &extra, ..hl() };
+        cases.push(("extra-selection".into(), draw_of(&s, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&h)), false));
+
+        let mut s = crate::screen::Screen::new(30, 6);
+        s.feed(b"\x1b[41m  red \x1b[44m blue\x1b[0m\r\n\x1b[42mgreen\x1b[0m cursor\x1b[2;8H");
+        let mut look = CursorLook::shown(true);
+        look.smart = Some((0.5, 0.5));
+        cases.push(("block-cursor-smart".into(), draw_of(&s, true, &look, &DrawPrefs::default(), None), false));
+        cases.push(("block-cursor-plain".into(), plain(&s), false));
+
+        let mut s = crate::screen::Screen::new(30, 6);
+        s.feed(b"text above\r\n");
+        let img = crate::images::Image { width_px: 20, height_px: 20, cols: 3, rows: 2, frames: vec![crate::images::Frame { rgba: std::sync::Arc::new(vec![9; 20 * 20 * 4]), delay_ms: 0 }], broken: false, keep_aspect: false, uid: 0, filename: None, paused: None };
+        s.place_image(img, true);
+        s.feed(b"text below the picture\r\nmore");
+        cases.push(("image-with-text-below".into(), plain(&s), true));
+
+        let mut s = crate::screen::Screen::new(30, 4);
+        s.feed(b"\x1b[31mdefault red\x1b[0m\r\n\x1b]4;1;rgb:00/ff/00\x07\x1b[31mnow green\x1b[0m\r\n\x1b[48;5;1mbg one\x1b[0m");
+        cases.push(("osc4-palette".into(), plain(&s), false));
+
+        let mut s = crate::screen::Screen::new(30, 5);
+        s.feed("ascii \u{4e2d}\u{6587}\u{5b57} wide\r\n\u{ff21}\u{ff22}x\u{1f600}y\r\nab \u{5d0}\u{5d1}\u{5d2} cd\r\n\u{627}\u{644}\u{639}\u{631}\u{628}\u{64a}\u{629} end".as_bytes());
+        cases.push(("cjk-rtl".into(), plain(&s), false));
+
+        let mut s = crate::screen::Screen::new(30, 6);
+        s.feed("\u{250c}\u{2500}\u{2500}\u{252c}\u{2500}\u{2510}\r\n\u{2502}ab\u{2502}cd\u{2502}\r\n\u{2514}\u{2500}\u{2500}\u{2534}\u{2500}\u{2518}\r\n\u{e0b0}\u{e0b2}\u{e0b4} \u{2588}\u{2591}\u{2592}".as_bytes());
+        cases.push(("box-and-powerline".into(), plain(&s), false));
+        let pl = DrawPrefs { powerline: true, ..DrawPrefs::default() };
+        cases.push(("box-and-powerline-on".into(), draw_of(&s, true, &CursorLook::shown(true), &pl, None), false));
+
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tmux-agents/");
+        let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".raw").map(String::from)).collect();
+        names.sort();
+        for name in &names {
+            let panes = std::fs::read_to_string(format!("{dir}{name}.panes")).unwrap();
+            let (mut cols, mut rows) = (0, 0);
+            for l in panes.lines() {
+                let n: Vec<usize> = l.split(' ').map(|w| w.parse().unwrap()).collect();
+                cols = cols.max(n[1] + n[3]);
+                rows = rows.max(n[2] + n[4]);
+            }
+            let mut s = crate::screen::Screen::new(cols, rows + 1);
+            s.feed(&std::fs::read(format!("{dir}{name}.raw")).unwrap());
+            cases.push((format!("tmux-{name}"), plain(&s), true));
+        }
+
+        // A hash that never changes between Rust versions (FNV-1a).
+        let fnv = |t: &str| t.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+        let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/pane-frames/");
+        let bless = std::env::var("TERMURION_BLESS").is_ok();
+        let mut hashes = String::new();
+        for (name, text, big) in &cases {
+            if *big {
+                hashes.push_str(&format!("{name} len={} fnv={:016x}\n", text.len(), fnv(text)));
+            } else {
+                let file = format!("{fixtures}{name}.txt");
+                if bless {
+                    std::fs::create_dir_all(fixtures).unwrap();
+                    std::fs::write(&file, text).unwrap();
+                }
+                assert!(text == &std::fs::read_to_string(&file).unwrap(), "{name}: the frame differs from {file}");
+            }
+        }
+        let file = format!("{fixtures}hashes.txt");
+        if bless {
+            std::fs::write(&file, &hashes).unwrap();
+        }
+        assert_eq!(hashes, std::fs::read_to_string(&file).unwrap());
+    }
+
     /// What the effects get for `screen` under `rules`.
     fn fx_under(s: &crate::screen::Screen, rules: FxRules) -> FxPane {
         let draw = DrawPrefs { fx_cursor: Some(crate::palette::rgb(255, 0, 0)), fx_rules: Some(std::sync::Arc::new(rules)), ..Default::default() };
