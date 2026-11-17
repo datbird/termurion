@@ -9,6 +9,7 @@ use alacritty_terminal::vte::ansi::CursorShape;
 use crate::cursor_look::{CursorLook, box_rect, cursor_rect};
 use crate::layout::{Divider, Rect};
 use crate::palette::{Rgb, rgb};
+use crate::scene_rows::RowOut;
 use crate::screen::Screen;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1530,6 +1531,349 @@ fn match_text(bg: Rgb) -> Rgb {
     if lum > 127.5 { rgb(0, 0, 0) } else { rgb(0xff, 0xff, 0xff) }
 }
 
+/// What one pane draws with: everything the rows share, so each row can be built on its own.
+struct RowCtx<'a> {
+    screen: &'a Screen,
+    term: &'a alacritty_terminal::Term<crate::screen::Listener>,
+    rect: Rect,
+    cell: (f32, f32),
+    look: &'a CursorLook,
+    draw: &'a DrawPrefs,
+    highlights: Option<&'a Highlights<'a>>,
+    face: u16,
+    palette: &'a crate::palette::Palette,
+    history: i32,
+    display_offset: i32,
+    cols: usize,
+    /// The live selection, as alacritty reports it for the viewport.
+    selection: Option<&'a alacritty_terminal::selection::SelectionRange>,
+    /// The extra selections' columns on each visible row.
+    extra_runs: &'a [Vec<(usize, usize)>],
+    block_cursor: bool,
+    /// The cursor's logical cell, and where it draws once the row is in display order.
+    cursor_at: Option<(usize, usize)>,
+    cursor: Option<(usize, usize)>,
+    wide_cursor: bool,
+    cursor_box: Rgb,
+    cursor_text: Rgb,
+    bg_brightness: f32,
+    bg_alpha: f32,
+    opaque_colors: bool,
+    orders: &'a [Option<std::sync::Arc<crate::bidi::Order>>],
+}
+
+impl RowCtx<'_> {
+    /// Where the logical column `col` of `row` draws.
+    fn visual_col(&self, row: usize, col: usize) -> usize {
+        self.orders.get(row).and_then(|o| o.as_ref()).and_then(|o| o.lut.get(col)).map_or(col, |&v| v as usize)
+    }
+}
+
+/// The looks of one viewport row's cells in display order. Pictures go to `images` and the
+/// hovered cells' (visual) columns to `hovered`.
+fn row_looks(cx: &RowCtx, row: usize, images: &mut Vec<ImageQuad>, hovered: &mut Vec<usize>) -> Vec<CellLook> {
+    let RowCtx { screen, term, rect, look, draw, highlights, palette, history, display_offset, cols, block_cursor, cursor_at, cursor_text, bg_brightness, .. } = *cx;
+    let (cw, ch) = cx.cell;
+    // Thin Strokes on Dark Backgrounds is decided per cell: the cell's background is darker than
+    // its text (`iTermTextDrawingHelper.m:3045`, `iTermMetalPerFrameState.m:2186`).
+    let dark = |fg: Rgb, bg: Rgb| crate::tab_theme::hsp(bg) < crate::tab_theme::hsp(fg);
+    let blank = || CellLook { ul: None, text: " ".into(), fg: palette.fg, bg: palette.bg, bold: false, italic: false, selected: false, level: cell_level(" ", draw), mask: cell_mask(" ", draw, dark(palette.fg, palette.bg)), cursor: false, wide: false, joins: false, table: None };
+    let mut looks: Vec<CellLook> = Vec::with_capacity(cols);
+    for col in 0..cols {
+        let point = alacritty_terminal::index::Point::new(alacritty_terminal::index::Line(row as i32 - display_offset), alacritty_terminal::index::Column(col));
+        let c = &term.grid()[point];
+        let (raw_fg, raw_bg) = palette.cell(c.fg, c.bg, c.flags);
+        // Minimum contrast adjusts the raw text color against the raw background, before Cursor
+        // Boost mutes and Dim Only Text dims (`iTermColorMap.m:318-360`). Block characters
+        // (`contrastIneligible`, `iTermAttributedStringBuilder.m:755`) and hidden cells keep theirs.
+        let exempt = c.flags.contains(Flags::HIDDEN) || (c.zerowidth().is_none() && crate::boxdraw::is_block(c.c));
+        let adjust = |text: Rgb, against: Rgb| if exempt { text } else { crate::contrast::apply(text, against, palette.min_contrast) };
+        // Cursor Boost mutes first, then Dim Only Text dims (`iTermColorMap.m:347-360`).
+        let own_text = |against: Rgb| {
+            let fg = crate::cursor_look::mute(adjust(raw_fg, against), palette.bg, look.boost);
+            match highlights.map(|h| h.dim).filter(|d| d.only_text) {
+                Some(d) => crate::dim::text_color(fg, d, bg_brightness),
+                None => fg,
+            }
+        };
+        let (mut fg, mut bg) = (own_text(raw_bg), crate::cursor_look::mute(raw_bg, palette.bg, look.boost));
+        if let Some(d) = highlights.map(|h| h.dim).filter(|d| d.only_text) {
+            bg = crate::dim::bg_color(bg, palette.bg, d, bg_brightness);
+        }
+        // The text and background the cell ended with, for the later choices; `own` while the
+        // text is still the cell's own color.
+        // The text a match or a hovered link chose, before any adjusting, so a selection over
+        // the cell adjusts it against the selection color that draws (iTerm2 adjusts against the
+        // background actually drawn).
+        let (mut under, mut own) = (raw_bg, true);
+        let mut raw_choice: Option<Rgb> = None;
+        let mut hover = false;
+        if let Some(h) = highlights {
+            let at = crate::find::Pos { row: ((row as i32 - display_offset) + history) as usize, col };
+            let i = h.matches.partition_point(|m| m.end < at);
+            if h.matches.get(i).is_some_and(|m| m.start <= at) {
+                // The match colors are muted by Cursor Boost like every other background and text.
+                (fg, bg) = (crate::cursor_look::mute(adjust(match_text(h.color), h.color), palette.bg, look.boost), crate::cursor_look::mute(h.color, palette.bg, look.boost));
+                (under, own) = (h.color, false);
+                raw_choice = Some(match_text(h.color));
+            }
+            if h.hover.is_some_and(|m| m.start <= at && at <= m.end) {
+                fg = adjust(h.link, under);
+                own = false;
+                raw_choice = Some(h.link);
+                hover = true;
+                hovered.push(cx.visual_col(row, col));
+            }
+        }
+        let mut hidden = false;
+        if let Some(h) = highlights {
+            let at_row = ((row as i32 - display_offset) + history) as usize;
+            if h.labels.iter().any(|(p, l)| p.row == at_row && col >= p.col && col < p.col + l.chars().count()) {
+                (fg, bg) = (LABEL_TEXT, LABEL_BG);
+                own = false;
+                raw_choice = None;
+                hidden = true;
+            }
+        }
+        let mut selected = false;
+        // A visual selection (bidi rows) is its runs inside the hull.
+        let in_extra = || cx.extra_runs[row].iter().any(|&(a, b)| col >= a && col <= b);
+        if (cx.selection.is_some_and(|s| s.contains(point)) && term.selection.as_ref().is_none_or(|s| s.covers(point))) || in_extra() {
+            // The text is adjusted against the selection color; `fg` is already muted otherwise.
+            fg = match palette.selected_text {
+                Some(t) => crate::cursor_look::mute(adjust(t, palette.selection), palette.bg, look.boost),
+                None if own => own_text(palette.selection),
+                // Hover text is not muted (the hover ruling); a match's is.
+                None => raw_choice.map_or(fg, |t| {
+                    let a = adjust(t, palette.selection);
+                    if hover { a } else { crate::cursor_look::mute(a, palette.bg, look.boost) }
+                }),
+            };
+            bg = crate::cursor_look::mute(palette.selection, palette.bg, look.boost);
+            selected = true;
+        }
+        if block_cursor && cursor_at == Some((row, col)) {
+            // The cursor box is its own quad (after the background runs); the text takes its color.
+            // A fading cursor (smooth blink) takes the text color part of the way.
+            fg = if look.alpha < 1.0 { blend(fg, cursor_text, look.alpha) } else { cursor_text };
+        }
+        if let Some(t) = c.image()
+            && let Some(img) = screen.images.by_id.get(&t.image) {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+                let r = Rect { x: rect.x + col as f32 * cw, y: rect.y + row as f32 * ch, w: cw, h: ch };
+                if let Some(q) = tile_quad(img, t, r, img.paused.unwrap_or_else(|| frame_at(&img.frames, now))) {
+                    images.push(q);
+                }
+            }
+        // Blinking text hides in the off phase when the profile allows it
+        // (`iTermMetalPerFrameState.m:1691`); the background keeps drawing, and so do the
+        // neighbors' lines, but the cell's own underline and strikethrough go with its glyph.
+        let blink_off = screen.blink_allowed && c.flags.contains(Flags::BLINK) && !highlights.is_none_or(|h| h.text_blink_on);
+        let mut text = String::new();
+        if hidden || blink_off {
+            text.push(' ');
+        } else if !c.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+            // U+200B in a cell of its own (13o, Zero-Width Space Advances Cursor) draws as a
+            // space: a zero-advance glyph in a shaped run would pull the text after it one cell
+            // left (S3). A tab's first cell also draws as a space: the shaper gives a tab its
+            // own width, which pulls the rest of the row off the grid.
+            text.push(if matches!(c.c, '\u{200B}' | '\t') { ' ' } else { c.c });
+            if let Some(extra) = c.zerowidth() {
+                text.extend(extra);
+            }
+        }
+        // No underline under a label, a picture or a spacer's missing text; a faint cell's SGR 58
+        // color is faint too (`iTermMetalPerFrameState.m:1613-1620`), nothing else touches it.
+        // The cell's text in the profile's Unicode Normalization form, before anything below
+        // classifies it (S1: `cell_level`, `cell_mask`, the box-glyph and ligature tests).
+        crate::encoding::normalize_in_place(&mut text, screen.normalization);
+        let (style, strike) = crate::underline::style_for(c.flags, !hover && c.hyperlink().is_some(), draw.underline_hyperlinks);
+        let sgr = c.underline_color().map(|u| {
+            let u = palette.color(u);
+            if c.flags.contains(Flags::DIM) { blend(palette.cell(c.fg, c.bg, c.flags - Flags::DIM).1, u, palette.faint_alpha) } else { u }
+        });
+        let ul = (!hidden && !blink_off && c.image().is_none()).then_some(Ul { style, strike, sgr });
+        let level = cell_level(&text, draw);
+        let mask = cell_mask(&text, draw, dark(fg, bg));
+        looks.push(CellLook {
+            ul,
+            text,
+            fg,
+            bg,
+            bold: c.flags.contains(Flags::BOLD),
+            italic: c.flags.contains(Flags::ITALIC),
+            selected,
+            level,
+            mask,
+            // The logical cursor cell (the row is not in display order yet); only a block cursor breaks a ligature.
+            cursor: block_cursor && cursor_at == Some((row, col)),
+            wide: c.flags.contains(Flags::WIDE_CHAR),
+            joins: false,
+            table: None,
+        });
+    }
+
+    // Right-to-left rows: the whole row of looks moves to its display order once, so the
+    // backgrounds, text pieces, colors and selection all follow (P5). Mirrored characters draw
+    // as their counterparts; Arabic letters are marked so a run is shaped as one piece.
+    if let Some(o) = &cx.orders[row] {
+        let mut old: Vec<Option<CellLook>> = std::mem::take(&mut looks).into_iter().map(Some).collect();
+        let mut new: Vec<CellLook> = (0..cols)
+            .map(|visual| {
+                let logical = o.inverse.get(visual).map_or(visual, |&l| l as usize);
+                old[logical].take().unwrap_or_else(blank)
+            })
+            .collect();
+        for (logical, &visual) in o.lut.iter().enumerate() {
+            let cell = &mut new[visual as usize];
+            let first = cell.text.chars().next();
+            if o.mirrored[logical]
+                && let Some(c) = first {
+                    cell.text.replace_range(..c.len_utf8(), &crate::bidi::mirror(c).to_string());
+                }
+            cell.joins = o.rtl[logical] && first.is_some_and(crate::bidi::joins);
+        }
+        looks = new;
+    }
+
+    // Special Font Config: each cell a table entry covers takes its entry (after the display
+    // order, so a mirrored character is the one looked up).
+    if let Some(table) = draw.table.as_deref().filter(|t| !t.entries.is_empty()) {
+        for cell in looks.iter_mut() {
+            cell.table = table_cell(table, &cell.text);
+        }
+    }
+    looks
+}
+
+/// One viewport row: its background runs, cursor box, text pieces, box glyphs, underlines and
+/// strikes, and the pictures of its cells. Positions are in the pane's frame.
+fn build_row(cx: &RowCtx, row: usize) -> RowOut {
+    let RowCtx { rect, look, draw, palette, cols, block_cursor, cursor, wide_cursor, cursor_box, bg_alpha, opaque_colors, face, cell, .. } = *cx;
+    let (cw, ch) = cell;
+    let mut out = RowOut::default();
+    let cells = &row_looks(cx, row, &mut out.images, &mut out.hovered);
+    let mut scratch = Frame::default();
+    let frame = &mut scratch;
+    {
+    let y = rect.y + row as f32 * ch;
+    // Background runs. In a see-through pane the default background is drawn here too (one
+    // layer per pixel, `iTermTextDrawingHelper.m:772-790`); Keep background colors opaque
+    // keeps non-default and selected cells solid. The cursor box lies over this, opaque.
+    let alpha_of = |c: &CellLook| {
+        if opaque_colors && (c.bg != palette.bg || c.selected) { 1.0 } else { bg_alpha }
+    };
+    let mut col = 0;
+    while col < cols {
+        let (bg, alpha) = (cells[col].bg, alpha_of(&cells[col]));
+        let start = col;
+        while col < cols && cells[col].bg == bg && alpha_of(&cells[col]) == alpha {
+            col += 1;
+        }
+        if bg != palette.bg || alpha < 1.0 {
+            let r = Rect { x: rect.x + start as f32 * cw, y, w: (col - start) as f32 * cw, h: ch };
+            let color = if alpha < 1.0 { crate::transparency::premultiplied([bg.r, bg.g, bg.b], alpha) } else { rgba(bg, 1.0) };
+            frame.quads.push(Quad { rect: r, color });
+        }
+    }
+    if block_cursor && cursor.is_some_and(|(r, _)| r == row) {
+        let (_, col) = cursor.unwrap();
+        let r = box_rect(&look.geometry, (rect.x, rect.y), cell, row, col, wide_cursor);
+        frame.quads.push(Quad { rect: r, color: rgba(cursor_box, look.alpha) });
+    }
+    // Text pieces. An ASCII run shares one piece. Any other character gets its own
+    // piece at its cell's x, because fallback fonts (CJK, emoji) are not monospace
+    // and would push the text after them off the grid.
+    let flush = |piece: &mut Option<(usize, Vec<Span>)>, frame: &mut Frame| {
+        if let Some((start, mut spans)) = piece.take() {
+            while spans.last().is_some_and(|s| s.text.trim_end().is_empty()) {
+                spans.pop();
+            }
+            if !spans.is_empty() {
+                frame.rows.push(TextRow { x: rect.x + start as f32 * cw, y, spans, clip: rect, scale: 1.0, face });
+            }
+        }
+    };
+    // With Non-ASCII Ligatures a run of one-column non-ASCII cells shares a piece too (P7).
+    let group = draw.ligatures.non_ascii;
+    let mut piece: Option<(usize, Vec<Span>)> = None;
+    let mut before: Option<usize> = None;
+    let mut col = 0;
+    while col < cells.len() {
+        let c = &cells[col];
+        if c.text.is_empty() {
+            col += 1;
+            continue;
+        }
+        let at = col;
+        col += 1;
+        // A box or block character is drawn by Termurion to fill its cell (iTerm2 does the
+        // same): it leaves the text, ends the piece around it, and takes the cell's color.
+        // The row is in display order here, so `at` is the VISUAL column and the character
+        // is the mirrored one on a right-to-left row (S4); `c.fg` is the color after minimum
+        // contrast, blocks exempt (S2); a blinked-out or hidden cell's text is a space (S7).
+        let mut chars = c.text.chars();
+        if let (true, Some(drawn), None) = (draw.custom_boxes, chars.next(), chars.next())
+            && crate::boxdraw::drawn_with(drawn, draw.powerline, draw.powerline_extended, false) {
+                flush(&mut piece, frame);
+                // A wide Powerline symbol draws over the next cell too; the grid keeps one cell
+                // (the next cell's text still lays out at its own column), as in iTerm2.
+                let span = if draw.powerline && crate::powerline::wide(u32::from(drawn), draw.powerline_wide) { 2.0 } else { 1.0 };
+                frame.glyphs.push(CellGlyph { c: drawn, rect: Rect { x: rect.x + at as f32 * cw, y, w: cw * span, h: ch }, color: c.fg, face, clip: rect });
+                before = None;
+                continue;
+            }
+        let ascii = c.text.is_ascii();
+        let joinable = group && groupable(c);
+        // What the cell draws: the table's code point in place of the sent one.
+        let shown = shown_text(c);
+        // The previous cell, when it is the one right before (a wide character's spacer is empty).
+        let prev = before.filter(|b| *b + 1 == at).map(|b| &cells[b]);
+        if !prev.is_some_and(|p| piece_continues(p, c, group)) {
+            flush(&mut piece, frame);
+        }
+        let (_, spans) = piece.get_or_insert_with(|| (at, Vec::new()));
+        let font = c.table.map_or(0, |t| t.0);
+        let same = |s: &Span| s.color == c.fg && s.bold == c.bold && s.italic == c.italic && s.ligatures == c.level && s.mask == c.mask && s.font == font;
+        let span = |text: String| Span { text, color: c.fg, bold: c.bold, italic: c.italic, alt_font: !ascii, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: c.bold, ligatures: c.level, mask: c.mask, font: c.table.map_or(0, |t| t.0) };
+        if c.joins {
+            // An Arabic run is one piece at its visual start, in logical order (the cells
+            // read right to left on screen), so the font joins the letters: each cell goes
+            // in front. The shaper runs its own bidi over the piece: explicit controls
+            // riding on a cell must not reach it (P9).
+            let text: String = shown.chars().filter(|&ch| !crate::bidi::is_explicit_control(ch)).collect();
+            match spans.first_mut() {
+                Some(s) if same(s) => s.text.insert_str(0, &text),
+                _ => spans.insert(0, span(text)),
+            }
+        } else {
+            match spans.last_mut() {
+                Some(s) if same(s) => s.text.push_str(&shown),
+                _ => spans.push(span(shown.to_string())),
+            }
+            // Any other non-ASCII character gets its own piece at its cell's x, because
+            // fallback fonts (CJK, emoji) are not monospace. So does every cell of a face
+            // that is not monospace.
+            if (!ascii && !joinable) || !draw.monospace {
+                flush(&mut piece, frame);
+            }
+        }
+        before = Some(at);
+    }
+    flush(&mut piece, frame);
+    for run in underline_runs(cells, palette.underline_color) {
+        emit_run(frame, rect, row, cell, &run, draw);
+    }
+
+    }
+    out.quads = scratch.quads;
+    out.rows = scratch.rows;
+    out.glyphs = scratch.glyphs;
+    out.underlines = scratch.underlines;
+    out.strikes = scratch.strikes;
+    out
+}
+
 #[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
 #[allow(clippy::single_range_in_vec_init)] // a one-element range list is what this API takes (or what the test expects)
 pub fn pane_with(
@@ -1612,296 +1956,17 @@ pub fn pane_with(
     let cursor_box = smart_box.map_or(palette.cursor, |(b, _)| b);
     let cursor_text = smart_box.map_or(palette.cursor_text, |(_, t)| t);
 
-    // Thin Strokes on Dark Backgrounds is decided per cell: the cell's background is darker than
-    // its text (`iTermTextDrawingHelper.m:3045`, `iTermMetalPerFrameState.m:2186`).
-    let dark = |fg: Rgb, bg: Rgb| crate::tab_theme::hsp(bg) < crate::tab_theme::hsp(fg);
     // Each row's display order (right-to-left text); None draws it as it is. A row is its own
     // line of program output: nothing here moves a cell to another row.
     let display_offset = content.display_offset as i32;
     let orders: Vec<Option<std::sync::Arc<crate::bidi::Order>>> = (0..lines).map(|row| screen.row_order(row as i32 - display_offset).filter(|o| o.lut.len() <= cols)).collect();
     let visual_col = |row: usize, col: usize| orders.get(row).and_then(|o| o.as_ref()).and_then(|o| o.lut.get(col)).map_or(col, |&v| v as usize);
     let cursor = cursor_at.map(|(row, col)| (row, visual_col(row, col)));
-    let blank = || CellLook { ul: None, text: " ".into(), fg: palette.fg, bg: palette.bg, bold: false, italic: false, selected: false, level: cell_level(" ", draw), mask: cell_mask(" ", draw, dark(palette.fg, palette.bg)), cursor: false, wide: false, joins: false, table: None };
-    let mut grid: Vec<Vec<CellLook>> = (0..lines).map(|_| (0..cols).map(|_| blank()).collect()).collect();
-    for indexed in content.display_iter {
-        let Some(vp) = point_to_viewport(content.display_offset, indexed.point) else { continue };
-        let (row, col) = (vp.line, vp.column.0);
-        if row >= lines || col >= cols {
-            continue;
-        }
-        let c = indexed.cell;
-        let (raw_fg, raw_bg) = palette.cell(c.fg, c.bg, c.flags);
-        // Minimum contrast adjusts the raw text color against the raw background, before Cursor
-        // Boost mutes and Dim Only Text dims (`iTermColorMap.m:318-360`). Block characters
-        // (`contrastIneligible`, `iTermAttributedStringBuilder.m:755`) and hidden cells keep theirs.
-        let exempt = c.flags.contains(Flags::HIDDEN) || (c.zerowidth().is_none() && crate::boxdraw::is_block(c.c));
-        let adjust = |text: Rgb, against: Rgb| if exempt { text } else { crate::contrast::apply(text, against, palette.min_contrast) };
-        // Cursor Boost mutes first, then Dim Only Text dims (`iTermColorMap.m:347-360`).
-        let own_text = |against: Rgb| {
-            let fg = crate::cursor_look::mute(adjust(raw_fg, against), palette.bg, look.boost);
-            match highlights.map(|h| h.dim).filter(|d| d.only_text) {
-                Some(d) => crate::dim::text_color(fg, d, bg_brightness),
-                None => fg,
-            }
-        };
-        let (mut fg, mut bg) = (own_text(raw_bg), crate::cursor_look::mute(raw_bg, palette.bg, look.boost));
-        if let Some(d) = highlights.map(|h| h.dim).filter(|d| d.only_text) {
-            bg = crate::dim::bg_color(bg, palette.bg, d, bg_brightness);
-        }
-        // The text and background the cell ended with, for the later choices; `own` while the
-        // text is still the cell's own color.
-        // The text a match or a hovered link chose, before any adjusting, so a selection over
-        // the cell adjusts it against the selection color that draws (iTerm2 adjusts against the
-        // background actually drawn).
-        let (mut under, mut own) = (raw_bg, true);
-        let mut raw_choice: Option<Rgb> = None;
-        let mut hover = false;
-        if let Some(h) = highlights {
-            let at = crate::find::Pos { row: (indexed.point.line.0 + history) as usize, col };
-            let i = h.matches.partition_point(|m| m.end < at);
-            if h.matches.get(i).is_some_and(|m| m.start <= at) {
-                // The match colors are muted by Cursor Boost like every other background and text.
-                (fg, bg) = (crate::cursor_look::mute(adjust(match_text(h.color), h.color), palette.bg, look.boost), crate::cursor_look::mute(h.color, palette.bg, look.boost));
-                (under, own) = (h.color, false);
-                raw_choice = Some(match_text(h.color));
-            }
-            if h.hover.is_some_and(|m| m.start <= at && at <= m.end) {
-                fg = adjust(h.link, under);
-                own = false;
-                raw_choice = Some(h.link);
-                hover = true;
-                hovered.push((row, visual_col(row, col)));
-            }
-        }
-        let mut hidden = false;
-        if let Some(h) = highlights {
-            let at_row = (indexed.point.line.0 + history) as usize;
-            if h.labels.iter().any(|(p, l)| p.row == at_row && col >= p.col && col < p.col + l.chars().count()) {
-                (fg, bg) = (LABEL_TEXT, LABEL_BG);
-                own = false;
-                raw_choice = None;
-                hidden = true;
-            }
-        }
-        let mut selected = false;
-        // A visual selection (bidi rows) is its runs inside the hull.
-        let in_extra = || extra_runs[row].iter().any(|&(a, b)| col >= a && col <= b);
-        if (content.selection.as_ref().is_some_and(|s| s.contains(indexed.point)) && term.selection.as_ref().is_none_or(|s| s.covers(indexed.point))) || in_extra() {
-            // The text is adjusted against the selection color; `fg` is already muted otherwise.
-            fg = match palette.selected_text {
-                Some(t) => crate::cursor_look::mute(adjust(t, palette.selection), palette.bg, look.boost),
-                None if own => own_text(palette.selection),
-                // Hover text is not muted (the hover ruling); a match's is.
-                None => raw_choice.map_or(fg, |t| {
-                    let a = adjust(t, palette.selection);
-                    if hover { a } else { crate::cursor_look::mute(a, palette.bg, look.boost) }
-                }),
-            };
-            bg = crate::cursor_look::mute(palette.selection, palette.bg, look.boost);
-            selected = true;
-        }
-        if block_cursor && cursor_at == Some((row, col)) {
-            // The cursor box is its own quad (after the background runs); the text takes its color.
-            // A fading cursor (smooth blink) takes the text color part of the way.
-            fg = if look.alpha < 1.0 { blend(fg, cursor_text, look.alpha) } else { cursor_text };
-        }
-        if let Some(t) = c.image()
-            && let Some(img) = screen.images.by_id.get(&t.image) {
-                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-                let r = Rect { x: rect.x + col as f32 * cw, y: rect.y + row as f32 * ch, w: cw, h: ch };
-                if let Some(q) = tile_quad(img, t, r, img.paused.unwrap_or_else(|| frame_at(&img.frames, now))) {
-                    frame.images.push(q);
-                }
-            }
-        // Blinking text hides in the off phase when the profile allows it
-        // (`iTermMetalPerFrameState.m:1691`); the background keeps drawing, and so do the
-        // neighbors' lines, but the cell's own underline and strikethrough go with its glyph.
-        let blink_off = screen.blink_allowed && c.flags.contains(Flags::BLINK) && !highlights.is_none_or(|h| h.text_blink_on);
-        let mut text = String::new();
-        if hidden || blink_off {
-            text.push(' ');
-        } else if !c.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
-            // U+200B in a cell of its own (13o, Zero-Width Space Advances Cursor) draws as a
-            // space: a zero-advance glyph in a shaped run would pull the text after it one cell
-            // left (S3). A tab's first cell also draws as a space: the shaper gives a tab its
-            // own width, which pulls the rest of the row off the grid.
-            text.push(if matches!(c.c, '\u{200B}' | '\t') { ' ' } else { c.c });
-            if let Some(extra) = c.zerowidth() {
-                text.extend(extra);
-            }
-        }
-        // No underline under a label, a picture or a spacer's missing text; a faint cell's SGR 58
-        // color is faint too (`iTermMetalPerFrameState.m:1613-1620`), nothing else touches it.
-        // The cell's text in the profile's Unicode Normalization form, before anything below
-        // classifies it (S1: `cell_level`, `cell_mask`, the box-glyph and ligature tests).
-        crate::encoding::normalize_in_place(&mut text, screen.normalization);
-        let (style, strike) = crate::underline::style_for(c.flags, !hover && c.hyperlink().is_some(), draw.underline_hyperlinks);
-        let sgr = c.underline_color().map(|u| {
-            let u = palette.color(u);
-            if c.flags.contains(Flags::DIM) { blend(palette.cell(c.fg, c.bg, c.flags - Flags::DIM).1, u, palette.faint_alpha) } else { u }
-        });
-        let ul = (!hidden && !blink_off && c.image().is_none()).then_some(Ul { style, strike, sgr });
-        let level = cell_level(&text, draw);
-        let mask = cell_mask(&text, draw, dark(fg, bg));
-        grid[row][col] = CellLook {
-            ul,
-            text,
-            fg,
-            bg,
-            bold: c.flags.contains(Flags::BOLD),
-            italic: c.flags.contains(Flags::ITALIC),
-            selected,
-            level,
-            mask,
-            // The logical cursor cell (the row is not in display order yet); only a block cursor breaks a ligature.
-            cursor: block_cursor && cursor_at == Some((row, col)),
-            wide: c.flags.contains(Flags::WIDE_CHAR),
-            joins: false,
-            table: None,
-        };
-    }
-
-    // Right-to-left rows: the whole row of looks moves to its display order once, so the
-    // backgrounds, text pieces, colors and selection all follow (P5). Mirrored characters draw
-    // as their counterparts; Arabic letters are marked so a run is shaped as one piece.
-    for (row, order) in orders.iter().enumerate() {
-        let Some(o) = order else { continue };
-        let mut old: Vec<Option<CellLook>> = std::mem::take(&mut grid[row]).into_iter().map(Some).collect();
-        let mut new: Vec<CellLook> = (0..cols)
-            .map(|visual| {
-                let logical = o.inverse.get(visual).map_or(visual, |&l| l as usize);
-                old[logical].take().unwrap_or_else(blank)
-            })
-            .collect();
-        for (logical, &visual) in o.lut.iter().enumerate() {
-            let cell = &mut new[visual as usize];
-            let first = cell.text.chars().next();
-            if o.mirrored[logical]
-                && let Some(c) = first {
-                    cell.text.replace_range(..c.len_utf8(), &crate::bidi::mirror(c).to_string());
-                }
-            cell.joins = o.rtl[logical] && first.is_some_and(crate::bidi::joins);
-        }
-        grid[row] = new;
-    }
-
-    // Special Font Config: each cell a table entry covers takes its entry (after the display
-    // order, so a mirrored character is the one looked up).
-    if let Some(table) = draw.table.as_deref().filter(|t| !t.entries.is_empty()) {
-        for cell in grid.iter_mut().flatten() {
-            cell.table = table_cell(table, &cell.text);
-        }
-    }
-
-    for (row, cells) in grid.iter().enumerate() {
-        let y = rect.y + row as f32 * ch;
-        // Background runs. In a see-through pane the default background is drawn here too (one
-        // layer per pixel, `iTermTextDrawingHelper.m:772-790`); Keep background colors opaque
-        // keeps non-default and selected cells solid. The cursor box lies over this, opaque.
-        let alpha_of = |c: &CellLook| {
-            if opaque_colors && (c.bg != palette.bg || c.selected) { 1.0 } else { bg_alpha }
-        };
-        let mut col = 0;
-        while col < cols {
-            let (bg, alpha) = (cells[col].bg, alpha_of(&cells[col]));
-            let start = col;
-            while col < cols && cells[col].bg == bg && alpha_of(&cells[col]) == alpha {
-                col += 1;
-            }
-            if bg != palette.bg || alpha < 1.0 {
-                let r = Rect { x: rect.x + start as f32 * cw, y, w: (col - start) as f32 * cw, h: ch };
-                let color = if alpha < 1.0 { crate::transparency::premultiplied([bg.r, bg.g, bg.b], alpha) } else { rgba(bg, 1.0) };
-                frame.quads.push(Quad { rect: r, color });
-            }
-        }
-        if block_cursor && cursor.is_some_and(|(r, _)| r == row) {
-            let (_, col) = cursor.unwrap();
-            let r = box_rect(&look.geometry, (rect.x, rect.y), cell, row, col, wide_cursor);
-            frame.quads.push(Quad { rect: r, color: rgba(cursor_box, look.alpha) });
-        }
-        // Text pieces. An ASCII run shares one piece. Any other character gets its own
-        // piece at its cell's x, because fallback fonts (CJK, emoji) are not monospace
-        // and would push the text after them off the grid.
-        let flush = |piece: &mut Option<(usize, Vec<Span>)>, frame: &mut Frame| {
-            if let Some((start, mut spans)) = piece.take() {
-                while spans.last().is_some_and(|s| s.text.trim_end().is_empty()) {
-                    spans.pop();
-                }
-                if !spans.is_empty() {
-                    frame.rows.push(TextRow { x: rect.x + start as f32 * cw, y, spans, clip: rect, scale: 1.0, face });
-                }
-            }
-        };
-        // With Non-ASCII Ligatures a run of one-column non-ASCII cells shares a piece too (P7).
-        let group = draw.ligatures.non_ascii;
-        let mut piece: Option<(usize, Vec<Span>)> = None;
-        let mut before: Option<usize> = None;
-        let mut col = 0;
-        while col < cells.len() {
-            let c = &cells[col];
-            if c.text.is_empty() {
-                col += 1;
-                continue;
-            }
-            let at = col;
-            col += 1;
-            // A box or block character is drawn by Termurion to fill its cell (iTerm2 does the
-            // same): it leaves the text, ends the piece around it, and takes the cell's color.
-            // The row is in display order here, so `at` is the VISUAL column and the character
-            // is the mirrored one on a right-to-left row (S4); `c.fg` is the color after minimum
-            // contrast, blocks exempt (S2); a blinked-out or hidden cell's text is a space (S7).
-            let mut chars = c.text.chars();
-            if let (true, Some(drawn), None) = (draw.custom_boxes, chars.next(), chars.next())
-                && crate::boxdraw::drawn_with(drawn, draw.powerline, draw.powerline_extended, false) {
-                    flush(&mut piece, frame);
-                    // A wide Powerline symbol draws over the next cell too; the grid keeps one cell
-                    // (the next cell's text still lays out at its own column), as in iTerm2.
-                    let span = if draw.powerline && crate::powerline::wide(u32::from(drawn), draw.powerline_wide) { 2.0 } else { 1.0 };
-                    frame.glyphs.push(CellGlyph { c: drawn, rect: Rect { x: rect.x + at as f32 * cw, y, w: cw * span, h: ch }, color: c.fg, face, clip: rect });
-                    before = None;
-                    continue;
-                }
-            let ascii = c.text.is_ascii();
-            let joinable = group && groupable(c);
-            // What the cell draws: the table's code point in place of the sent one.
-            let shown = shown_text(c);
-            // The previous cell, when it is the one right before (a wide character's spacer is empty).
-            let prev = before.filter(|b| *b + 1 == at).map(|b| &cells[b]);
-            if !prev.is_some_and(|p| piece_continues(p, c, group)) {
-                flush(&mut piece, frame);
-            }
-            let (_, spans) = piece.get_or_insert_with(|| (at, Vec::new()));
-            let font = c.table.map_or(0, |t| t.0);
-            let same = |s: &Span| s.color == c.fg && s.bold == c.bold && s.italic == c.italic && s.ligatures == c.level && s.mask == c.mask && s.font == font;
-            let span = |text: String| Span { text, color: c.fg, bold: c.bold, italic: c.italic, alt_font: !ascii, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: c.bold, ligatures: c.level, mask: c.mask, font: c.table.map_or(0, |t| t.0) };
-            if c.joins {
-                // An Arabic run is one piece at its visual start, in logical order (the cells
-                // read right to left on screen), so the font joins the letters: each cell goes
-                // in front. The shaper runs its own bidi over the piece: explicit controls
-                // riding on a cell must not reach it (P9).
-                let text: String = shown.chars().filter(|&ch| !crate::bidi::is_explicit_control(ch)).collect();
-                match spans.first_mut() {
-                    Some(s) if same(s) => s.text.insert_str(0, &text),
-                    _ => spans.insert(0, span(text)),
-                }
-            } else {
-                match spans.last_mut() {
-                    Some(s) if same(s) => s.text.push_str(&shown),
-                    _ => spans.push(span(shown.to_string())),
-                }
-                // Any other non-ASCII character gets its own piece at its cell's x, because
-                // fallback fonts (CJK, emoji) are not monospace. So does every cell of a face
-                // that is not monospace.
-                if (!ascii && !joinable) || !draw.monospace {
-                    flush(&mut piece, frame);
-                }
-            }
-            before = Some(at);
-        }
-        flush(&mut piece, frame);
-        for run in underline_runs(cells, palette.underline_color) {
-            emit_run(frame, rect, row, cell, &run, draw);
-        }
+    let cx = RowCtx { screen, term, rect, cell, look, draw, highlights, face, palette, history, display_offset, cols, selection: content.selection.as_ref(), extra_runs: &extra_runs, block_cursor, cursor_at, cursor, wide_cursor, cursor_box, cursor_text, bg_brightness, bg_alpha, opaque_colors, orders: &orders };
+    for row in 0..lines {
+        let out = build_row(&cx, row);
+        // The row is built where it draws, so it goes in with no shift.
+        out.place(frame, 0.0, row, &mut hovered);
     }
 
     if let Some(h) = highlights {
@@ -1979,7 +2044,7 @@ pub fn pane_with(
         // on a light one (`key-light`, `key-dark`), sized to the cell (the icon font's em is
         // about the line height over 1.2).
         let r = Rect { x: rect.x + col as f32 * cw, y: rect.y + row as f32 * ch, w: cw, h: ch };
-        let bg = grid.get(row).and_then(|l| l.get(col)).map_or(palette.bg, |c| c.bg);
+        let bg = row_looks(&cx, row, &mut Vec::new(), &mut Vec::new()).get(col).map_or(palette.bg, |c| c.bg);
         let scale = (cw * 1.2 / ch.max(1.0)).min(1.0);
         let span = Span { text: crate::pwm_prompt::KEY_GLYPH.to_string(), color: match_text(bg), bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
         frame.rows.push(TextRow { x: r.x, y: r.y + (ch - ch * scale) / 2.0, spans: vec![span], clip: r, scale, face });
