@@ -273,6 +273,7 @@ pub mod bonjour;
 pub mod prompted;
 pub mod schema;
 pub mod scene;
+pub mod scene_rows;
 pub mod alt_infer;
 pub mod input;
 pub mod keys;
