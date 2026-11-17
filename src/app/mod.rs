@@ -64,6 +64,7 @@ const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 mod actions;
 mod fx_ui;
+mod scene_cache;
 mod gpu_capture;
 mod paste_ui;
 mod edit_session_ui;
@@ -447,11 +448,26 @@ struct Gpu {
     /// The title last sent for this window: it goes with the window, so a new window on a reused
     /// id sends its own.
     title_sent: crate::platform::window::SentTitle,
+    /// The frame drawn last, for the frames only an effect's animation wants (`scene_cache`).
+    scene: scene_cache::SceneCache<Frame>,
     // Dropped last, after the surface.
     window: Arc<Window>,
 }
 
 impl Gpu {
+    /// Asks the window to draw a newly built frame. Every request but the animation's comes
+    /// here, so an animation frame never draws over a change with the kept frame.
+    fn redraw(&self) {
+        self.scene.changed();
+        self.window.request_redraw();
+    }
+
+    /// Asks the window for a frame only the effects' animation wants: it may draw the kept one.
+    fn redraw_fx(&mut self) {
+        self.scene.fx_asked();
+        self.window.request_redraw();
+    }
+
     /// The instance this window's surface was made on.
     fn render_instance(&self) -> &wgpu::Instance {
         self.alpha.as_ref().map_or(&self.instance, |a| &a.instance)
@@ -3277,7 +3293,7 @@ impl App {
         for (_, s) in self.windows.parked_mut() {
             if tick_flash(&mut s.tab_flash, now)
                 && let Some(g) = &s.gpu {
-                    g.window.request_redraw();
+                    g.redraw();
                 }
             wake = wake.into_iter().chain(flash_wake(&s.tab_flash, now)).min();
         }
@@ -5651,7 +5667,7 @@ impl App {
 
     fn redraw(&self) {
         if let Some(g) = &self.gpu {
-            g.window.request_redraw();
+            g.redraw();
         }
         self.redraw_all();
         // The screenshot panel's buttons follow the pane's selection.
@@ -7286,10 +7302,20 @@ impl App {
         let scene_start = timing.then(Instant::now);
         // The effects first: their cursor color is part of the frame (`draw_prefs`).
         self.fx_sync();
-        let frame = self.build_frame();
-        if let Some(t) = scene_start {
-            self.draw_timers.stats[1].add(t.elapsed().as_secs_f64(), 1);
-        }
+        // A frame only the effects' animation wants draws the kept scene again (`scene_cache`).
+        let size = self.gpu.as_ref().map_or((0, 0), |g| (g.config.width, g.config.height));
+        let kept = self.gpu.as_mut().and_then(|g| g.scene.take(size, now));
+        let same_scene = kept.is_some();
+        let (frame, built) = match kept {
+            Some(kept) => kept,
+            None => {
+                let frame = self.build_frame();
+                if let Some(t) = scene_start {
+                    self.draw_timers.stats[1].add(t.elapsed().as_secs_f64(), 1);
+                }
+                (frame, now)
+            }
+        };
         // The caption's hit tests answer from what this frame drew.
         self.publish_caption();
         let (title, menu_text) = self.caption_text();
@@ -7336,7 +7362,7 @@ impl App {
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Suboptimal(_) => {
                 gpu.surface.configure(gpu.render_device(), &gpu.config);
-                gpu.window.request_redraw();
+                gpu.redraw();
                 return;
             }
             wgpu::CurrentSurfaceTexture::Lost => {
@@ -7350,7 +7376,7 @@ impl App {
                 }
                 if let Some(gpu) = self.gpu.as_mut() {
                     gpu.surface.configure(gpu.render_device(), &gpu.config);
-                    gpu.window.request_redraw();
+                    gpu.redraw();
                 }
                 return;
             }
@@ -7377,7 +7403,7 @@ impl App {
                 let (chain, uniforms) = fx.chain_mut().expect("active");
                 // Without view formats (OpenGL) the chain's last copy writes the window's own view.
                 let out = if chain.wants_raw_out() { texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(crate::render_fx_gpu::raw_format(gpu.config.format)), ..Default::default() }) } else { view.clone() };
-                gpu.renderer.draw_fx(&frame, chain, uniforms, &out, w, h)
+                gpu.renderer.draw_fx_for(&frame, chain, uniforms, &out, w, h, same_scene)
             }
             None => gpu.renderer.draw_with(&frame, &view, raw.as_ref(), w, h),
         };
@@ -7387,9 +7413,10 @@ impl App {
             fx.due = fx.next_frame(fx_now, focused_window, fx_pacing);
             if fx.due.is_some_and(|t| t <= Instant::now()) {
                 fx.due = None;
-                gpu.window.request_redraw();
+                gpu.redraw_fx();
             }
         }
+        gpu.scene.keep(frame, built, (w, h));
         if let Some(t) = draw_start {
             self.draw_timers.stats[2].add(t.elapsed().as_secs_f64(), 1);
         }
@@ -7409,7 +7436,7 @@ impl App {
             let menu = self.menu_bar.as_ref().map(|b| &b.menu).filter(|_| bar_on);
             chosen = gpu.bar.draw(&frame, menu);
             if gpu.bar.animating() {
-                gpu.window.request_redraw();
+                gpu.redraw();
             }
         }
         let present_start = timing.then(Instant::now);
@@ -8134,6 +8161,10 @@ impl ApplicationHandler<UserEvent> for App {
         if self.quitting {
             return;
         }
+        // Input, a resize, focus: whatever the window hears, its next frame is built anew.
+        if !matches!(event, WindowEvent::RedrawRequested) {
+            self.scene_changed(id);
+        }
         // Which window holds the keyboard, before any window's own handler takes the event.
         if let WindowEvent::Focused(f) = &event {
             let terminal = self.is_terminal_window(id);
@@ -8609,7 +8640,7 @@ fn init_gpu_on(window: Arc<Window>, display: &winit::event_loop::OwnedDisplayHan
     surface.configure(&device, &config);
     let mut renderer = Renderer::new(&device, &queue, format, &first_font(), FONT_PX * window.scale_factor() as f32);
     renderer.set_view_formats(crate::render_fx_gpu::view_formats_supported(&adapter));
-    Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, alpha: None, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), window })
+    Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, alpha: None, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), scene: Default::default(), window })
 }
 
 /// Set when the event loop returns, so a confirmed quit's backstop leaves the teardown alone.

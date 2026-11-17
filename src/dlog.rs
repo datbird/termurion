@@ -252,6 +252,8 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("app/chat_window_app.rs", 3),
     ("app/clipboard_ui.rs", 1),
     ("app/dynamic_profiles_app.rs", 1),
+    // The effects' cursor rectangle, color and focus: numbers only.
+    ("app/fx_ui.rs", 1),
     ("app/hotkey_ui.rs", 3),
     ("app/menu.rs", 3),
     ("app/mod.rs", 9),

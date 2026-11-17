@@ -16,11 +16,23 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
     iTerm2's winner for each pair and use it on every OS, with the loser's shortcut dropped or
     shown as taken.
 
+29. **Every screen change rebuilds the whole picture.** Seen 2026-11-17 on macOS: with an
+    effect paused and only a tmux status bar and an idle Claude Code on screen, Termurion used 3
+    to 30% of a core. Each change (one status bar cell, one spinner) runs `build_frame` over every
+    cell of every pane. Ghostty rebuilds only the rows a change marked dirty. It should do the same.
+
+30. **The debug log has no folder on macOS and Linux.** Seen 2026-11-17 on macOS: Toggle Debug
+    Logging and Start Debug Logging Automatically run, but `platform/unix/log_store.rs` has no log
+    folder, so the log is never saved. It should save as it does on Windows, in a per-user folder
+    (`~/Library/Logs/Termurion` on macOS, the XDG state folder on Linux).
+
 ## In progress
 
 (none)
 
 ## Done
+
+28. **An animated effect used a third of a core while nothing changed.** Seen 2026-11-17 on macOS with Lightning (30 to 45% CPU at an idle prompt) and on the W541, where Light pacing was the workaround. An `always` effect draws 30 frames a second, and each one rebuilt the whole scene (`build_frame`, three quarters of the frame time) and redrew the terminal before the shader ran. Ghostty draws its animation frames from the cells it already has. Done in 1.1.6: each window keeps the frame it built last (`scene_cache`), and a frame that only the animation asked for draws it again and runs only the shader passes over the picture already in the chain (`Renderer::draw_fx_for`, `Chain::frame_kept`). Any other request (`Gpu::redraw`), any window event, a new size, or a kept frame 0.5 s old builds anew (tests in `app::scene_cache` and `same_scene_frames_keep_the_window_picture`).
 
 27. **Text on Windows and Linux was a quarter smaller than the same font in the system's own terminal.** Seen 2026-11-15 on Windows (Cascadia Mono 12 beside Windows Terminal) and measured the same on Linux (DejaVu Sans Mono 12 beside Ptyxis). Fix 26 made a point one pixel on every system, but only macOS counts type that way. Windows and Linux (GTK, Qt, fontconfig) count 96 pixels to the inch, so a point is 4/3 of a pixel there, and Windows Terminal and Ptyxis draw 12 points at 16 pixels. Done in 1.1.5: a point is one pixel on macOS and 4/3 of a pixel on Windows and Linux (`profile::PX_PER_PT`, test `face_key_follows_profile`). macOS is unchanged.
 

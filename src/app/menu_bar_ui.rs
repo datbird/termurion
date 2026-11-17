@@ -119,7 +119,7 @@ impl App {
         let taken = g.bar.overlay.event(&ctx, event) == Consumed::Yes;
         let dirty = g.bar.overlay.take_dirty();
         if taken || dirty {
-            g.window.request_redraw();
+            g.redraw();
         }
         taken
     }

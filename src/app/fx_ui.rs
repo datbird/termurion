@@ -66,7 +66,7 @@ impl App {
             match fx.due {
                 Some(t) if t <= now => {
                     fx.due = None;
-                    gpu.window.request_redraw();
+                    gpu.redraw_fx();
                 }
                 Some(t) => next = Some(next.map_or(t, |n| n.min(t))),
                 None => {}
@@ -153,7 +153,7 @@ impl App {
         } else {
             self.banners.set(BANNER, format!("Effects: {}", errors.join("; ")));
         }
-        gpu.window.request_redraw();
+        gpu.redraw();
         // Detection skips panes while no effect runs; it starts again now.
         for p in self.panes.values_mut() {
             p.fx_dirty = true;
@@ -194,7 +194,15 @@ impl FxRuntime {
             };
             c.color = [rgb[0], rgb[1], rgb[2], 1.0];
         }
+        let before = self.clock.last_change();
         self.clock.frame(u, now, size, cursor, focused);
+        // What keeps an `always` animation from pausing shows in the debug log.
+        if crate::dlog::is_on() && self.clock.last_change() != before {
+            let c = cursor.unwrap_or(render_fx::Cursor { rect: [0.0; 4], color: [0.0; 4], style: 0, visible: false });
+            let [x, y, w, h] = c.rect;
+            let [r, g, b, _] = c.color;
+            crate::dlog!("fx: idle clock restarted: cursor {} at {} {} {}x{}, color {} {} {}, focused {}", cursor.is_some(), x, y, w, h, r, g, b, focused);
+        }
         if let Some(p) = pane {
             u.background = unit(p.bg);
             u.foreground = unit(p.fg);

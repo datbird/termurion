@@ -45,6 +45,7 @@ fn init_gpu_alpha(window: Arc<Window>, primary: &Gpu, alpha: &AlphaGpu) -> Resul
         bar: Default::default(),
         layout: None,
         title_sent: Default::default(),
+        scene: Default::default(),
         window,
     })
 }

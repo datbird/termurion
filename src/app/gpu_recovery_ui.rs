@@ -53,6 +53,7 @@ fn rebuild_window_gpu(old: Gpu, primary: &GpuHandles, alpha: Option<&AlphaGpu>) 
         layout: None,
         // The same window: its title is sent once more, which is harmless.
         title_sent: Default::default(),
+        scene: Default::default(),
         window,
     })
 }
@@ -174,11 +175,11 @@ impl App {
 
     fn redraw_every_window(&self) {
         if let Some(g) = &self.gpu {
-            g.window.request_redraw();
+            g.redraw();
         }
         for (_, slot) in self.windows.parked() {
             if let Some(g) = &slot.gpu {
-                g.window.request_redraw();
+                g.redraw();
             }
         }
     }

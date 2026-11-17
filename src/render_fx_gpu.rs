@@ -98,6 +98,9 @@ pub struct Chain {
     blits: Option<Blits>,
     plain: Option<Plain>,
     keep_alpha: bool,
+    /// The frame texture holds the window's last terminal picture (`draw_fx` drew it there and
+    /// nothing has replaced it since), so a frame of the same scene can run the passes alone.
+    frame_drawn: bool,
 }
 
 /// The format the passes write: the window's, without the sRGB suffix.
@@ -173,7 +176,7 @@ impl Chain {
             let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("render_fx uniforms"), size, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
             passes.push(Pass { pipeline, uniforms, layout });
         }
-        Ok(Chain { passes, bind_layout, sampler, format, size: (0, 0), targets: Vec::new(), blits: None, plain: None, keep_alpha })
+        Ok(Chain { passes, bind_layout, sampler, format, size: (0, 0), targets: Vec::new(), blits: None, plain: None, keep_alpha, frame_drawn: false })
     }
 
     /// For a card that cannot view a texture in a second format (`view_formats_supported` false):
@@ -275,6 +278,7 @@ impl Chain {
             if self.size != size || self.plain.is_none() {
                 self.plain = Some(Self::plain(device, self.format, size));
                 self.size = size;
+                self.frame_drawn = false;
             }
             let p = self.plain.as_ref().expect("made above");
             return (&p.frame, None);
@@ -283,8 +287,21 @@ impl Chain {
         if self.size != size || self.targets.len() != wanted {
             self.targets = (0..wanted).map(|_| Self::target(device, self.format, size)).collect();
             self.size = size;
+            self.frame_drawn = false;
         }
         (&self.targets[0].srgb, Some(&self.targets[0].raw))
+    }
+
+    /// Whether the frame texture still holds the last picture drawn for the window. The copy
+    /// passes never write it, and the ping-pong passes write it only from a third shader on.
+    pub fn frame_kept(&self) -> bool {
+        self.frame_drawn && (self.blits.is_some() || self.passes.len() <= 2)
+    }
+
+    /// Records whether the frame texture now holds the window's picture (false after a
+    /// screenshot drew something else into it).
+    pub fn set_frame_drawn(&mut self, drawn: bool) {
+        self.frame_drawn = drawn;
     }
 
     /// One copy pass from `src` into `dst`.

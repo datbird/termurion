@@ -530,9 +530,9 @@ impl App {
     }
 
     /// Those windows, each with the tab it has in front.
-    pub(super) fn parked_fronts(&self) -> Vec<(&Window, &Tab)> {
+    pub(super) fn parked_fronts(&self) -> Vec<(&Gpu, &Tab)> {
         let on_screen = |w: &Window| w.is_visible() != Some(false) && w.is_minimized() != Some(true);
-        self.windows.parked().filter_map(|(_, s)| s.gpu.as_ref().filter(|g| on_screen(&g.window)).and_then(|g| s.tabs.get(s.active).map(|t| (&*g.window, t)))).collect()
+        self.windows.parked().filter_map(|(_, s)| s.gpu.as_ref().filter(|g| on_screen(&g.window)).and_then(|g| s.tabs.get(s.active).map(|t| (g, t)))).collect()
     }
 
     /// The tab each window other than the current one has in front, minimized and hidden
@@ -541,11 +541,19 @@ impl App {
         self.windows.parked().filter_map(|(_, s)| s.tabs.get(s.active)).collect()
     }
 
+    /// The window `id` (live or parked) heard something: its next frame is built anew.
+    pub(super) fn scene_changed(&self, id: WindowId) {
+        let live = self.gpu.as_ref().filter(|g| g.window.id() == id);
+        if let Some(g) = live.or_else(|| self.windows.parked().find_map(|(_, s)| s.gpu.as_ref().filter(|g| g.window.id() == id))) {
+            g.scene.changed();
+        }
+    }
+
     /// Asks every window to draw.
     pub(super) fn redraw_all(&self) {
         for (_, s) in self.windows.parked() {
             if let Some(g) = &s.gpu {
-                g.window.request_redraw();
+                g.redraw();
             }
         }
     }
@@ -554,7 +562,7 @@ impl App {
     /// not repaint the others (their frames would cancel its animations).
     pub(super) fn redraw_here(&self) {
         if let Some(g) = &self.gpu {
-            g.window.request_redraw();
+            g.redraw();
         }
     }
 
@@ -566,7 +574,7 @@ impl App {
         for (_, slot) in self.windows.parked() {
             if slot.tabs.iter().any(|t| t.layout.panes().contains(&pane))
                 && let Some(g) = &slot.gpu {
-                    g.window.request_redraw();
+                    g.redraw();
                 }
         }
     }
@@ -1284,7 +1292,7 @@ pub(super) fn init_gpu_from(window: Arc<Window>, from: &(wgpu::Instance, wgpu::A
     surface.configure(device, &config);
     let mut renderer = Renderer::new(device, queue, format, &super::first_font(), FONT_PX * window.scale_factor() as f32);
     renderer.set_view_formats(crate::render_fx_gpu::view_formats_supported(adapter));
-    Ok(Gpu { surface, adapter: adapter.clone(), device: device.clone(), queue: queue.clone(), config, renderer, instance: instance.clone(), alpha: None, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), window })
+    Ok(Gpu { surface, adapter: adapter.clone(), device: device.clone(), queue: queue.clone(), config, renderer, instance: instance.clone(), alpha: None, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), scene: Default::default(), window })
 }
 
 impl App {
@@ -1733,7 +1741,7 @@ impl App {
                 super::tab_groups_ui::expand_selected(&mut kept, slot.active);
                 slot.tabs = kept;
                 if let Some(g) = &slot.gpu {
-                    g.window.request_redraw();
+                    g.redraw();
                 }
                 self.windows.park(other, slot);
                 continue;

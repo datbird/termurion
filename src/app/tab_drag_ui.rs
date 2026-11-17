@@ -282,7 +282,7 @@ impl App {
             return self.redraw();
         }
         if let Some(g) = self.windows.parked().find_map(|(_, s)| s.gpu.as_ref().filter(|g| g.window.id() == id)) {
-            g.window.request_redraw();
+            g.redraw();
         }
     }
 

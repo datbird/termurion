@@ -1325,9 +1325,22 @@ impl Renderer {
     /// Draws `frame` through the render plugin chain: the frame goes into the chain's
     /// offscreen texture, then the passes write `out`, a non-sRGB view of the target.
     pub fn draw_fx(&mut self, frame: &Frame, chain: &mut crate::render_fx_gpu::Chain, uniforms: &crate::render_fx::Uniforms, out: &wgpu::TextureView, w: u32, h: u32) -> Result<(), String> {
+        self.draw_fx_for(frame, chain, uniforms, out, w, h, false)
+    }
+
+    /// `draw_fx` for the window. With `same_scene` (the frame is the one drawn last time) and the
+    /// last picture still in the chain's frame texture, only the passes run: an animation frame
+    /// costs the shaders, as in Ghostty, not a full redraw of the terminal.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_fx_for(&mut self, frame: &Frame, chain: &mut crate::render_fx_gpu::Chain, uniforms: &crate::render_fx::Uniforms, out: &wgpu::TextureView, w: u32, h: u32, same_scene: bool) -> Result<(), String> {
         let (view, raw) = chain.frame_views(&self.device, (w, h));
         let (view, raw) = (view.clone(), raw.cloned());
-        self.draw_with(frame, &view, raw.as_ref(), w, h)?;
+        if !(same_scene && chain.frame_kept()) {
+            // Not the window's picture until the draw succeeds.
+            chain.set_frame_drawn(false);
+            self.draw_with(frame, &view, raw.as_ref(), w, h)?;
+            chain.set_frame_drawn(true);
+        }
         chain.run(&self.device, &self.queue, uniforms, out);
         Ok(())
     }
@@ -1365,7 +1378,9 @@ impl Renderer {
         match fx {
             Some((chain, uniforms)) => {
                 let out = if chain.wants_raw_out() { raw.as_ref().unwrap_or(&view) } else { &view };
-                self.draw_fx(frame, chain, uniforms, out, w, h)?
+                self.draw_fx(frame, chain, uniforms, out, w, h)?;
+                // The screenshot's picture now fills the frame texture, not the window's.
+                chain.set_frame_drawn(false);
             }
             None => self.draw_with(frame, &view, raw.as_ref(), w, h)?,
         }
@@ -4042,6 +4057,45 @@ mod tests {
             let k = n.len();
             n[k - 3] >= 200 && n[k - 1] >= 200
         }), "{text}");
+    }
+
+    /// An animation frame of the same scene runs the passes over the picture already in the
+    /// chain, but only while that picture is the window's: a screenshot, a new size or a chain
+    /// whose passes write the frame texture each make the next frame draw the terminal again.
+    #[test]
+    fn same_scene_frames_keep_the_window_picture() {
+        let (device, queue) = device();
+        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        let frame = Frame { clear: rgba(rgb(0, 0, 0), 1.0), fade: 1.0, ..Default::default() };
+        let copy = || crate::render_fx::compile_glsl("void mainImage(out vec4 c, in vec2 p) { c = texture(iChannel0, p / iResolution.xy); }").unwrap();
+        let u = crate::render_fx::Uniforms { resolution: [64.0, 32.0, 1.0], ..Default::default() };
+        let out_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: 64, height: 32, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: format.remove_srgb_suffix(),
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let out = out_tex.create_view(&Default::default());
+        let mut chain = crate::render_fx_gpu::Chain::new(&device, format, vec![copy()], false).unwrap();
+        assert!(!chain.frame_kept(), "nothing drawn yet");
+        r.draw_fx_for(&frame, &mut chain, &u, &out, 64, 32, false).unwrap();
+        assert!(chain.frame_kept(), "the window's picture is in the chain");
+        r.draw_fx_for(&frame, &mut chain, &u, &out, 64, 32, true).unwrap();
+        assert!(chain.frame_kept(), "a same-scene frame leaves it there");
+        r.draw_offscreen_fx(&frame, Some((&mut chain, &u)), 64, 32).unwrap();
+        assert!(!chain.frame_kept(), "a screenshot replaced it");
+        r.draw_fx_for(&frame, &mut chain, &u, &out, 64, 32, true).unwrap();
+        assert!(chain.frame_kept(), "drawn again for the window");
+        let _ = chain.frame_views(&device, (65, 32));
+        assert!(!chain.frame_kept(), "a new size makes new textures");
+        let mut three = crate::render_fx_gpu::Chain::new(&device, format, vec![copy(), copy(), copy()], false).unwrap();
+        r.draw_fx_for(&frame, &mut three, &u, &out, 64, 32, false).unwrap();
+        assert!(!three.frame_kept(), "a third pass writes the frame texture");
     }
 
     /// Render plugins: the frame goes through each pass in order, with no vertical flip and no

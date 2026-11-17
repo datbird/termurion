@@ -183,9 +183,9 @@ impl App {
             self.redraw();
             any = true;
         }
-        for (window, tab) in self.parked_fronts() {
+        for (gpu, tab) in self.parked_fronts() {
             if pick(self.tab_graphs(tab)) {
-                window.request_redraw();
+                gpu.redraw();
                 any = true;
             }
         }

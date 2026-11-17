@@ -136,7 +136,7 @@ impl App {
             if let Some((_, s)) = self.windows.parked_mut().find(|(k, _)| **k == key)
                 && s.pacer.output(now, gap, typing) {
                     if let Some(g) = &s.gpu {
-                        g.window.request_redraw();
+                        g.redraw();
                     }
                     drew = true;
                 }
@@ -216,11 +216,11 @@ impl App {
         for (_, s) in self.windows.parked_mut() {
             if s.pacer.take_due(now)
                 && let Some(g) = &s.gpu {
-                    g.window.request_redraw();
+                    g.redraw();
                 }
             due = [due, s.pacer.due()].into_iter().flatten().min();
             if let Some(g) = s.gpu.as_ref().filter(|g| on_screen(&g.window, s.hotkey.as_ref())) {
-                due = [due, forced_frame(s.pacer.last(), period, now, || g.window.request_redraw())].into_iter().flatten().min();
+                due = [due, forced_frame(s.pacer.last(), period, now, || g.redraw())].into_iter().flatten().min();
             }
         }
         due

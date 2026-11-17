@@ -686,6 +686,11 @@ impl Clock {
         }
     }
 
+    /// When the cursor, its color or the focus last changed (the idle pause counts from it).
+    pub fn last_change(&self) -> Option<Instant> {
+        self.last_change
+    }
+
     /// Something the effects react to happened (a key, output, a click).
     pub fn poke(&mut self, now: Instant) {
         self.last_change = Some(now);
