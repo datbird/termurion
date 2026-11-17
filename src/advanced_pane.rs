@@ -545,7 +545,8 @@ mod tests {
     /// "iTerm2" read as "Termurion": `label` is its first line and `help` the whole of it.
     #[test]
     fn advanced_texts_follow_iterm2() {
-        for s in schema::global().iter().filter(|s| s.tab == "Advanced") {
+        // Termurion's own rows have no iTerm2 text to follow.
+        for s in schema::global().iter().filter(|s| s.tab == "Advanced" && s.key != "RedrawOnlyChangedRows") {
             assert_eq!(s.help.split('\n').next(), Some(s.label.as_str()), "{}", s.key);
         }
         let text = |key: &str| {

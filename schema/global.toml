@@ -4342,6 +4342,16 @@ type = "bool"
 default = false
 help = "Use solid underlines?\nWhen disabled, underlines break near text that would intersect them."
 
+# Termurion's own (iTerm2 has no such key): rebuild only the screen rows that changed.
+[[setting]]
+key = "RedrawOnlyChangedRows"
+tab = "Advanced"
+section = "Drawing"
+label = "Redraw only the rows that changed"
+type = "bool"
+default = true
+help = "Termurion rebuilds only the rows whose text, colors or highlights changed, as other fast terminals do. Turn this off if text is drawn wrongly (leftover or stale characters) and report it."
+
 [[setting]]
 key = "UseMultiPassUnderlineRenderer"
 tab = "Advanced"

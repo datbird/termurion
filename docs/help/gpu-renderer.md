@@ -36,6 +36,10 @@ Settings > General > GPU Renderer > "Effects animation" sets how hard animated e
 
 A paused effect holds its last frame and starts again with the next key or output. Effects whose animation is `auto` or `off` are only capped, never paused.
 
+## Redraw only the rows that changed
+
+Settings > Advanced > Drawing > "Redraw only the rows that changed" is on by default. Termurion rebuilds only the rows whose text, colors or highlights changed, as other fast terminals do. Turn this off if text is drawn wrongly (leftover or stale characters) and report it.
+
 ## If the GPU is lost
 
 A driver update or reset, a timeout, a removed GPU or a laptop switching GPUs can take the graphics device away. Termurion makes a new one for every terminal window, using the same API order and GPU setting as at start, and redraws. Your sessions are not affected. host.log says `renderer: recovered on <API> <GPU>`. If a try fails, Termurion waits a moment and tries again, then moves down the API order. If every API fails, a banner asks you to restart Termurion. Settings and prompt windows that were open at the time may stop drawing; close and reopen them.

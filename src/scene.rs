@@ -437,11 +437,13 @@ pub struct DrawPrefs {
     pub fx_rules: Option<std::sync::Arc<FxRules>>,
     /// The union of every profile's rules, for finding the cursor to anchor on. None is the Shell rules.
     pub fx_find: Option<std::sync::Arc<FxRules>>,
+    /// `RedrawOnlyChangedRows`: rebuild only the rows that changed since the last frame.
+    pub reuse_rows: bool,
 }
 
 impl Default for DrawPrefs {
     fn default() -> Self {
-        DrawPrefs { underline_hyperlinks: true, solid_underlines: false, metrics: crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 }, scale: 1.0, ligatures: STOCK_LIGATURES, alt_level: 2, masks: crate::fonts::MaskRules::STOCK, custom_boxes: true, powerline: false, powerline_extended: true, powerline_wide: true, table: None, fx_cursor: None, monospace: true, fx_rules: None, fx_find: None }
+        DrawPrefs { underline_hyperlinks: true, solid_underlines: false, metrics: crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 }, scale: 1.0, ligatures: STOCK_LIGATURES, alt_level: 2, masks: crate::fonts::MaskRules::STOCK, custom_boxes: true, powerline: false, powerline_extended: true, powerline_wide: true, table: None, fx_cursor: None, monospace: true, fx_rules: None, fx_find: None, reuse_rows: false }
     }
 }
 
@@ -452,7 +454,7 @@ impl DrawPrefs {
     /// The prefs the live frame and a screenshot both draw with: the two Advanced switches from
     /// `globals`, the renderer's face metrics and the window's scale.
     pub fn from_globals(globals: &crate::globals::Globals, metrics: crate::underline::Metrics, scale: f32) -> DrawPrefs {
-        DrawPrefs { underline_hyperlinks: globals.bool("UnderlineHyperlinks"), solid_underlines: globals.bool("SolidUnderlines"), metrics, scale, ligatures: crate::fonts::LigatureRules { prefer_speed: globals.bool("PreferSpeedToFullLigatureSupport"), ..STOCK_LIGATURES }, alt_level: STOCK_LIGATURES.level, masks: crate::fonts::MaskRules { retina: scale >= 2.0, force_aa_on_retina: globals.bool("ForceAntialiasingOnRetina"), ..crate::fonts::MaskRules::STOCK }, custom_boxes: !globals.bool("DisableCustomBoxDrawing"), powerline: false, powerline_extended: globals.bool("SupportPowerlineExtendedSymbols"), powerline_wide: globals.bool("MakeSomePowerlineSymbolsWide"), table: None, fx_cursor: None, monospace: true, fx_rules: None, fx_find: None }
+        DrawPrefs { underline_hyperlinks: globals.bool("UnderlineHyperlinks"), solid_underlines: globals.bool("SolidUnderlines"), metrics, scale, ligatures: crate::fonts::LigatureRules { prefer_speed: globals.bool("PreferSpeedToFullLigatureSupport"), ..STOCK_LIGATURES }, alt_level: STOCK_LIGATURES.level, masks: crate::fonts::MaskRules { retina: scale >= 2.0, force_aa_on_retina: globals.bool("ForceAntialiasingOnRetina"), ..crate::fonts::MaskRules::STOCK }, custom_boxes: !globals.bool("DisableCustomBoxDrawing"), powerline: false, powerline_extended: globals.bool("SupportPowerlineExtendedSymbols"), powerline_wide: globals.bool("MakeSomePowerlineSymbolsWide"), table: None, fx_cursor: None, monospace: true, fx_rules: None, fx_find: None, reuse_rows: globals.bool("RedrawOnlyChangedRows") }
     }
 
     /// The metrics to draw with in a cell of height `ch`: the face's, or (none measured) an
@@ -9023,6 +9025,16 @@ mod tests {
         g.set("SolidUnderlines", toml::Value::Boolean(true));
         let off = DrawPrefs::from_globals(&g, m, 1.0);
         assert!(!off.underline_hyperlinks && off.solid_underlines);
+    }
+
+    #[test]
+    fn reuse_rows_follows_its_setting() {
+        let mut g = crate::globals::Globals::empty(std::path::Path::new("none.toml"));
+        let m = crate::underline::Metrics { underline_offset: 2.0, thickness: 1.0, x_height: 8.0, baseline: 16.0 };
+        assert!(DrawPrefs::from_globals(&g, m, 1.0).reuse_rows, "on by default");
+        g.set("RedrawOnlyChangedRows", toml::Value::Boolean(false));
+        assert!(!DrawPrefs::from_globals(&g, m, 1.0).reuse_rows);
+        assert!(!DrawPrefs::default().reuse_rows, "the plain default keeps the full path");
     }
 
     #[test]
