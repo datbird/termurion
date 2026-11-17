@@ -2,6 +2,7 @@
 //! change is placed again instead of rebuilt.
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::term::cell::Cell;
@@ -68,8 +69,26 @@ pub struct RowKey {
     pub extra: u64,
 }
 
+/// The index hash of a key's three parts. `RowKey` and the borrowed lookup both go through this,
+/// so they always agree.
+fn hash_parts(context: u64, cells: &[Cell], extra: u64) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    context.hash(&mut h);
+    cells.hash(&mut h);
+    extra.hash(&mut h);
+    h.finish()
+}
+
+impl RowKey {
+    fn hash64(&self) -> u64 {
+        hash_parts(self.context, &self.cells, self.extra)
+    }
+}
+
 pub struct RowCache {
-    rows: HashMap<RowKey, (RowOut, u64)>,
+    /// Entries by `hash64`; a bucket holds the rare rows whose hashes collide.
+    rows: HashMap<u64, Vec<(RowKey, RowOut, u64)>>,
+    count: usize,
     /// The frame being built; entries note the last frame that used them.
     frame: u64,
     /// Rows looked up or stored in the frame being built.
@@ -85,24 +104,46 @@ impl Default for RowCache {
 
 impl RowCache {
     pub fn new() -> Self {
-        RowCache { rows: HashMap::new(), frame: 0, used: 0, since: Instant::now() }
+        RowCache { rows: HashMap::new(), count: 0, frame: 0, used: 0, since: Instant::now() }
     }
 
     pub fn get(&mut self, key: &RowKey) -> Option<&RowOut> {
+        self.get_parts(key.context, &key.cells, key.extra)
+    }
+
+    /// Like `get`, but from the parts of a key, so a caller need not clone a row's cells.
+    pub fn get_parts(&mut self, context: u64, cells: &[Cell], extra: u64) -> Option<&RowOut> {
         let frame = self.frame;
-        let (out, last) = self.rows.get_mut(key)?;
+        let bucket = self.rows.get_mut(&hash_parts(context, cells, extra))?;
+        let (_, out, last) = bucket
+            .iter_mut()
+            .find(|(k, _, _)| k.context == context && k.extra == extra && k.cells == cells)?;
         *last = frame;
         self.used += 1;
         Some(&*out)
     }
 
     pub fn put(&mut self, key: RowKey, out: RowOut) {
-        self.used += 1;
-        self.rows.insert(key, (out, self.frame));
+        let frame = self.frame;
+        let bucket = self.rows.entry(key.hash64()).or_default();
+        if let Some(e) = bucket.iter_mut().find(|(k, _, _)| *k == key) {
+            // Same row stored again: replace it, but it is still one row on screen.
+            if e.2 != frame {
+                self.used += 1;
+            }
+            e.1 = out;
+            e.2 = frame;
+        } else {
+            self.used += 1;
+            self.count += 1;
+            bucket.push((key, out, frame));
+        }
     }
 
     pub fn clear(&mut self) {
         self.rows.clear();
+        self.count = 0;
+        self.used = 0;
         self.since = Instant::now();
     }
 
@@ -112,20 +153,24 @@ impl RowCache {
     }
 
     pub fn len(&self) -> usize {
-        self.rows.len()
+        self.count
     }
 
     pub fn is_empty(&self) -> bool {
-        self.rows.is_empty()
+        self.count == 0
     }
 
     /// Ends a frame. Past four times the rows that were on screen (and the floor), the rows
     /// that frame did not use are dropped.
     pub fn end_frame(&mut self) {
         let cap = (4 * self.used).max(ROW_CACHE_MIN_ENTRIES);
-        if self.rows.len() > cap {
+        if self.count > cap {
             let frame = self.frame;
-            self.rows.retain(|_, (_, last)| *last == frame);
+            for bucket in self.rows.values_mut() {
+                bucket.retain(|e| e.2 == frame);
+            }
+            self.rows.retain(|_, b| !b.is_empty());
+            self.count = self.rows.values().map(Vec::len).sum();
         }
         self.frame += 1;
         self.used = 0;
@@ -174,6 +219,28 @@ mod tests {
         let mut k = key();
         k.extra = 10;
         assert!(cache.get(&k).is_none());
+    }
+
+    #[test]
+    fn get_parts_matches_get() {
+        let mut cache = RowCache::new();
+        cache.put(key(), out());
+        let k = key();
+        assert_eq!(cache.get_parts(k.context, &k.cells, k.extra).unwrap().quads, out().quads);
+        assert!(cache.get_parts(8, &k.cells, k.extra).is_none());
+        let mut cells = k.cells.clone();
+        cells[1].c = 'b';
+        assert!(cache.get_parts(k.context, &cells, k.extra).is_none());
+        assert!(cache.get_parts(k.context, &k.cells, 10).is_none());
+        // A borrowed hit counts as a use, so it survives the trim.
+        let mut cache = RowCache::new();
+        for n in 0..300u64 {
+            cache.put(RowKey { context: n, cells: vec![], extra: 0 }, RowOut::default());
+        }
+        cache.end_frame();
+        assert!(cache.get_parts(5, &[], 0).is_some());
+        cache.end_frame();
+        assert_eq!(cache.len(), 1);
     }
 
     #[test]

@@ -11,4 +11,7 @@ This is vte 0.15.0 from crates.io (Apache-2.0 OR MIT, see the LICENSE files), us
 2. `ansi.rs`: `CSI Pl ; Pr s` calls the new `Handler::set_left_right_margins` (DECSLRM). Its
    default saves the cursor for a bare `CSI s`, as before; alacritty_terminal decides by DECLRMM.
 
+3. `ansi.rs`: `Rgb`, `Color` and `NamedColor` derive `Hash`, so `alacritty_terminal`'s `Cell` can
+   be hashed. Termurion's row cache (`src/scene_rows.rs`) keys a built row by its cells.
+
 To update vte, copy the new version here and apply these changes again.

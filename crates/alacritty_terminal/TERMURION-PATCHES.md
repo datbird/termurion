@@ -229,4 +229,8 @@ test data) is left out. Changes:
     after each feed (with `resets` and the alternate screen exit) into `Screen.clears`, so FX
     profile detection forgets what a region showed once the screen was cleared.
 
+41. `term/cell.rs`: `Cell` and `CellExtra` derive `Hash` (they already had `Eq`). Termurion's row
+    cache (`src/scene_rows.rs`) keys a built row by the row's cells, so a row that did not change
+    can be placed again instead of rebuilt. Needs `Hash` on `Color`, `Rgb` and `NamedColor` in vte.
+
 To update alacritty_terminal, copy the new version here and apply these changes again.
