@@ -10413,16 +10413,17 @@ mod agent_box_tests {
         let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/pane-frames/");
         let bless = std::env::var("TERMURION_BLESS").is_ok();
         let mut hashes = String::new();
-        for (name, text, big) in &cases {
-            if *big {
-                hashes.push_str(&format!("{name} len={} fnv={:016x}\n", text.len(), fnv(text)));
+        // Float math (the smart color, blends) ends a digit apart on macOS: compare three decimals.
+        for (name, text, big) in cases.iter().map(|(n, t, b)| (n, round_decimals(t), *b)) {
+            if big {
+                hashes.push_str(&format!("{name} len={} fnv={:016x}\n", text.len(), fnv(&text)));
             } else {
                 let file = format!("{fixtures}{name}.txt");
                 if bless {
                     std::fs::create_dir_all(fixtures).unwrap();
-                    std::fs::write(&file, text).unwrap();
+                    std::fs::write(&file, &text).unwrap();
                 }
-                assert!(text == &std::fs::read_to_string(&file).unwrap(), "{name}: the frame differs from {file}");
+                assert!(text == std::fs::read_to_string(&file).unwrap(), "{name}: the frame differs from {file}");
             }
         }
         let file = format!("{fixtures}hashes.txt");
@@ -10430,6 +10431,33 @@ mod agent_box_tests {
             std::fs::write(&file, &hashes).unwrap();
         }
         assert_eq!(hashes, std::fs::read_to_string(&file).unwrap());
+    }
+
+    /// `text` with every decimal number cut to three places.
+    fn round_decimals(text: &str) -> String {
+        let b = text.as_bytes();
+        let mut out = String::new();
+        let mut i = 0;
+        while i < b.len() {
+            if b[i].is_ascii_digit() && (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'.')) {
+                let mut j = i;
+                while j < b.len() && b[j].is_ascii_digit() {
+                    j += 1;
+                }
+                if j + 1 < b.len() && b[j] == b'.' && b[j + 1].is_ascii_digit() {
+                    let mut k = j + 1;
+                    while k < b.len() && b[k].is_ascii_digit() {
+                        k += 1;
+                    }
+                    out.push_str(&format!("{:.3}", text[i..k].parse::<f64>().unwrap()));
+                    i = k;
+                    continue;
+                }
+            }
+            out.push(b[i] as char);
+            i += 1;
+        }
+        out
     }
 
     /// What the effects get for `screen` under `rules`.
