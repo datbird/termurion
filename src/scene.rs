@@ -10454,8 +10454,10 @@ mod agent_box_tests {
                     continue;
                 }
             }
-            out.push(b[i] as char);
-            i += 1;
+            // Copy a whole character, so multi-byte text stays text.
+            let ch = text[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
         }
         out
     }

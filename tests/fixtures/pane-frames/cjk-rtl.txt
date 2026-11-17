@@ -62,7 +62,7 @@ Frame {
             y: 6.000,
             spans: [
                 Span {
-                    text: "ä¸­",
+                    text: "中",
                     color: Rgb {
                         r: 220,
                         g: 220,
@@ -95,7 +95,7 @@ Frame {
             y: 6.000,
             spans: [
                 Span {
-                    text: "æ",
+                    text: "文",
                     color: Rgb {
                         r: 220,
                         g: 220,
@@ -128,7 +128,7 @@ Frame {
             y: 6.000,
             spans: [
                 Span {
-                    text: "å­",
+                    text: "字",
                     color: Rgb {
                         r: 220,
                         g: 220,
@@ -194,7 +194,7 @@ Frame {
             y: 26.000,
             spans: [
                 Span {
-                    text: "ï¼¡",
+                    text: "Ａ",
                     color: Rgb {
                         r: 220,
                         g: 220,
@@ -227,7 +227,7 @@ Frame {
             y: 26.000,
             spans: [
                 Span {
-                    text: "ï¼¢",
+                    text: "Ｂ",
                     color: Rgb {
                         r: 220,
                         g: 220,
@@ -293,7 +293,7 @@ Frame {
             y: 26.000,
             spans: [
                 Span {
-                    text: "ð",
+                    text: "😀",
                     color: Rgb {
                         r: 220,
                         g: 220,
@@ -392,7 +392,7 @@ Frame {
             y: 46.000,
             spans: [
                 Span {
-                    text: "×",
+                    text: "ג",
                     color: Rgb {
                         r: 220,
                         g: 220,
@@ -425,7 +425,7 @@ Frame {
             y: 46.000,
             spans: [
                 Span {
-                    text: "×",
+                    text: "ב",
                     color: Rgb {
                         r: 220,
                         g: 220,
@@ -458,7 +458,7 @@ Frame {
             y: 46.000,
             spans: [
                 Span {
-                    text: "×",
+                    text: "א",
                     color: Rgb {
                         r: 220,
                         g: 220,
@@ -524,7 +524,7 @@ Frame {
             y: 66.000,
             spans: [
                 Span {
-                    text: "Ø§ÙØ¹Ø±Ø¨ÙØ©",
+                    text: "العربية",
                     color: Rgb {
                         r: 220,
                         g: 220,

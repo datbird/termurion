@@ -194,7 +194,7 @@ Frame {
             y: 66.000,
             spans: [
                 Span {
-                    text: "â",
+                    text: "░",
                     color: Rgb {
                         r: 220,
                         g: 220,
@@ -227,7 +227,7 @@ Frame {
             y: 66.000,
             spans: [
                 Span {
-                    text: "â",
+                    text: "▒",
                     color: Rgb {
                         r: 220,
                         g: 220,
@@ -258,7 +258,7 @@ Frame {
     ],
     glyphs: [
         CellGlyph {
-            c: 'â',
+            c: '┌',
             rect: Rect {
                 x: 4.000,
                 y: 6.000,
@@ -279,7 +279,7 @@ Frame {
             },
         },
         CellGlyph {
-            c: 'â',
+            c: '─',
             rect: Rect {
                 x: 14.000,
                 y: 6.000,
@@ -300,7 +300,7 @@ Frame {
             },
         },
         CellGlyph {
-            c: 'â',
+            c: '─',
             rect: Rect {
                 x: 24.000,
                 y: 6.000,
@@ -321,7 +321,7 @@ Frame {
             },
         },
         CellGlyph {
-            c: 'â¬',
+            c: '┬',
             rect: Rect {
                 x: 34.000,
                 y: 6.000,
@@ -342,7 +342,7 @@ Frame {
             },
         },
         CellGlyph {
-            c: 'â',
+            c: '─',
             rect: Rect {
                 x: 44.000,
                 y: 6.000,
@@ -363,7 +363,7 @@ Frame {
             },
         },
         CellGlyph {
-            c: 'â',
+            c: '┐',
             rect: Rect {
                 x: 54.000,
                 y: 6.000,
@@ -384,7 +384,7 @@ Frame {
             },
         },
         CellGlyph {
-            c: 'â',
+            c: '│',
             rect: Rect {
                 x: 4.000,
                 y: 26.000,
@@ -405,7 +405,7 @@ Frame {
             },
         },
         CellGlyph {
-            c: 'â',
+            c: '│',
             rect: Rect {
                 x: 34.000,
                 y: 26.000,
@@ -426,7 +426,7 @@ Frame {
             },
         },
         CellGlyph {
-            c: 'â',
+            c: '│',
             rect: Rect {
                 x: 64.000,
                 y: 26.000,
@@ -447,7 +447,7 @@ Frame {
             },
         },
         CellGlyph {
-            c: 'â',
+            c: '└',
             rect: Rect {
                 x: 4.000,
                 y: 46.000,
@@ -468,7 +468,7 @@ Frame {
             },
         },
         CellGlyph {
-            c: 'â',
+            c: '─',
             rect: Rect {
                 x: 14.000,
                 y: 46.000,
@@ -489,7 +489,7 @@ Frame {
             },
         },
         CellGlyph {
-            c: 'â',
+            c: '─',
             rect: Rect {
                 x: 24.000,
                 y: 46.000,
@@ -510,7 +510,7 @@ Frame {
             },
         },
         CellGlyph {
-            c: 'â´',
+            c: '┴',
             rect: Rect {
                 x: 34.000,
                 y: 46.000,
@@ -531,7 +531,7 @@ Frame {
             },
         },
         CellGlyph {
-            c: 'â',
+            c: '─',
             rect: Rect {
                 x: 44.000,
                 y: 46.000,
@@ -552,7 +552,7 @@ Frame {
             },
         },
         CellGlyph {
-            c: 'â',
+            c: '┘',
             rect: Rect {
                 x: 54.000,
                 y: 46.000,
@@ -573,7 +573,7 @@ Frame {
             },
         },
         CellGlyph {
-            c: 'â',
+            c: '█',
             rect: Rect {
                 x: 44.000,
                 y: 66.000,
