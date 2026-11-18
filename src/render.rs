@@ -442,6 +442,19 @@ fn pieces<'a>(spans: &'a [Span], attrs: &[Attrs<'a>], tracking: &[f32], fixes: &
 /// their cell in a pane (scene), a joined run (Arabic) keeps its letters touching, and interface
 /// text in the terminal font keeps the advances its own layout measured. The last cluster is
 /// left alone: nothing follows it, so its advance moves nothing.
+/// A hash of what shapes a row (its spans, clip width, scale, face and the badge weight); the
+/// position is not in it. Equal rows hash equal, and the cache still compares the inputs.
+fn shape_hash(spans: &[Span], w: f32, scale: f32, face: u16, badge_bold: bool) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (w.to_bits(), scale.to_bits(), face, badge_bold, spans.len()).hash(&mut h);
+    for s in spans {
+        s.text.hash(&mut h);
+        ((s.color.r, s.color.g, s.color.b), s.bold, s.italic, s.alt_font, s.icon, s.prose, s.badge, s.toolbelt, s.fake_bold, s.ligatures, s.mask, s.font).hash(&mut h);
+    }
+    h.finish()
+}
+
 fn cluster_fixes(buffer: &Buffer, spans: &[Span], cell: f32) -> Vec<(usize, f32)> {
     use unicode_width::UnicodeWidthChar;
     let text: String = spans.iter().map(|s| s.text.as_str()).collect();
@@ -537,8 +550,10 @@ pub struct Renderer {
     atlas: TextAtlas,
     viewport: Viewport,
     text: TextRenderer,
-    /// One text buffer per row slot, with the spans it last shaped.
-    buffers: Vec<(Buffer, Vec<Span>, f32, f32, u16)>,
+    /// The last frame's text buffers, one per drawn row in frame order, each with what it shaped:
+    /// spans, clip width, scale, face and the badge weight. A row finds its buffer by those, not by
+    /// its slot, so a row that only moved is not shaped again.
+    buffers: Vec<(Buffer, Vec<Span>, f32, f32, u16, bool)>,
     /// A porthole's prose font: Segoe UI Variable, else Segoe UI.
     prose_family: String,
     /// The badge font (bold): the default profile's Badge Font, Arial when not installed.
@@ -1582,16 +1597,32 @@ impl Renderer {
         let badge_weight = self.badge_weight();
         let doubles = self.double_strikes(rows);
         let all_rows: Vec<&TextRow> = rows.iter().chain(&doubles).collect();
-        while self.buffers.len() < all_rows.len() {
-            self.buffers.push((Buffer::new(&mut self.font_system, metrics), Vec::new(), 0.0, 1.0, DEFAULT_FACE));
+        // Last frame's buffers, found again by what shaped them. Any left over after this frame
+        // are dropped, so the cache never holds more than one frame of rows.
+        let mut old: Vec<Option<_>> = std::mem::take(&mut self.buffers).into_iter().map(Some).collect();
+        let mut by_hash: std::collections::HashMap<u64, Vec<usize>> = std::collections::HashMap::new();
+        for (i, o) in old.iter().enumerate() {
+            if let Some((_, spans, w, scale, face, bold)) = o {
+                by_hash.entry(shape_hash(spans, *w, *scale, *face, *bold)).or_default().push(i);
+            }
         }
         // Each face's drawn family, looked up before the buffers are borrowed.
         let drawn: Vec<String> = self.faces.iter().map(|f| self.drawn_family(&f.key.family)).collect();
-        for (slot, row) in self.buffers.iter_mut().zip(all_rows.iter().copied()) {
-            let (buffer, last, last_w, last_scale, last_face) = slot;
-            if *last == row.spans && *last_w == row.clip.w && *last_scale == row.scale && *last_face == row.face {
+        let bold_badge = self.badge_bold;
+        let mut used = Vec::with_capacity(all_rows.len());
+        for row in all_rows.iter().copied() {
+            // Two rows with the same text each take their own buffer, so both draw.
+            let hit = by_hash.get_mut(&shape_hash(&row.spans, row.clip.w, row.scale, row.face, bold_badge)).and_then(|list| {
+                let at = list.iter().position(|&i| matches!(&old[i], Some((_, s, w, sc, f, b)) if *s == row.spans && *w == row.clip.w && *sc == row.scale && *f == row.face && *b == bold_badge))?;
+                old[list.swap_remove(at)].take()
+            });
+            if let Some(found) = hit {
+                used.push(found);
                 continue;
             }
+            used.push((Buffer::new(&mut self.font_system, metrics), Vec::new(), 0.0, 1.0, DEFAULT_FACE, bold_badge));
+            let slot = used.last_mut().unwrap();
+            let (buffer, last, last_w, last_scale, last_face, _) = slot;
             // The row's own face: its fonts, pixel size and cell (a row of another face is never
             // shaped with these).
             let face = self.faces.get(row.face as usize).unwrap_or(&self.faces[0]);
@@ -1703,10 +1734,11 @@ impl Renderer {
             *last_scale = row.scale;
             *last_face = row.face;
         }
+        self.buffers = used;
 
         self.viewport.update(&self.queue, Resolution { width, height });
         let groups = self.glyph_groups(&frame.glyphs);
-        let areas = self.buffers.iter().zip(all_rows.iter().copied()).map(|((buffer, _, _, _, _), row)| TextArea {
+        let areas = self.buffers.iter().zip(all_rows.iter().copied()).map(|((buffer, ..), row)| TextArea {
             buffer,
             left: row.x,
             top: row.y,
@@ -4602,6 +4634,42 @@ mod tests {
 
     /// 13n final 5: a row that mixes ligature levels keeps its own slot (its first run); the other
     /// runs follow every frame row, so the slots after it are not reshaped when a split appears.
+    #[test]
+    fn scrolled_rows_are_not_shaped_again() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let lines: Vec<String> = (0..21).map(|i| format!("row number {i} {}", "ab".repeat(i % 5 + 1))).collect();
+        let frame_of = |from: usize| {
+            let mut f = Frame::default();
+            for (slot, text) in lines[from..from + 20].iter().enumerate() {
+                f.rows.push(TextRow { x: 10.0, y: slot as f32 * 20.0, spans: vec![masked(text, false, 0)], clip: Rect { x: 0.0, y: 0.0, w: 400.0, h: 400.0 }, scale: 1.0, face: DEFAULT_FACE });
+            }
+            f
+        };
+        r.draw_offscreen(&frame_of(0), 400, 400).unwrap();
+        let before = r.shapes;
+        let scrolled = r.draw_offscreen(&frame_of(1), 400, 400).unwrap();
+        assert!(r.shapes - before <= 1, "a scroll shapes only the new row, not {}", r.shapes - before);
+        let mut fresh = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        assert!(fresh.draw_offscreen(&frame_of(1), 400, 400).unwrap() == scrolled, "reused rows draw the same pixels as shaped ones");
+    }
+
+    #[test]
+    fn identical_rows_in_one_frame_both_draw() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut f = Frame::default();
+        for y in [0.0, 30.0] {
+            f.rows.push(TextRow { x: 10.0, y, spans: vec![masked("same", false, 0)], clip: Rect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 }, scale: 1.0, face: DEFAULT_FACE });
+        }
+        r.draw_offscreen(&f, 200, 100).unwrap();
+        r.draw_offscreen(&f, 200, 100).unwrap();
+        assert_eq!(r.buffers.len(), 2);
+        let after = r.shapes;
+        r.draw_offscreen(&f, 200, 100).unwrap();
+        assert_eq!(r.shapes, after, "an unchanged frame shapes nothing");
+    }
+
     #[test]
     fn split_levels_keeps_every_frame_row_in_its_slot() {
         let (device, queue) = device();
