@@ -1879,7 +1879,7 @@ fn build_row(cx: &RowCtx, row: usize, frac: f32) -> RowOut {
 }
 
 /// Feeds `Debug` text straight into a hasher, so a whole struct can be hashed without a string.
-struct HashWrite<'a>(&'a mut std::collections::hash_map::DefaultHasher);
+struct HashWrite<'a>(&'a mut rustc_hash::FxHasher);
 
 impl std::fmt::Write for HashWrite<'_> {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
@@ -1890,7 +1890,7 @@ impl std::fmt::Write for HashWrite<'_> {
 
 /// Hashes a value through its `Debug` text. Floats print exactly, and a field added later is
 /// included without anyone remembering to list it.
-fn hash_debug<T: std::fmt::Debug>(h: &mut std::collections::hash_map::DefaultHasher, v: &T) {
+fn hash_debug<T: std::fmt::Debug>(h: &mut rustc_hash::FxHasher, v: &T) {
     use std::fmt::Write;
     let _ = write!(HashWrite(h), "{v:?}");
 }
@@ -1898,9 +1898,12 @@ fn hash_debug<T: std::fmt::Debug>(h: &mut std::collections::hash_map::DefaultHas
 /// What a row's look depends on besides its own cells: the pane-wide inputs that `row_looks` and
 /// `build_row` read for a row that is not under the cursor. The cursor look matters only through
 /// `boost`: its alpha, shape and the rest draw on the cursor's row, which is never cached.
+///
+/// The context is trusted as a 64-bit value (the cells are compared in full). It is pane-wide, so
+/// a collision between two live values is not a worry even with a fast hash.
 fn row_context(cx: &RowCtx, focused: bool) -> u64 {
     use std::hash::Hash;
-    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut h = rustc_hash::FxHasher::default();
     cx.rect.x.to_bits().hash(&mut h);
     cx.rect.w.to_bits().hash(&mut h);
     cx.cell.0.to_bits().hash(&mut h);
@@ -1934,7 +1937,7 @@ const NO_HIGHLIGHTS: u64 = 0x6e6f_2d68_6967_686c;
 fn row_extra(cx: &RowCtx, row: usize, frac: f32) -> u64 {
     use alacritty_terminal::index::{Column, Line, Point};
     use std::hash::Hash;
-    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut h = rustc_hash::FxHasher::default();
     let mut any = false;
     let at_row = ((row as i32 - cx.display_offset) + cx.history) as usize;
     if let Some(hl) = cx.highlights {

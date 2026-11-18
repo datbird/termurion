@@ -438,7 +438,7 @@ fn pieces<'a>(spans: &'a [Span], attrs: &[Attrs<'a>], tracking: &[f32], fixes: &
 /// position is not in it. Equal rows hash equal, and the cache still compares the inputs.
 fn shape_hash(spans: &[Span], w: f32, scale: f32, face: u16, badge_bold: bool) -> u64 {
     use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut h = rustc_hash::FxHasher::default();
     (w.to_bits(), scale.to_bits(), face, badge_bold, spans.len()).hash(&mut h);
     for s in spans {
         s.text.hash(&mut h);
@@ -1600,7 +1600,7 @@ impl Renderer {
         // Last frame's buffers, found again by what shaped them. Any left over after this frame
         // are dropped, so the cache never holds more than one frame of rows.
         let mut old: Vec<Option<_>> = std::mem::take(&mut self.buffers).into_iter().map(Some).collect();
-        let mut by_hash: std::collections::HashMap<u64, Vec<usize>> = std::collections::HashMap::new();
+        let mut by_hash: rustc_hash::FxHashMap<u64, Vec<usize>> = Default::default();
         for (i, o) in old.iter().enumerate() {
             if let Some((_, spans, w, scale, face, bold)) = o {
                 by_hash.entry(shape_hash(spans, *w, *scale, *face, *bold)).or_default().push(i);

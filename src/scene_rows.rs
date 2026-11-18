@@ -1,7 +1,7 @@
 //! Built rows kept between frames. A row is looked up by what it shows, so a row that did not
 //! change is placed again instead of rebuilt.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
@@ -74,7 +74,7 @@ pub struct RowKey {
 /// The index hash of a key's three parts. `RowKey` and the borrowed lookup both go through this,
 /// so they always agree.
 fn hash_parts(context: u64, cells: &[Cell], extra: u64) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut h = rustc_hash::FxHasher::default();
     context.hash(&mut h);
     cells.hash(&mut h);
     extra.hash(&mut h);
@@ -108,7 +108,7 @@ impl Default for RowCache {
 
 impl RowCache {
     pub fn new() -> Self {
-        RowCache { rows: HashMap::new(), count: 0, frame: 0, used: 0, since: Instant::now(), hits: 0 }
+        RowCache { rows: HashMap::default(), count: 0, frame: 0, used: 0, since: Instant::now(), hits: 0 }
     }
 
     pub fn get(&mut self, key: &RowKey) -> Option<&RowOut> {

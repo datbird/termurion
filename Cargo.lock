@@ -4263,6 +4263,7 @@ dependencies = [
  "regex",
  "rfd",
  "rusqlite",
+ "rustc-hash 2.1.3",
  "secret-service",
  "security-framework",
  "serde",
