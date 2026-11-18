@@ -283,6 +283,10 @@ impl EguiHost {
 
     /// Feeds a window event to egui. Returns true when the window should redraw.
     pub fn event(&mut self, event: &WindowEvent) -> bool {
+        // Shown again after being covered: the frame a covered window could not draw.
+        if matches!(event, WindowEvent::Occluded(false)) {
+            self.window.request_redraw();
+        }
         if let WindowEvent::Resized(s) = event
             && s.width > 0 && s.height > 0 {
                 self.config.width = s.width;
@@ -450,16 +454,24 @@ impl EguiHost {
             out.textures_delta.clear();
             return;
         }
-        let frame = match self.surface.get_current_texture() {
+        let status = self.surface.get_current_texture();
+        let frame = match status {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
-            _ => {
+            other => {
                 // The frame is skipped; its texture changes were applied above and are done with.
                 for id in &out.textures_delta.free {
                     self.renderer.free_texture(id);
                 }
                 out.textures_delta.clear();
-                self.surface.configure(&self.device, &self.config);
-                self.window.request_redraw();
+                match surface_retry(&other) {
+                    Retry::Reconfigure => {
+                        self.surface.configure(&self.device, &self.config);
+                        self.window.request_redraw();
+                    }
+                    // A covered or hidden window has no frame to give; asking again at once spun the
+                    // loop. It redraws when shown again (`event`) or after a short wait.
+                    Retry::Later => with_delayed(|d| d.record(u64::from(self.window.id()), Arc::downgrade(&self.window), std::time::Instant::now(), RETRY_LATER)),
+                }
                 return;
             }
         };
@@ -490,6 +502,27 @@ impl EguiHost {
         }
         // Applied: egui's debug build checks that no delta is dropped unhandled.
         out.textures_delta.clear();
+    }
+}
+
+/// What a frame without a surface texture does next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retry {
+    /// The surface no longer fits the window: configure it and draw again now.
+    Reconfigure,
+    /// The window cannot show a frame now (covered, hidden): do not configure, do not redraw yet.
+    Later,
+}
+
+/// How long a window without a surface texture waits before it asks again.
+pub const RETRY_LATER: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The retry rule for a failed `get_current_texture`.
+pub fn surface_retry(status: &wgpu::CurrentSurfaceTexture) -> Retry {
+    use wgpu::CurrentSurfaceTexture as S;
+    match status {
+        S::Outdated | S::Suboptimal(_) | S::Lost => Retry::Reconfigure,
+        S::Timeout | S::Occluded | S::Validation | S::Success(_) => Retry::Later,
     }
 }
 
@@ -544,6 +577,36 @@ mod tests {
         assert!(at(pw, "if !present {") < at(pw, "self.surface.get_current_texture()"), "no texture for the measuring frame");
         let skip = &pw[at(pw, "if !present {")..at(pw, "self.surface.get_current_texture()")];
         assert!(skip.contains("return;"));
+    }
+
+    #[test]
+    fn surface_errors_retry_by_kind() {
+        use wgpu::CurrentSurfaceTexture as S;
+        assert_eq!(surface_retry(&S::Outdated), Retry::Reconfigure);
+        assert_eq!(surface_retry(&S::Lost), Retry::Reconfigure);
+        assert_eq!(surface_retry(&S::Timeout), Retry::Later);
+        assert_eq!(surface_retry(&S::Occluded), Retry::Later);
+        assert_eq!(surface_retry(&S::Validation), Retry::Later);
+        // Suboptimal carries a texture a test cannot make; the match arm is read from the source.
+        let src = include_str!("egui_host.rs").split("#[cfg(test)]").next().unwrap();
+        assert!(src.contains("S::Outdated | S::Suboptimal(_) | S::Lost => Retry::Reconfigure"));
+        assert_eq!(RETRY_LATER, std::time::Duration::from_millis(250));
+    }
+
+    /// A covered dialog (Occluded) once reconfigured and redrew at once, nonstop.
+    #[test]
+    fn a_hidden_dialog_does_not_redraw_at_once() {
+        let src = include_str!("egui_host.rs").split("#[cfg(test)]").next().unwrap();
+        let pw = &src[src.find("fn paint_with(").unwrap()..];
+        let pw = &pw[..pw.find("\n    }\n}").unwrap()];
+        let at = |n: &str| pw.find(n).unwrap_or_else(|| panic!("{n} missing"));
+        let arm = &pw[at("other => {")..];
+        assert!(arm.contains("match surface_retry(&other)"));
+        let (reconf, later) = (&arm[arm.find("Retry::Reconfigure =>").unwrap()..arm.find("Retry::Later =>").unwrap()], &arm[arm.find("Retry::Later =>").unwrap()..]);
+        assert!(reconf.contains("self.surface.configure(") && reconf.contains("self.window.request_redraw()"));
+        assert!(!later.contains("configure(") && !later.contains("request_redraw") && later.contains("RETRY_LATER"));
+        let ev = &src[src.find("pub fn event(&mut self").unwrap()..];
+        assert!(ev[..ev.find("\n    }\n").unwrap()].contains("WindowEvent::Occluded(false)"), "shown again redraws");
     }
 
     /// Every character the menu bar, the shortcut text and the Keys page draw.

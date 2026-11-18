@@ -571,6 +571,10 @@ impl App {
         if self.scripts_alert.is_some() || self.scripts_alerts.is_empty() {
             return;
         }
+        // The questions raised at launch open in front of the terminal window, after its first frame.
+        if self.scripts_alerts.front().is_some_and(|a| super::update_app::launch_ask(&a.then)) && !super::update_app::ask_may_show(self.terminal_presented) {
+            return;
+        }
         // A page's question whose pane was hidden meanwhile does not open: it parks and is asked
         // again when the pane is shown (final review M4).
         if let Some(Then::BrowserPermission(id)) = self.scripts_alerts.front().map(|a| &a.then) {
@@ -605,6 +609,10 @@ impl App {
                 // The tabs question holds the tab size field.
                 if matches!(ask.then, Then::Paste(_)) && ask.spec.labels.iter().any(|l| l == "Convert tabs to spaces") {
                     w.with_tab_size(self.globals.int("PasteTabToStringTabStopSize") as i32);
+                }
+                // Shown and in front once it has its size (a launch question sat behind the terminal).
+                if super::update_app::launch_ask(&ask.then) {
+                    w.focus();
                 }
                 self.scripts_alert = Some((w, ask));
             }

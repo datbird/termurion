@@ -68,6 +68,17 @@ pub(super) fn permission_ask() -> Ask {
     ask(update::PERMISSION_TITLE, &update::permission_text(), &[update::CHECK_AUTOMATICALLY, update::DONT_CHECK], None, Kind::Persistent, Then::UpdatePermission)
 }
 
+/// Whether an ask raised at launch (the update and tips questions) may open: only after the first
+/// terminal window presented a frame, so it opens in front of that window and not hidden behind it.
+pub(super) fn ask_may_show(first_terminal_frame: bool) -> bool {
+    first_terminal_frame
+}
+
+/// The asks `ask_may_show` holds back.
+pub(super) fn launch_ask(then: &super::scripts_alerts::Then) -> bool {
+    matches!(then, Then::UpdatePermission | Then::TipPermission)
+}
+
 /// Whether a view waits instead of opening (the 13v1 merge): an automatic check's notice never
 /// opens while Termurion is resident (only the notification area icon shows); it opens when a window
 /// wakes. A manual check (the menu or the tray's Check For Updates) shows at once.
@@ -245,6 +256,19 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn launch_asks_wait_for_the_first_terminal_frame() {
+        use super::{ask_may_show, launch_ask, permission_ask};
+        assert!(!ask_may_show(false));
+        assert!(ask_may_show(true));
+        assert!(launch_ask(&permission_ask().then));
+        let gate = include_str!("scripts_alerts.rs");
+        let open = &gate[gate.find("fn open_scripts_alerts(").unwrap()..];
+        assert!(open.contains("launch_ask(&a.then)) && !super::update_app::ask_may_show(self.terminal_presented)"));
+        assert!(open.contains("if super::update_app::launch_ask(&ask.then) {\n                    w.focus();"), "in front once open");
+        assert!(include_str!("mod.rs").contains("gpu.render_queue().present(texture);\n            self.terminal_presented = true;"));
+    }
+
     /// Final review 5: a manual check that decides nothing clears the pending Checking view too,
     /// so a GPU that arrives later does not open a Checking window with no check running.
     #[test]

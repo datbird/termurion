@@ -1568,6 +1568,8 @@ pub struct App {
     uv_installed: bool,
     /// The alerts (iTerm2's warnings shown as windows) waiting to show, and the one showing.
     scripts_alerts: VecDeque<scripts_alerts::Ask>,
+    /// A terminal window has presented a frame; the questions raised at launch wait for it.
+    terminal_presented: bool,
     /// Open site-permission questions and the tick's requests (app-wide, 13x6).
     perm_asks: browser_perms_app::Asks,
     /// The web notification on the tray balloon, and when each granted origin last showed one (13x6).
@@ -2882,6 +2884,7 @@ pub fn run() {
         backend_probes: Vec::new(),
         uv_installed: crate::script_runtime::uv_exe(&script_runtime_ui::uv_dir()).is_file(),
         scripts_alerts: VecDeque::new(),
+        terminal_presented: false,
         perm_asks: Default::default(),
         web_note: Default::default(),
         perm_menu: None,
@@ -7488,6 +7491,7 @@ impl App {
         let present_start = timing.then(Instant::now);
         if let Some(gpu) = self.gpu.as_ref() {
             gpu.render_queue().present(texture);
+            self.terminal_presented = true;
             #[cfg(debug_assertions)]
             if capturing {
                 gpu_capture::end(gpu.render_device());
