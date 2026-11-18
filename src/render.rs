@@ -434,14 +434,6 @@ fn pieces<'a>(spans: &'a [Span], attrs: &[Attrs<'a>], tracking: &[f32], fixes: &
     out
 }
 
-/// Where a shaped row's glyphs do not advance one cell per column they cover (a ligature that
-/// stands for several characters, a glyph whose advance is not the font's "W"): the byte offset
-/// of each such cluster and the tracking (in ems) that makes it whole cells. Glyphs that share a
-/// cluster split the difference, since each takes the tracking of the cluster's first character.
-/// Only left-to-right ASCII clusters are fixed: other characters are each their own piece at
-/// their cell in a pane (scene), a joined run (Arabic) keeps its letters touching, and interface
-/// text in the terminal font keeps the advances its own layout measured. The last cluster is
-/// left alone: nothing follows it, so its advance moves nothing.
 /// A hash of what shapes a row (its spans, clip width, scale, face and the badge weight); the
 /// position is not in it. Equal rows hash equal, and the cache still compares the inputs.
 fn shape_hash(spans: &[Span], w: f32, scale: f32, face: u16, badge_bold: bool) -> u64 {
@@ -455,6 +447,14 @@ fn shape_hash(spans: &[Span], w: f32, scale: f32, face: u16, badge_bold: bool) -
     h.finish()
 }
 
+/// Where a shaped row's glyphs do not advance one cell per column they cover (a ligature that
+/// stands for several characters, a glyph whose advance is not the font's "W"): the byte offset
+/// of each such cluster and the tracking (in ems) that makes it whole cells. Glyphs that share a
+/// cluster split the difference, since each takes the tracking of the cluster's first character.
+/// Only left-to-right ASCII clusters are fixed: other characters are each their own piece at
+/// their cell in a pane (scene), a joined run (Arabic) keeps its letters touching, and interface
+/// text in the terminal font keeps the advances its own layout measured. The last cluster is
+/// left alone: nothing follows it, so its advance moves nothing.
 fn cluster_fixes(buffer: &Buffer, spans: &[Span], cell: f32) -> Vec<(usize, f32)> {
     use unicode_width::UnicodeWidthChar;
     let text: String = spans.iter().map(|s| s.text.as_str()).collect();
@@ -4632,8 +4632,6 @@ mod tests {
         assert!(r.capped);
     }
 
-    /// 13n final 5: a row that mixes ligature levels keeps its own slot (its first run); the other
-    /// runs follow every frame row, so the slots after it are not reshaped when a split appears.
     #[test]
     fn scrolled_rows_are_not_shaped_again() {
         let (device, queue) = device();
@@ -4670,6 +4668,8 @@ mod tests {
         assert_eq!(r.shapes, after, "an unchanged frame shapes nothing");
     }
 
+    /// 13n final 5: a row that mixes ligature levels keeps its own slot (its first run); the other
+    /// runs follow every frame row, so the slots after it are not reshaped when a split appears.
     #[test]
     fn split_levels_keeps_every_frame_row_in_its_slot() {
         let (device, queue) = device();
