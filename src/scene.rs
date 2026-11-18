@@ -1571,7 +1571,7 @@ impl RowCtx<'_> {
 
 /// The looks of one viewport row's cells in display order. Pictures go to `images` and the
 /// hovered cells' (visual) columns to `hovered`.
-fn row_looks(cx: &RowCtx, row: usize, images: &mut Vec<ImageQuad>, hovered: &mut Vec<usize>) -> Vec<CellLook> {
+fn row_looks(cx: &RowCtx, row: usize, frac: f32, images: &mut Vec<ImageQuad>, hovered: &mut Vec<usize>) -> Vec<CellLook> {
     let RowCtx { screen, term, rect, look, draw, highlights, palette, history, display_offset, cols, block_cursor, cursor_at, cursor_text, bg_brightness, .. } = *cx;
     let (cw, ch) = cx.cell;
     // Thin Strokes on Dark Backgrounds is decided per cell: the cell's background is darker than
@@ -1661,7 +1661,7 @@ fn row_looks(cx: &RowCtx, row: usize, images: &mut Vec<ImageQuad>, hovered: &mut
             && let Some(img) = screen.images.by_id.get(&t.image) {
                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
                 // Row-relative, like every row: `RowOut::place` moves it down.
-                let r = Rect { x: rect.x + col as f32 * cw, y: 0.0, w: cw, h: ch };
+                let r = Rect { x: rect.x + col as f32 * cw, y: frac, w: cw, h: ch };
                 if let Some(q) = tile_quad(img, t, r, img.paused.unwrap_or_else(|| frame_at(&img.frames, now))) {
                     images.push(q);
                 }
@@ -1748,18 +1748,19 @@ fn row_looks(cx: &RowCtx, row: usize, images: &mut Vec<ImageQuad>, hovered: &mut
 }
 
 /// One viewport row: its background runs, cursor box, text pieces, box glyphs, underlines and
-/// strikes, and the pictures of its cells. Every `y` is measured from the row's top (the row is
-/// built as row 0 of a pane at y 0) and every clip is a placeholder: `RowOut::place` sets both.
-fn build_row(cx: &RowCtx, row: usize) -> RowOut {
+/// strikes, and the pictures of its cells. Every `y` is measured from the whole pixel the row's
+/// top is on (the row is built as row 0 of a pane at y `frac`) and every clip is a placeholder:
+/// `RowOut::place` sets both.
+fn build_row(cx: &RowCtx, row: usize, frac: f32) -> RowOut {
     let RowCtx { rect, look, draw, palette, cols, block_cursor, cursor, wide_cursor, cursor_box, bg_alpha, opaque_colors, face, cell, .. } = *cx;
-    let rect = Rect { y: 0.0, ..rect };
+    let rect = Rect { y: frac, ..rect };
     let (cw, ch) = cell;
     let mut out = RowOut::default();
-    let cells = &row_looks(cx, row, &mut out.images, &mut out.hovered);
+    let cells = &row_looks(cx, row, frac, &mut out.images, &mut out.hovered);
     let mut scratch = Frame::default();
     let frame = &mut scratch;
     {
-    let y = 0.0;
+    let y = frac;
     // Background runs. In a see-through pane the default background is drawn here too (one
     // layer per pixel, `iTermTextDrawingHelper.m:772-790`); Keep background colors opaque
     // keeps non-default and selected cells solid. The cursor box lies over this, opaque.
@@ -1781,7 +1782,7 @@ fn build_row(cx: &RowCtx, row: usize) -> RowOut {
     }
     if block_cursor && cursor.is_some_and(|(r, _)| r == row) {
         let (_, col) = cursor.unwrap();
-        let r = box_rect(&look.geometry, (rect.x, 0.0), cell, 0, col, wide_cursor);
+        let r = box_rect(&look.geometry, (rect.x, frac), cell, 0, col, wide_cursor);
         frame.quads.push(Quad { rect: r, color: rgba(cursor_box, look.alpha) });
     }
     // Text pieces. An ASCII run shares one piece. Any other character gets its own
@@ -1930,7 +1931,7 @@ const NO_HIGHLIGHTS: u64 = 0x6e6f_2d68_6967_686c;
 /// `NO_HIGHLIGHTS`, so a plain row that scrolled keeps its key; a row with some includes its
 /// buffer row number. Notes, the command region and the hover underline are drawn after the
 /// rows from the buffer, so they are not part of a row.
-fn row_extra(cx: &RowCtx, row: usize) -> u64 {
+fn row_extra(cx: &RowCtx, row: usize, frac: f32) -> u64 {
     use alacritty_terminal::index::{Column, Line, Point};
     use std::hash::Hash;
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -1970,12 +1971,15 @@ fn row_extra(cx: &RowCtx, row: usize) -> u64 {
             }
         }
     }
+    // The row is built at its fraction of a pixel (strokes snap to whole pixels), so it is only
+    // reused at the same fraction.
     if any {
         at_row.hash(&mut h);
-        std::hash::Hasher::finish(&h)
     } else {
-        NO_HIGHLIGHTS
+        NO_HIGHLIGHTS.hash(&mut h);
     }
+    frac.to_bits().hash(&mut h);
+    std::hash::Hasher::finish(&h)
 }
 
 #[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
@@ -2094,26 +2098,29 @@ pub fn pane_with(
         orders.iter().enumerate().filter(|(_, o)| o.is_some()).for_each(|(r, _)| mark(r));
     }
     for row in 0..lines {
-        // Every row is built at y 0 and moved to its place, so a reused row and a new one do the
-        // same arithmetic.
+        // Every row is built near y 0 and moved to its place, so a reused row and a new one do
+        // the same arithmetic.
+        // The row is built at the fraction of its top and placed at the whole pixel: underlines
+        // and strikes snap to device pixels, so they must see the fraction.
         let top = rect.y + row as f32 * ch;
+        let (base, frac) = (top.floor(), top - top.floor());
         if let (Some(cache), Some(context)) = (cache.as_deref_mut(), context)
             && !fresh[row]
         {
             let cells = &term.grid()[alacritty_terminal::index::Line(row as i32 - display_offset)][..];
             if !cells.iter().any(|c| c.image().is_some()) {
-                let extra = row_extra(&cx, row);
+                let extra = row_extra(&cx, row, frac);
                 if let Some(hit) = cache.get_parts(context, cells, extra) {
-                    hit.place(frame, top, rect, row, &mut hovered);
+                    hit.place(frame, base, rect, row, &mut hovered);
                 } else {
-                    let out = build_row(&cx, row);
-                    out.place(frame, top, rect, row, &mut hovered);
+                    let out = build_row(&cx, row, frac);
+                    out.place(frame, base, rect, row, &mut hovered);
                     cache.put(RowKey { context, cells: cells.to_vec(), extra }, out);
                 }
                 continue;
             }
         }
-        build_row(&cx, row).place(frame, top, rect, row, &mut hovered);
+        build_row(&cx, row, frac).place(frame, base, rect, row, &mut hovered);
     }
 
     if let Some(h) = highlights {
@@ -2191,7 +2198,7 @@ pub fn pane_with(
         // on a light one (`key-light`, `key-dark`), sized to the cell (the icon font's em is
         // about the line height over 1.2).
         let r = Rect { x: rect.x + col as f32 * cw, y: rect.y + row as f32 * ch, w: cw, h: ch };
-        let bg = row_looks(&cx, row, &mut Vec::new(), &mut Vec::new()).get(col).map_or(palette.bg, |c| c.bg);
+        let bg = row_looks(&cx, row, 0.0, &mut Vec::new(), &mut Vec::new()).get(col).map_or(palette.bg, |c| c.bg);
         let scale = (cw * 1.2 / ch.max(1.0)).min(1.0);
         let span = Span { text: crate::pwm_prompt::KEY_GLYPH.to_string(), color: match_text(bg), bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
         frame.rows.push(TextRow { x: r.x, y: r.y + (ch - ch * scale) / 2.0, spans: vec![span], clip: r, scale, face });
@@ -11424,6 +11431,14 @@ mod row_reuse_tests {
         for (i, n) in served.iter().enumerate().skip(1) {
             assert_eq!(*n, 0, "chunk {i} changed the context, so no row may be served");
         }
+    }
+
+    #[test]
+    fn strokes_snap_the_same_on_a_fractional_pane_top() {
+        let script: Vec<&[u8]> = vec![b"\x1b[4munder\x1b[0m line\r\n\x1b[9mstruck\x1b[0m line\r\n\x1b[4;9mboth\x1b[0m\r\n\x1b[4:3mcurly\x1b[0m\r\nplain\r\nlast", b"\r\nmore", b""];
+        // Half a pixel, then a quarter, then back to a whole pixel, between frames.
+        let served = both_ways(30, 6, &script, |_, cfg, i| cfg.rect.y = [6.5, 6.25, 6.0][i]);
+        assert_eq!(served[1], 0, "a row is not reused at another fraction");
     }
 
     #[test]
