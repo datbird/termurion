@@ -3239,8 +3239,14 @@ impl App {
     }
 
     fn bar_visible_with(&self, flashing: bool) -> bool {
+        self.window_bar_visible(self.full_screen(), flashing, self.tabs.len())
+    }
+
+    /// Whether a window's tab bar shows, given its full-screen state, flash and tab count (this
+    /// window or a parked one).
+    fn window_bar_visible(&self, full_screen: bool, flashing: bool, tabs: usize) -> bool {
         let always = tab_position::always_visible(self.globals.bool("HideTab"));
-        tab_position::bar_visible(self.full_screen(), self.globals.bool("ShowFullScreenTabBar"), flashing, always, self.tabs.len())
+        tab_position::bar_visible(full_screen, self.globals.bool("ShowFullScreenTabBar"), flashing, always, tabs)
     }
 
     /// The window is full screen (Toggle Full Screen: borderless).

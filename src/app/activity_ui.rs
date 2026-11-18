@@ -108,24 +108,18 @@ impl App {
     /// Whether some window's tab bar is showing a spinner: a visible bar with a background tab
     /// that is processing.
     pub(super) fn spinner_shown(&self, now: Instant) -> bool {
-        let hide = self.globals.bool("HideActivityIndicator");
-        if hide {
-            return false;
-        }
-        let always = crate::tab_position::always_visible(self.globals.bool("HideTab"));
-        let full_bar = self.globals.bool("ShowFullScreenTabBar");
         let processing = |p: &PaneId| self.activity.get(p).is_some_and(|a| a.is_processing(now));
-        let window = |full: bool, flashing: bool, tabs: &[Vec<PaneId>], active: usize| {
-            crate::tab_position::bar_visible(full, full_bar, flashing, always, tabs.len())
-                && tabs.iter().enumerate().any(|(i, t)| tab_processing(t.iter().any(processing), i == active, hide))
+        let look = |full: bool, flashing: bool, tabs: Vec<Vec<PaneId>>, active: usize| WindowSpin {
+            bar: self.window_bar_visible(full, flashing, tabs.len()),
+            processing: tabs.iter().map(|t| t.iter().any(processing)).collect(),
+            active,
         };
-        let here: Vec<Vec<PaneId>> = self.tabs.iter().map(|t| t.layout.panes()).collect();
-        window(self.full_screen(), self.tab_flash.flashing(), &here, self.active)
-            || self.windows.parked().any(|(_, s)| {
-                let tabs: Vec<Vec<PaneId>> = s.tabs.iter().map(|t| t.layout.panes()).collect();
-                let full = s.gpu.as_ref().is_some_and(|g| g.window.fullscreen().is_some());
-                window(full, s.tab_flash.flashing(), &tabs, s.active)
-            })
+        let mut windows = vec![look(self.full_screen(), self.tab_flash.flashing(), self.tabs.iter().map(|t| t.layout.panes()).collect(), self.active)];
+        for (_, s) in self.windows.parked() {
+            let full = s.gpu.as_ref().is_some_and(|g| g.window.fullscreen().is_some());
+            windows.push(look(full, s.tab_flash.flashing(), s.tabs.iter().map(|t| t.layout.panes()).collect(), s.active));
+        }
+        spinner_in(&windows, self.globals.bool("HideActivityIndicator"))
     }
 
     /// An idle, new-output, or activity-after-idle event (notifications and event triggers).
@@ -155,6 +149,19 @@ fn wall_ms() -> u128 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis())
 }
 
+/// What `spinner_shown` needs of one window: whether its tab bar shows, which of its tabs are
+/// processing, and the foreground tab.
+pub(super) struct WindowSpin {
+    pub bar: bool,
+    pub processing: Vec<bool>,
+    pub active: usize,
+}
+
+/// Whether any window's visible bar has a background tab showing the spinner.
+pub(super) fn spinner_in(windows: &[WindowSpin], hide: bool) -> bool {
+    windows.iter().any(|w| w.bar && w.processing.iter().enumerate().any(|(i, p)| tab_processing(*p, i == w.active, hide)))
+}
+
 /// The spinner draws when a bar shows it and its step has not been drawn yet.
 pub(super) fn spin_draw(shown: bool, last: Option<u64>, step: u64) -> bool {
     shown && last != Some(step)
@@ -169,7 +176,7 @@ pub(super) fn tab_processing(any_processing: bool, foreground: bool, hide: bool)
 
 #[cfg(test)]
 mod tests {
-    use super::{output_draw, seen_changed_tab, spin_draw, tab_processing, Draw};
+    use super::{output_draw, seen_changed_tab, spin_draw, spinner_in, tab_processing, Draw, WindowSpin};
 
     /// 13l review round 2, Critical 1: no source of output alone draws at once. Output (a pty,
     /// or a tmux or ssh pump that fed a pane), a tab state change and a spinner go through the
@@ -216,5 +223,25 @@ mod tests {
         let body = &src[start..start + src[start..].find("\n    }\n").unwrap()];
         assert!(body.contains("spin_draw(") && body.contains("spinner_shown("));
         assert!(!body.contains("self.activity.values().any(|a| a.is_processing"), "the spinner no longer follows any processing session");
+    }
+
+    fn win(bar: bool, processing: &[bool], active: usize) -> WindowSpin {
+        WindowSpin { bar, processing: processing.to_vec(), active }
+    }
+
+    #[test]
+    fn spinner_in_follows_the_bars_on_screen() {
+        // A visible bar with a processing background tab shows it.
+        assert!(spinner_in(&[win(true, &[false, true], 0)], false));
+        // A parked window counts when the live one shows nothing.
+        assert!(spinner_in(&[win(true, &[false], 0), win(true, &[true, false], 1)], false));
+        // A hidden bar (one tab, or full screen without the bar) shows nothing.
+        assert!(!spinner_in(&[win(false, &[false, true], 0)], false));
+        // The foreground tab never shows it, nor does a quiet one.
+        assert!(!spinner_in(&[win(true, &[true, false], 0)], false));
+        assert!(!spinner_in(&[win(true, &[false, false], 0)], false));
+        // HideActivityIndicator turns it off everywhere.
+        assert!(!spinner_in(&[win(true, &[false, true], 0), win(true, &[true, false], 1)], true));
+        assert!(!spinner_in(&[], false));
     }
 }

@@ -101,8 +101,7 @@ impl App {
             if up {
                 let (front, back) = super::frames_ui::split_tabs(s.tabs.iter().map(|t| t.layout.panes()).collect(), s.active);
                 let full = s.gpu.as_ref().is_some_and(|g| g.window.fullscreen().is_some());
-                let always = crate::tab_position::always_visible(self.globals.bool("HideTab"));
-                let bar = crate::tab_position::bar_visible(full, self.globals.bool("ShowFullScreenTabBar"), false, always, s.tabs.len());
+                let bar = self.window_bar_visible(full, false, s.tabs.len());
                 out.extend(seen_tabs(front, back, s.tabs.len(), bar));
             }
         }
