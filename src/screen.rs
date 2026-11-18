@@ -428,6 +428,39 @@ pub struct Screen {
     /// and the cursor line alacritty always damages is dirty only when it changed.
     replay_rows: Vec<Row<Cell>>,
     replay_cursor: Option<(usize, usize)>,
+    /// Alacritty's damage, kept for each reader until it takes it (alacritty keeps one copy,
+    /// and reading it resets it).
+    replay_dirty: DirtyRows,
+    render_dirty: DirtyRows,
+    /// The view and size the renderer last took damage at.
+    render_seen: Option<(usize, usize, usize)>,
+}
+
+/// Which viewport rows alacritty touched since a reader last took them.
+#[derive(Default)]
+struct DirtyRows {
+    full: bool,
+    rows: Vec<bool>,
+}
+
+/// The viewport rows the renderer must look at again.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RowDamage {
+    Full,
+    Rows(Vec<bool>),
+}
+
+impl RowDamage {
+    /// Damage seen by two takes in a row: everything either one saw.
+    pub fn merge(self, other: RowDamage) -> RowDamage {
+        match (self, other) {
+            (RowDamage::Rows(mut a), RowDamage::Rows(b)) if a.len() == b.len() => {
+                a.iter_mut().zip(b).for_each(|(x, y)| *x |= y);
+                RowDamage::Rows(a)
+            }
+            _ => RowDamage::Full,
+        }
+    }
 }
 
 /// One Instant Replay frame from the screen: the visible rows of the active grid, which
@@ -774,6 +807,9 @@ impl Screen {
             printed_at_output: 0,
             replay_rows: Vec::new(),
             replay_cursor: None,
+            replay_dirty: DirtyRows::default(),
+            render_dirty: DirtyRows { full: true, rows: Vec::new() },
+            render_seen: None,
         }
     }
 
@@ -1033,6 +1069,7 @@ impl Screen {
         if cols == 0 || cols >= old {
             return;
         }
+        self.render_dirty.full = true;
         let grid = self.term.grid_mut();
         let line = number - grid.scrolled_off() as i64;
         if line < -(grid.history_size() as i64) || line >= grid.screen_lines() as i64 {
@@ -1060,6 +1097,8 @@ impl Screen {
 
     pub fn term_mut(&mut self) -> &mut Term<Listener> {
         self.bump_ticks();
+        // A write outside the parser is not in alacritty's damage.
+        self.render_dirty.full = true;
         &mut self.term
     }
 
@@ -1239,19 +1278,9 @@ impl Screen {
         let point = self.term.grid().cursor.point;
         let cursor = (point.column.0, (point.line.0.max(0) as usize).min(lines.saturating_sub(1)));
         let scrolled = self.term.grid().display_offset() > 0;
-        let damaged = match self.term.damage() {
-            TermDamage::Full => None,
-            TermDamage::Partial(it) => {
-                let mut d = vec![false; lines];
-                for l in it {
-                    if let Some(x) = d.get_mut(l.line) {
-                        *x = true;
-                    }
-                }
-                Some(d)
-            }
-        };
-        self.term.reset_damage();
+        self.drain_damage();
+        let seen = std::mem::take(&mut self.replay_dirty);
+        let damaged = (!seen.full && seen.rows.len() == lines).then_some(seen.rows);
         let same_size = self.replay_rows.len() == lines && self.replay_rows.first().is_some_and(|r| r.len() == cols);
         let moved = self.replay_cursor != Some(cursor);
         let grid = self.term.grid();
@@ -1291,8 +1320,49 @@ impl Screen {
     /// Instant Replay without room for a frame: the damage is read and dropped, nothing is
     /// copied or compared.
     pub fn replay_discard(&mut self) {
-        let _ = self.term.damage();
+        self.drain_damage();
+        self.replay_dirty = DirtyRows::default();
+    }
+
+    /// Moves alacritty's damage into both readers' copies and resets alacritty's.
+    fn drain_damage(&mut self) {
+        let lines = self.term.screen_lines();
+        for d in [&mut self.replay_dirty, &mut self.render_dirty] {
+            if d.rows.len() != lines {
+                d.rows = vec![false; lines];
+            }
+        }
+        match self.term.damage() {
+            TermDamage::Full => {
+                self.replay_dirty.full = true;
+                self.render_dirty.full = true;
+            }
+            TermDamage::Partial(it) => {
+                for l in it {
+                    for d in [&mut self.replay_dirty, &mut self.render_dirty] {
+                        if let Some(x) = d.rows.get_mut(l.line) {
+                            *x = true;
+                        }
+                    }
+                }
+            }
+        }
         self.term.reset_damage();
+    }
+
+    /// What the renderer must look at again since its last take. Full on the first take, after
+    /// a resize or a scroll of the view, after a write outside the parser, and when alacritty
+    /// says everything changed.
+    pub fn take_render_damage(&mut self) -> RowDamage {
+        self.drain_damage();
+        let now = (self.term.screen_lines(), self.term.columns(), self.term.grid().display_offset());
+        let moved = self.render_seen != Some(now);
+        self.render_seen = Some(now);
+        let seen = std::mem::take(&mut self.render_dirty);
+        if seen.full || moved || seen.rows.len() != now.0 {
+            return RowDamage::Full;
+        }
+        RowDamage::Rows(seen.rows)
     }
 
     pub fn set_cell_px(&mut self, w: u16, h: u16) {
@@ -1816,6 +1886,7 @@ impl Screen {
             0 => {
                 self.prune_buttons();
                 let k = self.buttons.new_key();
+                self.render_dirty.full = true;
                 self.term.grid_mut()[point.line].set_button(k);
                 k
             }
@@ -4407,6 +4478,21 @@ mod tests {
         s.soft_reset();
         assert!(!s.term.mode().contains(TermMode::APP_CURSOR));
         assert_eq!(row_text(&s, 0), "", "no carets from the reset itself");
+    }
+
+    #[test]
+    fn replay_still_sees_damage_after_the_renderer_took_it() {
+        let mut s = Screen::new(10, 4);
+        s.replay_capture();
+        s.take_render_damage();
+        s.feed(b"\x1b[3;1Hhi\x1b[1;1H");
+        assert!(matches!(s.take_render_damage(), RowDamage::Rows(r) if r[2]));
+        let c = s.replay_capture().expect("row 3 was written");
+        assert!(!c.clean[2], "the renderer's take did not eat replay's damage");
+        // And the other way: replay reading does not hide it from the renderer.
+        s.feed(b"\x1b[2;1Hyo\x1b[1;1H");
+        s.replay_capture();
+        assert!(matches!(s.take_render_damage(), RowDamage::Rows(r) if r[1]));
     }
 
     /// `TV:2876-2917` with `S:683-699`: a frame when a line is dirty, the cursor's old and

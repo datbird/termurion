@@ -2089,6 +2089,8 @@ pub fn pane_with(
     let mut cache = rows.filter(|_| draw.reuse_rows);
     let context = cache.is_some().then(|| row_context(&cx, focused));
     let mut fresh = vec![false; lines];
+    // Rows alacritty did not touch since the last frame skip the compare.
+    let clean = cache.as_deref_mut().map(|c| c.begin_rows(lines));
     if cache.is_some() {
         let mut mark = |r: usize| {
             if let Some(f) = fresh.get_mut(r) {
@@ -2119,17 +2121,26 @@ pub fn pane_with(
             && !fresh[row]
         {
             let cells = &term.grid()[alacritty_terminal::index::Line(row as i32 - display_offset)][..];
-            if !cells.iter().any(|c| c.image().is_some()) {
-                let extra = row_extra(&cx, row, frac);
-                if let Some(hit) = cache.get_parts(context, cells, extra) {
-                    hit.place(frame, base, rect, row, &mut hovered);
-                } else {
-                    let out = build_row(&cx, row, frac);
-                    out.place(frame, base, rect, row, &mut hovered);
-                    cache.put(RowKey { context, cells: cells.to_vec(), extra }, out);
-                }
+            let extra = row_extra(&cx, row, frac);
+            // A kept row was not an image row, and a clean row has not become one.
+            if let Some(kept) = clean.as_ref().filter(|c| c[row]).and_then(|_| cache.kept(row, context, extra)) {
+                kept.place(frame, base, rect, row, &mut hovered);
                 continue;
             }
+            if !cells.iter().any(|c| c.image().is_some()) {
+                let out = if let Some(hit) = cache.get_parts(context, cells, extra) {
+                    hit.clone()
+                } else {
+                    let out = build_row(&cx, row, frac);
+                    cache.put(RowKey { context, cells: cells.to_vec(), extra }, out)
+                };
+                out.place(frame, base, rect, row, &mut hovered);
+                cache.note_row(row, Some((context, extra, out)));
+                continue;
+            }
+        }
+        if let Some(c) = cache.as_deref_mut() {
+            c.note_row(row, None);
         }
         build_row(&cx, row, frac).place(frame, base, rect, row, &mut hovered);
     }
@@ -11386,6 +11397,8 @@ mod row_reuse_tests {
             step(&mut s, &mut cfg, i);
             let full = draw(&s, &cfg, false, None);
             let before = cache.hits();
+            // The first reused draw goes by the screen's damage, as the app does.
+            cache.set_damage(s.take_render_damage());
             let first = draw(&s, &cfg, true, Some(&mut cache));
             served.push(cache.hits() - before);
             cache.end_frame();
@@ -11464,6 +11477,55 @@ mod row_reuse_tests {
                 _ => {}
             }
         });
+    }
+
+    fn damaged_draw(s: &mut Screen, cfg: &Cfg, cache: &mut RowCache) -> Frame {
+        cache.set_damage(s.take_render_damage());
+        let f = draw(s, cfg, true, Some(cache));
+        cache.end_frame();
+        f
+    }
+
+    #[test]
+    fn undamaged_rows_skip_the_compare() {
+        let mut s = Screen::new(40, 24);
+        let (cfg, mut cache) = (Cfg::new(), RowCache::new());
+        let text: String = (0..24).map(|n| format!("\x1b[{};1Hrow number {n}", n + 1)).collect();
+        s.feed(text.as_bytes());
+        damaged_draw(&mut s, &cfg, &mut cache);
+        damaged_draw(&mut s, &cfg, &mut cache);
+        s.feed(b"\x1b[6;1Hx");
+        let before = cache.compares();
+        let f = damaged_draw(&mut s, &cfg, &mut cache);
+        let compared = cache.compares() - before;
+        // The written row and the row the cursor left (it was never cached).
+        assert!(compared <= 2, "compared {compared} rows");
+        assert!(f == draw(&s, &cfg, false, None), "the frame equals a full build");
+    }
+
+    #[test]
+    fn term_mut_marks_everything_dirty() {
+        let mut s = Screen::new(20, 6);
+        s.feed(b"a\r\nb");
+        assert_eq!(s.take_render_damage(), crate::screen::RowDamage::Full);
+        s.feed(b"c");
+        assert!(matches!(s.take_render_damage(), crate::screen::RowDamage::Rows(_)));
+        let _ = s.term_mut();
+        assert_eq!(s.take_render_damage(), crate::screen::RowDamage::Full);
+        assert!(matches!(s.take_render_damage(), crate::screen::RowDamage::Rows(_)));
+    }
+
+    #[test]
+    fn scrolling_the_view_is_full_damage() {
+        let mut s = Screen::new(20, 4);
+        let text: String = (0..30).map(|n| format!("line {n}\r\n")).collect();
+        s.feed(text.as_bytes());
+        s.take_render_damage();
+        assert!(matches!(s.take_render_damage(), crate::screen::RowDamage::Rows(_)));
+        s.term_mut().scroll_display(alacritty_terminal::grid::Scroll::Delta(2));
+        assert_eq!(s.take_render_damage(), crate::screen::RowDamage::Full);
+        s.resize(10, 4);
+        assert_eq!(s.take_render_damage(), crate::screen::RowDamage::Full);
     }
 
     #[test]

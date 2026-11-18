@@ -3,12 +3,14 @@
 
 use rustc_hash::FxHashMap as HashMap;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::term::cell::Cell;
 
 use crate::layout::Rect;
 use crate::scene::{CellGlyph, Frame, ImageQuad, Quad, TextRow};
+use crate::screen::RowDamage;
 
 /// How long rows may be reused before the whole cache is rebuilt from scratch.
 pub const ROW_CACHE_MAX_AGE: Duration = Duration::from_millis(500);
@@ -89,7 +91,7 @@ impl RowKey {
 
 pub struct RowCache {
     /// Entries by `hash64`; a bucket holds the rare rows whose hashes collide.
-    rows: HashMap<u64, Vec<(RowKey, RowOut, u64)>>,
+    rows: HashMap<u64, Vec<(RowKey, Arc<RowOut>, u64)>>,
     count: usize,
     /// The frame being built; entries note the last frame that used them.
     frame: u64,
@@ -98,6 +100,12 @@ pub struct RowCache {
     since: Instant,
     /// Lookups that found their row, since the cache was made.
     hits: u64,
+    /// Rows that hashed and compared their cells, since the cache was made.
+    compares: u64,
+    /// Damage since the last frame drawn through the cache; None knows nothing (all rows).
+    damage: Option<RowDamage>,
+    /// Last frame's `(context, extra, entry)` at each viewport row.
+    last: Vec<Option<(u64, u64, Arc<RowOut>)>>,
 }
 
 impl Default for RowCache {
@@ -108,16 +116,17 @@ impl Default for RowCache {
 
 impl RowCache {
     pub fn new() -> Self {
-        RowCache { rows: HashMap::default(), count: 0, frame: 0, used: 0, since: Instant::now(), hits: 0 }
+        RowCache { rows: HashMap::default(), count: 0, frame: 0, used: 0, since: Instant::now(), hits: 0, compares: 0, damage: None, last: Vec::new() }
     }
 
-    pub fn get(&mut self, key: &RowKey) -> Option<&RowOut> {
+    pub fn get(&mut self, key: &RowKey) -> Option<&Arc<RowOut>> {
         self.get_parts(key.context, &key.cells, key.extra)
     }
 
     /// Like `get`, but from the parts of a key, so a caller need not clone a row's cells.
-    pub fn get_parts(&mut self, context: u64, cells: &[Cell], extra: u64) -> Option<&RowOut> {
+    pub fn get_parts(&mut self, context: u64, cells: &[Cell], extra: u64) -> Option<&Arc<RowOut>> {
         let frame = self.frame;
+        self.compares += 1;
         let bucket = self.rows.get_mut(&hash_parts(context, cells, extra))?;
         let (_, out, last) = bucket
             .iter_mut()
@@ -128,12 +137,54 @@ impl RowCache {
         Some(&*out)
     }
 
+    /// Rows that hashed and compared their cells since the cache was made.
+    pub fn compares(&self) -> u64 {
+        self.compares
+    }
+
+    /// Notes what alacritty touched since the last set; the next frame drawn through the cache
+    /// uses all of it.
+    pub fn set_damage(&mut self, d: RowDamage) {
+        self.damage = Some(match self.damage.take() {
+            Some(old) => old.merge(d),
+            None => d,
+        });
+    }
+
+    /// Takes the damage for a frame: Full when none was set. The frame's rows start over.
+    pub(crate) fn begin_rows(&mut self, lines: usize) -> Vec<bool> {
+        let clean = match self.damage.take() {
+            Some(RowDamage::Rows(d)) if d.len() == lines && self.last.len() == lines => d.into_iter().map(|x| !x).collect(),
+            _ => vec![false; lines],
+        };
+        self.last.resize(lines, None);
+        clean
+    }
+
+    /// Last frame's entry at `row`, when the row is clean and was built with this `context` and `extra`.
+    pub(crate) fn kept(&mut self, row: usize, context: u64, extra: u64) -> Option<Arc<RowOut>> {
+        let (c, e, out) = self.last.get(row)?.as_ref()?;
+        if (*c, *e) != (context, extra) {
+            return None;
+        }
+        self.used += 1;
+        Some(out.clone())
+    }
+
+    /// Notes what `row` shows this frame (None for a row that is never cached).
+    pub(crate) fn note_row(&mut self, row: usize, shown: Option<(u64, u64, Arc<RowOut>)>) {
+        if let Some(slot) = self.last.get_mut(row) {
+            *slot = shown;
+        }
+    }
+
     /// How many lookups found their row since the cache was made.
     pub fn hits(&self) -> u64 {
         self.hits
     }
 
-    pub fn put(&mut self, key: RowKey, out: RowOut) {
+    pub fn put(&mut self, key: RowKey, out: RowOut) -> Arc<RowOut> {
+        let out = Arc::new(out);
         let frame = self.frame;
         let bucket = self.rows.entry(key.hash64()).or_default();
         if let Some(e) = bucket.iter_mut().find(|(k, _, _)| *k == key) {
@@ -141,19 +192,21 @@ impl RowCache {
             if e.2 != frame {
                 self.used += 1;
             }
-            e.1 = out;
+            e.1 = out.clone();
             e.2 = frame;
         } else {
             self.used += 1;
             self.count += 1;
-            bucket.push((key, out, frame));
+            bucket.push((key, out.clone(), frame));
         }
+        out
     }
 
     pub fn clear(&mut self) {
         self.rows.clear();
         self.count = 0;
         self.used = 0;
+        self.last.clear();
         self.since = Instant::now();
     }
 

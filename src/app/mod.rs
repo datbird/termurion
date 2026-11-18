@@ -6993,7 +6993,11 @@ impl App {
                 // face; the rows from here on are laid out in the pane's cell and take its face.
                 let rows_from = frame.rows.len();
                 // The pane's row cache is taken out for the draw (the pane is borrowed for reading) and put back after.
-                let mut row_cache = self.panes.get_mut(&id).map(|p| std::mem::take(&mut p.rows));
+                let mut row_cache = self.panes.get_mut(&id).map(|p| {
+                    let mut c = std::mem::take(&mut p.rows);
+                    c.set_damage(p.screen.take_render_damage());
+                    c
+                });
                 if let Some(p) = self.panes.get(&id) {
                     let shortcuts = self.shortcuts.as_ref().filter(|s| s.pane == id);
                     let labeled: Vec<crate::find::Match> = shortcuts.map(|s| s.items.iter().map(|(_, m, _)| *m).collect()).unwrap_or_default();
