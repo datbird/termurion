@@ -2761,7 +2761,7 @@ mod tests {
         let rect = Rect { x: 0.0, y: 0.0, w: 40.0 * cell.0, h: 2.0 * cell.1 };
         let prefs = crate::scene::DrawPrefs { monospace: r.face_monospace(DEFAULT_FACE), ..Default::default() };
         let mut frame = Frame::default();
-        crate::scene::pane_with(&mut frame, &screen, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &prefs, None, DEFAULT_FACE);
+        crate::scene::pane_with(&mut frame, &screen, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &prefs, None, DEFAULT_FACE, None);
         let xs = drawn_xs(&mut r, &frame, rect.w.ceil() as u32, rect.h.ceil() as u32);
         let cols: Vec<usize> = "iiilllWWWiii mmm".char_indices().filter(|(_, c)| *c != ' ').map(|(i, _)| i).collect();
         assert_eq!(xs.len(), cols.len(), "{xs:?}");
@@ -3356,7 +3356,7 @@ mod tests {
                     let rect = crate::layout::Rect { x: x0 + pad, y: top + pad, w: cols as f32 * cell.0, h: rows as f32 * cell.1 };
                     let c = crate::render_fx::hex_color(plugins.iter().find(|q| q.id == panes[focus].effect).unwrap().manifest.cursor_color.as_deref().unwrap()).unwrap();
                     let draw = crate::scene::DrawPrefs { fx_cursor: Some(crate::palette::rgb((c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8)), ..Default::default() };
-                    crate::scene::pane_with(&mut frame, &s, rect, cell, k == focus, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE);
+                    crate::scene::pane_with(&mut frame, &s, rect, cell, k == focus, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE, None);
                 }
                 if n > 1 {
                     let divs: Vec<crate::layout::Divider> = (1..n)
@@ -3502,7 +3502,7 @@ mod tests {
                     let rect = crate::layout::Rect { x: pad, y: pad, w: cols as f32 * cell.0, h: rows as f32 * cell.1 };
                     let draw = crate::scene::DrawPrefs { fx_cursor: Some(crate::palette::rgb(preset[0], preset[1], preset[2])), ..Default::default() };
                     let mut frame = Frame { clear: rgba(bg, 1.0), fade: 1.0, ..Default::default() };
-                    crate::scene::pane_with(&mut frame, s, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE);
+                    crate::scene::pane_with(&mut frame, s, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE, None);
                     let fx = frame.fx.clone().unwrap();
                     let mut cur = fx.cursor;
                     if let Some(c) = cur.as_mut() {
@@ -3591,7 +3591,7 @@ mod tests {
                 let rect = crate::layout::Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
                 let draw = crate::scene::DrawPrefs { fx_cursor: Some(crate::palette::rgb(preset[0], preset[1], preset[2])), ..Default::default() };
                 let mut frame = Frame { clear: rgba(bg, 1.0), fade: 1.0, ..Default::default() };
-                crate::scene::pane_with(&mut frame, s, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE);
+                crate::scene::pane_with(&mut frame, s, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE, None);
                 let mut cur = frame.fx.clone().unwrap().cursor;
                 if let Some(c) = cur.as_mut() {
                     let [cr, cg, cb] = sig.apply(preset, now);
@@ -3657,7 +3657,7 @@ mod tests {
                     let preset = [(c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8];
                     let draw = crate::scene::DrawPrefs { fx_cursor: Some(crate::palette::rgb(preset[0], preset[1], preset[2])), ..Default::default() };
                     let mut frame = Frame { clear: rgba(bg, 1.0), fade: 1.0, ..Default::default() };
-                    crate::scene::pane_with(&mut frame, &s, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE);
+                    crate::scene::pane_with(&mut frame, &s, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE, None);
                     let plain = r.draw_offscreen(&frame, w, h).unwrap();
                     let mut chain = crate::render_fx_gpu::Chain::new(&device, format, p.compile().unwrap(), false).unwrap();
                     let (mut clock, mut u, mut sig) = (Clock::default(), Uniforms::default(), Signals::default());
@@ -3720,7 +3720,7 @@ mod tests {
         let rect = crate::layout::Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
         let draw = crate::scene::DrawPrefs { fx_cursor: Some(rgb(preset[0], preset[1], preset[2])), ..Default::default() };
         let mut frame = Frame { clear: rgba(s.palette.bg, 1.0), fade: 1.0, ..Default::default() };
-        crate::scene::pane_with(&mut frame, &s, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE);
+        crate::scene::pane_with(&mut frame, &s, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE, None);
         (frame, (w, h), s.palette.bg)
     }
 
@@ -3976,7 +3976,7 @@ mod tests {
             let mut lit_with = |rules: crate::fx_profile::FxRules| {
                 let draw = crate::scene::DrawPrefs { fx_cursor: Some(rgb(preset[0], preset[1], preset[2])), fx_rules: Some(std::sync::Arc::new(rules)), ..Default::default() };
                 let mut frame = Frame { clear: rgba(bg, 1.0), fade: 1.0, ..Default::default() };
-                crate::scene::pane_with(&mut frame, &s, rect, (cw, ch), true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE);
+                crate::scene::pane_with(&mut frame, &s, rect, (cw, ch), true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE, None);
                 let plain = r.draw_offscreen(&frame, w, h).unwrap();
                 let shot = fx_shots(&mut r, p.compile_with(&[("PROMPT_EFFECT", true)]).unwrap(), &frame, (w, h), bg, preset, false, false, &[600]).remove(0);
                 lit_in(&shot, &plain, w, (5.0 * ch)..(6.0 * ch), 0.0..cw)
@@ -4019,7 +4019,7 @@ mod tests {
                 let rect = crate::layout::Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
                 let draw = crate::scene::DrawPrefs { fx_cursor: Some(preset), ..Default::default() };
                 let mut frame = Frame { clear: rgba(s.palette.bg, 1.0), fade: 1.0, ..Default::default() };
-                crate::scene::pane_with(&mut frame, &s, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE);
+                crate::scene::pane_with(&mut frame, &s, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE, None);
                 let fx = frame.fx.clone().expect("the scene records the pane");
                 let mut chain = crate::render_fx_gpu::Chain::new(&device, format, lightning.compile().unwrap(), false).unwrap();
                 let mut clock = Clock::default();

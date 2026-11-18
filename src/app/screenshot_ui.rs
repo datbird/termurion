@@ -57,7 +57,7 @@ fn picture_highlights() -> scene::Highlights<'static> {
 
 /// Draws one batch of a picture into `rect`: undimmed, with the cursor only when `cursor`.
 fn picture_pane(frame: &mut Frame, batch: &crate::screen::Screen, rect: Rect, cell: (f32, f32), cursor: bool, draw: &scene::DrawPrefs, face: u16) {
-    scene::pane_with(frame, batch, rect, cell, cursor, &crate::cursor_look::CursorLook::shown(cursor), draw, Some(&picture_highlights()), face);
+    scene::pane_with(frame, batch, rect, cell, cursor, &crate::cursor_look::CursorLook::shown(cursor), draw, Some(&picture_highlights()), face, None);
 }
 
 /// An open Make Screenshot panel and the pane it shows a frozen copy in.

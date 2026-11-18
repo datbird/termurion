@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::term::cell::Cell;
 
+use crate::layout::Rect;
 use crate::scene::{CellGlyph, Frame, ImageQuad, Quad, TextRow};
 
 /// How long rows may be reused before the whole cache is rebuilt from scratch.
@@ -28,8 +29,9 @@ pub struct RowOut {
 }
 
 impl RowOut {
-    /// Adds the row to `frame` with its top at `top`, and records its hovered cells.
-    pub fn place(&self, frame: &mut Frame, top: f32, row: usize, hovered: &mut Vec<(usize, usize)>) {
+    /// Adds the row to `frame` with its top at `top`, and records its hovered cells. Text and
+    /// box glyphs are clipped to `clip`, the pane's rect, wherever the row sits.
+    pub fn place(&self, frame: &mut Frame, top: f32, clip: Rect, row: usize, hovered: &mut Vec<(usize, usize)>) {
         let quad = |q: &Quad| {
             let mut q = *q;
             q.rect.y += top;
@@ -41,13 +43,13 @@ impl RowOut {
         frame.rows.extend(self.rows.iter().map(|r| {
             let mut r = r.clone();
             r.y += top;
-            r.clip.y += top;
+            r.clip = clip;
             r
         }));
         frame.glyphs.extend(self.glyphs.iter().map(|g| {
             let mut g = g.clone();
             g.rect.y += top;
-            g.clip.y += top;
+            g.clip = clip;
             g
         }));
         frame.images.extend(self.images.iter().map(|i| {
@@ -94,6 +96,8 @@ pub struct RowCache {
     /// Rows looked up or stored in the frame being built.
     used: usize,
     since: Instant,
+    /// Lookups that found their row, since the cache was made.
+    hits: u64,
 }
 
 impl Default for RowCache {
@@ -104,7 +108,7 @@ impl Default for RowCache {
 
 impl RowCache {
     pub fn new() -> Self {
-        RowCache { rows: HashMap::new(), count: 0, frame: 0, used: 0, since: Instant::now() }
+        RowCache { rows: HashMap::new(), count: 0, frame: 0, used: 0, since: Instant::now(), hits: 0 }
     }
 
     pub fn get(&mut self, key: &RowKey) -> Option<&RowOut> {
@@ -120,7 +124,13 @@ impl RowCache {
             .find(|(k, _, _)| k.context == context && k.extra == extra && k.cells == cells)?;
         *last = frame;
         self.used += 1;
+        self.hits += 1;
         Some(&*out)
+    }
+
+    /// How many lookups found their row since the cache was made.
+    pub fn hits(&self) -> u64 {
+        self.hits
     }
 
     pub fn put(&mut self, key: RowKey, out: RowOut) {
@@ -180,7 +190,6 @@ impl RowCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::Rect;
     use crate::palette::rgb;
     use crate::scene::{CellGlyph, Frame, Quad, TextRow};
     use alacritty_terminal::term::cell::Cell;
@@ -247,12 +256,29 @@ mod tests {
     fn place_moves_the_row_to_its_top() {
         let mut frame = Frame::default();
         let mut hovered = Vec::new();
-        out().place(&mut frame, 40.0, 5, &mut hovered);
+        let pane = Rect { x: 0.0, y: 6.0, w: 100.0, h: 200.0 };
+        out().place(&mut frame, 40.0, pane, 5, &mut hovered);
         assert_eq!(frame.quads[0].rect.y, 40.0);
         assert_eq!(frame.rows[0].y, 42.0);
-        assert_eq!(frame.rows[0].clip.y, 40.0);
+        // The clip is the pane's rect, not the row's.
+        assert_eq!(frame.rows[0].clip, pane);
         assert_eq!(frame.glyphs[0].rect.y, 43.0);
+        assert_eq!(frame.glyphs[0].clip, pane);
         assert_eq!(hovered, vec![(5, 4)]);
+    }
+
+    #[test]
+    fn hits_count_found_lookups_only() {
+        let mut cache = RowCache::new();
+        cache.put(key(), out());
+        assert_eq!(cache.hits(), 0);
+        assert!(cache.get(&key()).is_some());
+        let k = key();
+        assert!(cache.get_parts(k.context, &k.cells, k.extra).is_some());
+        assert!(cache.get_parts(1, &k.cells, k.extra).is_none());
+        assert_eq!(cache.hits(), 2);
+        cache.clear();
+        assert_eq!(cache.hits(), 2);
     }
 
     #[test]

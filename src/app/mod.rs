@@ -7010,7 +7010,7 @@ impl App {
                         }
                         None => {
                             draw.fx_rules = Some(p.fx_rules.clone());
-                            scene::pane_with(&mut frame, &p.screen, self.text_rect(id, rect), cell, self.focused && id == tab.focused, &self.cursor_look_for(id, self.focused && id == tab.focused, cover.is_none()), &draw, Some(&hl), face);
+                            scene::pane_with(&mut frame, &p.screen, self.text_rect(id, rect), cell, self.focused && id == tab.focused, &self.cursor_look_for(id, self.focused && id == tab.focused, cover.is_none()), &draw, Some(&hl), face, None);
                             if let Some(c) = cover {
                                 composer_ui::skip_covered(&mut frame.overlay, overlay_from, &mut frame.underlines, underline_from, &mut frame.strikes, strike_from, &mut frame.glyphs, glyph_from, c);
                             }
