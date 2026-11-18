@@ -965,6 +965,8 @@ impl Screen {
     }
 
     fn each_cell(&mut self, cells: &[(i32, usize)], f: &mut dyn FnMut(&mut Cell)) {
+        // Not in alacritty's damage: the renderer looks at every row again.
+        self.mark_render_full();
         let g = self.term.grid_mut();
         let (top, lines, cols) = (-(g.history_size() as i32), g.screen_lines() as i32, g.columns());
         for &(l, col) in cells {
@@ -1931,6 +1933,23 @@ mod tests {
         s.set_triggers(vec![trig(".", "AlertTrigger", "x", false)], TriggerPrefs::default());
         s.feed(b"abc\r\n");
         assert_eq!(alerts(&mut s), 1, "one alert per line, not per match");
+    }
+
+    /// A highlight on a wrapped line writes the rows above the one that just changed, rows
+    /// alacritty did not damage this feed; the renderer must still be told, or they keep their
+    /// old picture.
+    #[test]
+    fn a_wrapped_highlight_marks_its_rows_for_the_renderer() {
+        use crate::screen::RowDamage;
+        let mut s = Screen::new(10, 6);
+        s.set_triggers(vec![trig("a+", "HighlightTrigger", "{#ff0000,}", false)], TriggerPrefs::default());
+        s.feed(b"aaaaaaaaaaaaaaaaaaaaaaaaa");
+        s.take_render_damage();
+        s.take_render_damage();
+        s.feed(b"aaaaa\r\n");
+        assert_eq!(cell(&s, 0, 0).fg, spec(255, 0, 0), "the first row was highlighted");
+        let seen = s.take_render_damage();
+        assert!(matches!(&seen, RowDamage::Full) || matches!(&seen, RowDamage::Rows(r) if r[0] && r[1]), "rows 0 and 1 reported: {seen:?}");
     }
 
     #[test]

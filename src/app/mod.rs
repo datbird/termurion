@@ -6995,6 +6995,7 @@ impl App {
                 // The pane's row cache is taken out for the draw (the pane is borrowed for reading) and put back after.
                 let mut row_cache = self.panes.get_mut(&id).map(|p| {
                     let mut c = std::mem::take(&mut p.rows);
+                    c.follow(p.screen.render_id());
                     c.set_damage(p.screen.take_render_damage());
                     c
                 });

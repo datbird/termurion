@@ -434,7 +434,12 @@ pub struct Screen {
     render_dirty: DirtyRows,
     /// The view and size the renderer last took damage at.
     render_seen: Option<(usize, usize, usize)>,
+    /// Names this screen to the renderer's row table, so a swapped-in screen never inherits
+    /// another screen's rows.
+    render_id: u64,
 }
+
+static NEXT_RENDER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Which viewport rows alacritty touched since a reader last took them.
 #[derive(Default)]
@@ -810,6 +815,7 @@ impl Screen {
             replay_dirty: DirtyRows::default(),
             render_dirty: DirtyRows { full: true, rows: Vec::new() },
             render_seen: None,
+            render_id: NEXT_RENDER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }
     }
 
@@ -1348,6 +1354,16 @@ impl Screen {
             }
         }
         self.term.reset_damage();
+    }
+
+    /// A write outside the parser: the renderer must look at every row again.
+    pub(crate) fn mark_render_full(&mut self) {
+        self.render_dirty.full = true;
+    }
+
+    /// Which screen the renderer's kept rows belong to.
+    pub fn render_id(&self) -> u64 {
+        self.render_id
     }
 
     /// What the renderer must look at again since its last take. Full on the first take, after

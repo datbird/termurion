@@ -106,6 +106,8 @@ pub struct RowCache {
     damage: Option<RowDamage>,
     /// Last frame's `(context, extra, entry)` at each viewport row.
     last: Vec<Option<(u64, u64, Arc<RowOut>)>>,
+    /// The screen `last` was drawn from.
+    screen: u64,
 }
 
 impl Default for RowCache {
@@ -116,7 +118,7 @@ impl Default for RowCache {
 
 impl RowCache {
     pub fn new() -> Self {
-        RowCache { rows: HashMap::default(), count: 0, frame: 0, used: 0, since: Instant::now(), hits: 0, compares: 0, damage: None, last: Vec::new() }
+        RowCache { rows: HashMap::default(), count: 0, frame: 0, used: 0, since: Instant::now(), hits: 0, compares: 0, damage: None, last: Vec::new(), screen: 0 }
     }
 
     pub fn get(&mut self, key: &RowKey) -> Option<&Arc<RowOut>> {
@@ -151,6 +153,14 @@ impl RowCache {
         });
     }
 
+    /// The frame is drawn from screen `id`: another screen's rows are not kept.
+    pub fn follow(&mut self, id: u64) {
+        if self.screen != id {
+            self.screen = id;
+            self.last.clear();
+        }
+    }
+
     /// Takes the damage for a frame: Full when none was set. The frame's rows start over.
     pub(crate) fn begin_rows(&mut self, lines: usize) -> Vec<bool> {
         let clean = match self.damage.take() {
@@ -168,6 +178,7 @@ impl RowCache {
             return None;
         }
         self.used += 1;
+        self.hits += 1;
         Some(out.clone())
     }
 

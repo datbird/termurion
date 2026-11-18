@@ -11561,6 +11561,27 @@ mod row_reuse_tests {
     }
 
     #[test]
+    fn a_screen_swapped_back_shows_its_own_rows() {
+        let cfg = Cfg::new();
+        let mut cache = RowCache::new();
+        let mut own = Screen::new(40, 6);
+        own.feed(b"live one\r\nlive two\r\nlive three");
+        let mut view = Screen::new(40, 6);
+        view.feed(b"view one\r\nview two\r\nview three");
+        // As build_frame does: follow the screen, then take its damage.
+        let mut frame = |s: &mut Screen, cache: &mut RowCache| {
+            cache.follow(s.render_id());
+            damaged_draw(s, &cfg, cache)
+        };
+        frame(&mut own, &mut cache);
+        frame(&mut own, &mut cache);
+        frame(&mut view, &mut cache);
+        frame(&mut view, &mut cache);
+        let back = frame(&mut own, &mut cache);
+        assert!(back == draw(&own, &cfg, false, None), "the live rows, not the view's");
+    }
+
+    #[test]
     fn term_mut_marks_everything_dirty() {
         let mut s = Screen::new(20, 6);
         s.feed(b"a\r\nb");
