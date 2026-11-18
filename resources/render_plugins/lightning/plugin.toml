@@ -2,6 +2,7 @@ name = "Lightning"
 description = "the cursor crackles with small arcs of current; sparks while typing, faint crackle while idle, a bolt along the line on delete-all. Enter: a surge of current runs from the cursor along the input box lines."
 shaders = ["lightning-cursor.glsl"]
 animation = "always"
+region = ["full_after_change:1000", "cursor:3", "prompt_mark:1", "input_box:2"]
 cursor_color = "#9fd0fe"
 author = "AONIR (ghostty-cursor-fx)"
 license = "MIT"

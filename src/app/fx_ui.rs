@@ -20,6 +20,8 @@ pub(super) struct FxRuntime {
     chain: Option<Chain>,
     clock: Clock,
     uniforms: Uniforms,
+    /// Last frame's uniforms: an animation frame also shades where last frame's effect drew.
+    last_uniforms: Uniforms,
     animation: Animation,
     /// The first plugin's preset cursor color (cursor-fx effects are made for one).
     preset: Option<[f32; 3]>,
@@ -112,6 +114,7 @@ impl App {
         let mut errors = Vec::new();
         let mut animations = Vec::new();
         let mut preset = None;
+        let mut manifests = Vec::new();
         let switches: Vec<(&str, bool)> = render_fx::SWITCHES.iter().zip(&wanted.1).filter_map(|((_, c, ..), on)| c.map(|c| (c, *on))).collect();
         let signals = render_fx::SWITCHES.iter().zip(&wanted.1).find(|((_, c, ..), _)| c.is_none()).is_none_or(|(_, on)| *on);
         for id in &wanted.0 {
@@ -123,6 +126,7 @@ impl App {
                 Ok(list) => {
                     shaders.extend(list);
                     animations.push(p.manifest.animation);
+                    manifests.push(&p.manifest);
                     preset = preset.or_else(|| p.manifest.cursor_color.as_deref().and_then(render_fx::hex_color));
                 }
                 Err(e) => errors.push(e),
@@ -140,16 +144,20 @@ impl App {
         let chain = if shaders.is_empty() {
             None
         } else {
+            // Where the plugins say they draw: an animation frame shades only there.
+            let terms = render_fx::chain_region(&manifests);
             match Chain::new(gpu.render_device(), format, shaders, keep_alpha) {
-                Ok(c) if views => Some(c),
-                Ok(c) => Some(c.without_view_formats(gpu.render_device())),
+                Ok(mut c) => {
+                    c.set_region_terms(terms);
+                    Some(if views { c } else { c.without_view_formats(gpu.render_device()) })
+                }
                 Err(e) => {
                     errors.push(format!("the graphics card refused an effect: {e}"));
                     None
                 }
             }
         };
-        gpu.fx = Some(FxRuntime { ids: wanted, chain, clock: Clock::default(), uniforms: Uniforms::default(), animation: strongest(&animations), preset, keep_alpha, signals, due: None });
+        gpu.fx = Some(FxRuntime { ids: wanted, chain, clock: Clock::default(), uniforms: Uniforms::default(), last_uniforms: Uniforms::default(), animation: strongest(&animations), preset, keep_alpha, signals, due: None });
         if errors.is_empty() {
             self.banners.clear(BANNER);
         } else {
@@ -180,6 +188,7 @@ impl FxRuntime {
 
     /// Fills the uniforms for a frame of `size` from what the scene recorded.
     pub(super) fn prepare(&mut self, pane: Option<&crate::scene::FxPane>, signals: Option<&render_fx::Signals>, size: (u32, u32), focused: bool, now: Instant) {
+        self.last_uniforms.clone_from(&self.uniforms);
         let u = &mut self.uniforms;
         let mut cursor = pane.and_then(|p| p.cursor);
         if let (Some(c), Some(p)) = (cursor.as_mut(), pane) {
@@ -219,6 +228,13 @@ impl FxRuntime {
                 *slot = if i < 16 { unit(p.ansi[i]) } else { xterm_256(i) };
             }
         }
+    }
+
+    /// Where this frame's effects can draw, with last frame's (`render_fx::frame_region`); None
+    /// runs the full pass. `cell_h` is the focused pane's cell height.
+    pub(super) fn region(&self, cell_h: f32, size: (u32, u32)) -> Option<Vec<render_fx::PxRect>> {
+        let terms = self.chain.as_ref()?.region_terms()?;
+        render_fx::frame_region(terms, &self.uniforms, &self.last_uniforms, cell_h, size)
     }
 
     pub(super) fn chain_mut(&mut self) -> Option<(&mut Chain, &Uniforms)> {

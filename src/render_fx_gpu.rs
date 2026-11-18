@@ -4,7 +4,7 @@
 
 use std::borrow::Cow;
 
-use crate::render_fx::{Compiled, Layout, Uniforms, uniform_layout};
+use crate::render_fx::{Compiled, Layout, PxRect, RegionTerm, Uniforms, uniform_layout};
 
 /// A full-screen triangle; the fragment shaders read `@builtin(position)` (gl_FragCoord).
 const VERTEX: &str = "
@@ -29,6 +29,15 @@ fn enc(c: f32) -> f32 {
 fn fs_main(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
     let c = textureLoad(src, vec2<i32>(p.xy), 0);
     return vec4<f32>(enc(c.r), enc(c.g), enc(c.b), c.a);
+}
+";
+
+/// The kept output into the window, byte for byte: no filtering and no color conversion.
+const COPY: &str = "
+@group(0) @binding(0) var src: texture_2d<f32>;
+@fragment
+fn fs_main(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    return textureLoad(src, vec2<i32>(p.xy), 0);
 }
 ";
 
@@ -109,6 +118,23 @@ pub struct Chain {
     last_packed: Vec<Vec<u8>>,
     binds_made: u64,
     uniform_writes: u64,
+    /// Where the effects can draw (`set_region_terms`); None runs every frame full screen.
+    region_terms: Option<Vec<RegionTerm>>,
+    /// With region terms: the last pass's output, kept so a frame can shade only its region,
+    /// then copied whole into the window (whose texture changes every frame).
+    kept: Option<Kept>,
+    /// `kept` holds this chain's last window frame at `size`.
+    kept_ok: bool,
+    kept_made: u64,
+}
+
+/// The chain's kept output (raw format, window size) and the copy that puts it in the window.
+struct Kept {
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    /// With view formats: the copy into the window's raw view and its bind group (without view
+    /// formats the encode copy reads `view` instead).
+    copy: Option<(wgpu::BindGroupLayout, wgpu::RenderPipeline, wgpu::BindGroup)>,
 }
 
 /// The format the passes write: the window's, without the sRGB suffix.
@@ -185,7 +211,7 @@ impl Chain {
             passes.push(Pass { pipeline, uniforms, layout });
         }
         let last_packed = vec![Vec::new(); passes.len()];
-        Ok(Chain { passes, bind_layout, sampler, format, size: (0, 0), targets: Vec::new(), blits: None, plain: None, keep_alpha, frame_drawn: false, binds: Vec::new(), copy_binds: Vec::new(), last_packed, binds_made: 0, uniform_writes: 0 })
+        Ok(Chain { passes, bind_layout, sampler, format, size: (0, 0), targets: Vec::new(), blits: None, plain: None, keep_alpha, frame_drawn: false, binds: Vec::new(), copy_binds: Vec::new(), last_packed, binds_made: 0, uniform_writes: 0, region_terms: None, kept: None, kept_ok: false, kept_made: 0 })
     }
 
     /// For a card that cannot view a texture in a second format (`view_formats_supported` false):
@@ -229,8 +255,31 @@ impl Chain {
         self.targets.clear();
         self.binds.clear();
         self.copy_binds.clear();
+        self.kept = None;
+        self.kept_ok = false;
         self.size = (0, 0);
         self
+    }
+
+    /// Where the chain's effects can draw (`render_fx::chain_region`). With terms the chain keeps
+    /// its output so `run_in` can shade only a region; the textures are made again for it.
+    pub fn set_region_terms(&mut self, terms: Option<Vec<RegionTerm>>) {
+        if terms.is_some() != self.region_terms.is_some() {
+            self.size = (0, 0);
+            self.frame_drawn = false;
+            self.kept = None;
+            self.kept_ok = false;
+        }
+        self.region_terms = terms;
+    }
+
+    pub fn region_terms(&self) -> Option<&[RegionTerm]> {
+        self.region_terms.as_deref()
+    }
+
+    /// How many times the kept output was made (it follows the size, not the frames).
+    pub fn kept_made(&self) -> u64 {
+        self.kept_made
     }
 
     /// Whether `run` writes a non-sRGB view of the window (else the window's own view).
@@ -290,6 +339,7 @@ impl Chain {
                 self.plain = Some(Self::plain(device, self.format, size));
                 self.size = size;
                 self.frame_drawn = false;
+                self.remake_kept(device);
                 self.remake_binds(device);
             }
             let p = self.plain.as_ref().expect("made above");
@@ -300,6 +350,7 @@ impl Chain {
             self.targets = (0..wanted).map(|_| Self::target(device, self.format, size)).collect();
             self.size = size;
             self.frame_drawn = false;
+            self.remake_kept(device);
             self.remake_binds(device);
         }
         (&self.targets[0].srgb, Some(&self.targets[0].raw))
@@ -315,6 +366,45 @@ impl Chain {
     /// screenshot drew something else into it).
     pub fn set_frame_drawn(&mut self, drawn: bool) {
         self.frame_drawn = drawn;
+        // Whatever replaced the frame also ran the passes: the kept output is not the window's.
+        if !drawn {
+            self.kept_ok = false;
+        }
+    }
+
+    /// Makes the kept output at the chain's size, when the chain has region terms.
+    fn remake_kept(&mut self, device: &wgpu::Device) {
+        self.kept_ok = false;
+        // A third pass writes the frame texture, so such a chain never shades a region alone.
+        if self.region_terms.is_none() || self.passes.len() > 2 {
+            self.kept = None;
+            return;
+        }
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("render_fx kept"),
+            size: wgpu::Extent3d { width: self.size.0.max(1), height: self.size.1.max(1), depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: raw_format(self.format),
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let copy = self.blits.is_none().then(|| {
+            // The pipeline outlives a resize; only its bind group follows the texture.
+            let (layout, pipeline) = match self.kept.take().and_then(|k| k.copy) {
+                Some((l, p, _)) => (l, p),
+                None => {
+                    let out_mask = if self.keep_alpha { wgpu::ColorWrites::ALL } else { wgpu::ColorWrites::COLOR };
+                    copy_pipeline(device, raw_format(self.format), out_mask)
+                }
+            };
+            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("render_fx kept"), layout: &layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }] });
+            (layout, pipeline, bind)
+        });
+        self.kept = Some(Kept { _texture: texture, view, copy });
+        self.kept_made += 1;
     }
 
     /// One copy pass from `src` into `dst`.
@@ -360,7 +450,8 @@ impl Chain {
             Some((b, p)) => {
                 let last = self.passes.len().saturating_sub(1);
                 let make = |src: &wgpu::TextureView| device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("render_fx copy"), layout: &b.layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(src) }] });
-                vec![make(&p.frame), make(&p.raw[(last + 1) % 2])]
+                let result = self.kept.as_ref().map_or(&p.raw[(last + 1) % 2], |k| &k.view);
+                vec![make(&p.frame), make(result)]
             }
             None => Vec::new(),
         };
@@ -379,10 +470,19 @@ impl Chain {
 
     /// Runs every pass; the last writes `out`, a non-sRGB view of the window texture.
     pub fn run(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, uniforms: &Uniforms, out: &wgpu::TextureView) {
+        self.run_in(device, queue, uniforms, out, None);
+    }
+
+    /// `run`, shading only `rects` when the kept output allows it: the chain has region terms
+    /// and at most two passes (`remake_kept`), and its last run was this window's frame at this
+    /// size. The caller passes rects only for an animation frame of a kept scene,
+    /// united with last frame's (its glow outside them must go back to the plain picture).
+    pub fn run_in(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, uniforms: &Uniforms, out: &wgpu::TextureView, rects: Option<&[PxRect]>) {
         // Nothing to draw into yet (no frame_views call).
         if self.targets.is_empty() && self.plain.is_none() {
             return;
         }
+        let rects = rects.filter(|_| self.kept.is_some() && self.kept_ok);
         // The uniform buffers hold what the last frame packed; only a change is written.
         for (i, pass) in self.passes.iter().enumerate() {
             if let Some(layout) = &pass.layout {
@@ -402,18 +502,25 @@ impl Chain {
             (Some(_), None) => return,
             (None, _) => None,
         };
-        if let Some((b, p)) = plain {
+        // A region frame finds the decoded frame still there: with a kept output no pass writes it.
+        if let (Some((b, p)), None) = (plain, rects) {
             Self::blit(&mut encoder, &self.copy_binds[0], &b.decode, &p.raw[0]);
         }
+        let kept = self.kept.as_ref().map(|k| &k.view);
+        // A region frame keeps every pixel outside its rects from the last frame.
+        let load = if rects.is_some() { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(wgpu::Color::BLACK) };
         for (i, pass) in self.passes.iter().enumerate() {
-            // Ping-pong: pass i reads target i % 2 and writes the other (or the window).
-            let (input, output) = match plain {
-                Some((_, p)) => (&p.raw[i % 2], &p.raw[(i + 1) % 2]),
-                None => (&self.targets[i % 2].raw, if i == last { out } else { &self.targets[(i + 1) % 2].raw }),
+            // Ping-pong: pass i reads target i % 2 (its bind group) and writes the other, or the
+            // kept output or the window when it is the last.
+            let output = match plain {
+                Some((_, p)) if i == last => kept.unwrap_or(&p.raw[(i + 1) % 2]),
+                Some((_, p)) => &p.raw[(i + 1) % 2],
+                None if i == last => kept.unwrap_or(out),
+                None => &self.targets[(i + 1) % 2].raw,
             };
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("render_fx"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: output, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: output, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load, store: wgpu::StoreOp::Store } })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -421,13 +528,58 @@ impl Chain {
             });
             rp.set_pipeline(&pass.pipeline);
             rp.set_bind_group(0, &self.binds[i], &[]);
-            rp.draw(0..3, 0..1);
+            match rects {
+                Some(rects) => {
+                    let (sw, sh) = self.size;
+                    for r in rects {
+                        // A scissor past the target is a validation error.
+                        let (x, y) = (r.x.min(sw), r.y.min(sh));
+                        let (w, h) = (r.w.min(sw - x), r.h.min(sh - y));
+                        if w > 0 && h > 0 {
+                            rp.set_scissor_rect(x, y, w, h);
+                            rp.draw(0..3, 0..1);
+                        }
+                    }
+                }
+                None => rp.draw(0..3, 0..1),
+            }
         }
-        if let Some((b, _)) = plain {
-            Self::blit(&mut encoder, &self.copy_binds[1], &b.encode, out);
+        match (plain, &self.kept) {
+            (Some((b, _)), _) => Self::blit(&mut encoder, &self.copy_binds[1], &b.encode, out),
+            (None, Some(Kept { copy: Some((_, pipeline, bind)), .. })) => Self::blit(&mut encoder, bind, pipeline, out),
+            (None, _) => {}
         }
         queue.submit([encoder.finish()]);
+        self.kept_ok = self.kept.is_some();
     }
+}
+
+/// The kept output's copy into the window's raw view (`COPY`).
+fn copy_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat, write_mask: wgpu::ColorWrites) -> (wgpu::BindGroupLayout, wgpu::RenderPipeline) {
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("render_fx kept"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+            count: None,
+        }],
+    });
+    let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("render_fx kept"), bind_group_layouts: &[Some(&layout)], ..Default::default() });
+    let vertex = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("render_fx vertex"), source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(VERTEX)) });
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("render_fx kept"), source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(COPY)) });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("render_fx kept"),
+        layout: Some(&pl),
+        vertex: wgpu::VertexState { module: &vertex, entry_point: Some("vs_main"), compilation_options: Default::default(), buffers: &[] },
+        fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs_main"), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask })] }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+    (layout, pipeline)
 }
 
 /// The result of an error scope. On native wgpu it is ready at once; a few polls cover a

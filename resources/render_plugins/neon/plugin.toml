@@ -2,6 +2,7 @@ name = "Neon"
 description = "the cursor glows like a pink neon tube that slowly breathes and flickers back on after every keystroke. Enter: the input box lines light up as neon tubes, igniting outward from the cursor."
 shaders = ["neon-cursor.glsl"]
 animation = "always"
+region = ["full_after_change:1300", "cursor:3", "prompt_mark:1", "input_box:2"]
 cursor_color = "#ff5ed2"
 author = "AONIR (ghostty-cursor-fx)"
 license = "MIT"

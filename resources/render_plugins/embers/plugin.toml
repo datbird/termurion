@@ -2,6 +2,7 @@ name = "Embers"
 description = "the cursor is a burning coal with hot cracks shifting across it; typing kicks up glowing embers that rise and cool from yellow to red. Enter: the input box lines flare with heat and shed a shower of embers."
 shaders = ["ember-cursor.glsl"]
 animation = "always"
+region = ["full_after_change:1900", "cursor:5", "prompt_mark:1", "input_box:4"]
 cursor_color = "#ff8a3c"
 author = "AONIR (ghostty-cursor-fx)"
 license = "MIT"

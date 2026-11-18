@@ -186,7 +186,7 @@ pub fn chain_region(manifests: &[&Manifest]) -> Option<Vec<RegionTerm>> {
 }
 
 /// The pixels an effect can change this frame, or None for the whole screen. `cell_h` is the
-/// default face's cell height. The caller unites this with last frame's rects.
+/// focused pane's cell height (the pads are in its cells). The caller unites this with last frame's rects.
 pub fn region_rects(terms: &[RegionTerm], u: &Uniforms, cell_h: f32, size: (u32, u32)) -> Option<Vec<PxRect>> {
     let (sw, sh) = (size.0 as f32, size.1 as f32);
     // (left, top, right, bottom) in float pixels, grown by pad cells
@@ -231,6 +231,16 @@ pub fn region_rects(terms: &[RegionTerm], u: &Uniforms, cell_h: f32, size: (u32,
         }
     }
     Some(round_and_merge(boxes, (sw, sh)))
+}
+
+/// The rects an animation frame shades: this frame's region united with last frame's, whose
+/// light outside this frame's must go back to the plain picture. None (the full pass) when
+/// either frame is full; an empty list when neither can draw anything.
+pub fn frame_region(terms: &[RegionTerm], now: &Uniforms, last: &Uniforms, cell_h: f32, size: (u32, u32)) -> Option<Vec<PxRect>> {
+    let a = region_rects(terms, now, cell_h, size)?;
+    let b = region_rects(terms, last, cell_h, size)?;
+    let boxes = a.iter().chain(&b).map(|r| [r.x as f32, r.y as f32, (r.x + r.w) as f32, (r.y + r.h) as f32]).collect();
+    Some(round_and_merge(boxes, (size.0 as f32, size.1 as f32)))
 }
 
 /// Rounds boxes outward to whole pixels, clamps them to the window, merges overlapping ones and
@@ -1131,6 +1141,24 @@ mod tests {
         assert_eq!(chain_region(&[&a, &b]), None);
         assert_eq!(chain_region(&[&a, &f]), None);
         assert_eq!(chain_region(&[&a, &c]), Some(vec![RegionTerm::Cursor(0.0), RegionTerm::InputBox(0.0)]));
+    }
+
+    #[test]
+    fn a_frames_region_unites_it_with_last_frames() {
+        let last = cursor_uniforms([100.0, 40.0, 10.0, 20.0]);
+        let mut now = cursor_uniforms([100.0, 400.0, 10.0, 20.0]);
+        // Long after the cursor changed.
+        now.time = 10.0;
+        let t = [RegionTerm::Cursor(0.0)];
+        assert_eq!(frame_region(&t, &now, &last, 20.0, (800, 600)).unwrap(), [PxRect { x: 100, y: 400, w: 10, h: 20 }, PxRect { x: 100, y: 40, w: 10, h: 20 }]);
+        // Either frame full: the full pass.
+        let mut playing = now.clone();
+        playing.time_cursor_change = playing.time;
+        let f = [RegionTerm::Cursor(0.0), RegionTerm::FullAfterChange(Duration::from_millis(600))];
+        assert_eq!(frame_region(&f, &now, &playing, 20.0, (800, 600)), None);
+        assert_eq!(frame_region(&f, &playing, &now, 20.0, (800, 600)), None);
+        // Nothing to draw in either: nothing shaded, never the full pass.
+        assert_eq!(frame_region(&[RegionTerm::InputBox(1.0)], &now, &last, 20.0, (800, 600)), Some(vec![]));
     }
 
     #[test]

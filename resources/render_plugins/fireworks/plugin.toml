@@ -2,6 +2,7 @@ name = "Fireworks"
 description = "the cursor fizzes like a sparkler; typing pops tiny colored sparkles off the cursor. Enter: a fuse burns out from the cursor along the input box lines and launches three fireworks on the way."
 shaders = ["firework-cursor.glsl"]
 animation = "always"
+region = ["full_after_change:2200", "cursor:3", "prompt_mark:1", "input_box:3"]
 cursor_color = "#ffc856"
 author = "AONIR (ghostty-cursor-fx)"
 license = "MIT"

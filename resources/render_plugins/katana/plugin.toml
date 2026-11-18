@@ -2,6 +2,7 @@ name = "Katana"
 description = "the cursor is polished steel with a slow sheen; every keystroke slashes the cursor corner to corner, its halves part for an instant and sparks fly off. Enter: the blade sweeps out from the cursor along the input box lines, cutting them in two; the halves slide apart, then join again."
 shaders = ["katana-cursor.glsl"]
 animation = "always"
+region = ["full_after_change:1000", "cursor:3", "prompt_mark:1", "input_box:2"]
 cursor_color = "#b8c4d4"
 author = "AONIR (ghostty-cursor-fx)"
 license = "MIT"

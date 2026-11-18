@@ -1359,23 +1359,25 @@ impl Renderer {
     /// Draws `frame` through the render plugin chain: the frame goes into the chain's
     /// offscreen texture, then the passes write `out`, a non-sRGB view of the target.
     pub fn draw_fx(&mut self, frame: &Frame, chain: &mut crate::render_fx_gpu::Chain, uniforms: &crate::render_fx::Uniforms, out: &wgpu::TextureView, w: u32, h: u32) -> Result<(), String> {
-        self.draw_fx_for(frame, chain, uniforms, out, w, h, false)
+        self.draw_fx_for(frame, chain, uniforms, out, w, h, false, None)
     }
 
     /// `draw_fx` for the window. With `same_scene` (the frame is the one drawn last time) and the
     /// last picture still in the chain's frame texture, only the passes run: an animation frame
-    /// costs the shaders, as in Ghostty, not a full redraw of the terminal.
+    /// costs the shaders, as in Ghostty, not a full redraw of the terminal. Such a frame shades
+    /// only `region` (`render_fx::frame_region`) when the chain allows it (`Chain::run_in`).
     #[allow(clippy::too_many_arguments)]
-    pub fn draw_fx_for(&mut self, frame: &Frame, chain: &mut crate::render_fx_gpu::Chain, uniforms: &crate::render_fx::Uniforms, out: &wgpu::TextureView, w: u32, h: u32, same_scene: bool) -> Result<(), String> {
+    pub fn draw_fx_for(&mut self, frame: &Frame, chain: &mut crate::render_fx_gpu::Chain, uniforms: &crate::render_fx::Uniforms, out: &wgpu::TextureView, w: u32, h: u32, same_scene: bool, region: Option<&[crate::render_fx::PxRect]>) -> Result<(), String> {
         let (view, raw) = chain.frame_views(&self.device, (w, h));
         let (view, raw) = (view.clone(), raw.cloned());
-        if !(same_scene && chain.frame_kept()) {
+        let animation_only = same_scene && chain.frame_kept();
+        if !animation_only {
             // Not the window's picture until the draw succeeds.
             chain.set_frame_drawn(false);
             self.draw_with(frame, &view, raw.as_ref(), w, h)?;
             chain.set_frame_drawn(true);
         }
-        chain.run(&self.device, &self.queue, uniforms, out);
+        chain.run_in(&self.device, &self.queue, uniforms, out, region.filter(|_| animation_only));
         Ok(())
     }
 
@@ -4172,19 +4174,372 @@ mod tests {
         let out = out_tex.create_view(&Default::default());
         let mut chain = crate::render_fx_gpu::Chain::new(&device, format, vec![copy()], false).unwrap();
         assert!(!chain.frame_kept(), "nothing drawn yet");
-        r.draw_fx_for(&frame, &mut chain, &u, &out, 64, 32, false).unwrap();
+        r.draw_fx_for(&frame, &mut chain, &u, &out, 64, 32, false, None).unwrap();
         assert!(chain.frame_kept(), "the window's picture is in the chain");
-        r.draw_fx_for(&frame, &mut chain, &u, &out, 64, 32, true).unwrap();
+        r.draw_fx_for(&frame, &mut chain, &u, &out, 64, 32, true, None).unwrap();
         assert!(chain.frame_kept(), "a same-scene frame leaves it there");
         r.draw_offscreen_fx(&frame, Some((&mut chain, &u)), 64, 32).unwrap();
         assert!(!chain.frame_kept(), "a screenshot replaced it");
-        r.draw_fx_for(&frame, &mut chain, &u, &out, 64, 32, true).unwrap();
+        r.draw_fx_for(&frame, &mut chain, &u, &out, 64, 32, true, None).unwrap();
         assert!(chain.frame_kept(), "drawn again for the window");
         let _ = chain.frame_views(&device, (65, 32));
         assert!(!chain.frame_kept(), "a new size makes new textures");
         let mut three = crate::render_fx_gpu::Chain::new(&device, format, vec![copy(), copy(), copy()], false).unwrap();
-        r.draw_fx_for(&frame, &mut three, &u, &out, 64, 32, false).unwrap();
+        r.draw_fx_for(&frame, &mut three, &u, &out, 64, 32, false, None).unwrap();
         assert!(!three.frame_kept(), "a third pass writes the frame texture");
+    }
+
+    /// A window texture for the region tests: the sRGB format with its raw twin, read back.
+    struct Window {
+        tex: wgpu::Texture,
+        srgb: wgpu::TextureView,
+        raw: wgpu::TextureView,
+        size: (u32, u32),
+    }
+
+    impl Window {
+        fn new(device: &wgpu::Device, (w, h): (u32, u32)) -> Window {
+            let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[format.remove_srgb_suffix()],
+            });
+            let srgb = tex.create_view(&Default::default());
+            let raw = tex.create_view(&wgpu::TextureViewDescriptor { format: Some(format.remove_srgb_suffix()), ..Default::default() });
+            Window { tex, srgb, raw, size: (w, h) }
+        }
+
+        /// The view a chain of `kind` writes: the raw twin with view formats, else the sRGB view.
+        fn out(&self, kind: ChainKind) -> &wgpu::TextureView {
+            if kind.views { &self.raw } else { &self.srgb }
+        }
+
+        /// The pixels, rows unpadded.
+        fn read(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<u8> {
+            let (w, h) = self.size;
+            let (row, padded) = (w * 4, (w * 4).div_ceil(256) * 256);
+            let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (padded * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+            let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            enc.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo { texture: &self.tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: Some(h) } },
+                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            );
+            queue.submit(Some(enc.finish()));
+            buf.slice(..).map_async(wgpu::MapMode::Read, |r| r.unwrap());
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let data = buf.slice(..).get_mapped_range().unwrap().to_vec();
+            data.chunks(padded as usize).flat_map(|r| r[..row as usize].to_vec()).collect()
+        }
+    }
+
+    /// One way of running a chain: with or without view formats, opaque or keeping alpha.
+    #[derive(Clone, Copy, Debug)]
+    struct ChainKind {
+        views: bool,
+        keep_alpha: bool,
+        /// The "Live Lines" switch (LINE_EFFECT) on: the box lines animate while idle.
+        live_lines: bool,
+    }
+
+    const CHAIN_KINDS: [ChainKind; 4] = [
+        ChainKind { views: true, keep_alpha: false, live_lines: false },
+        ChainKind { views: false, keep_alpha: false, live_lines: true },
+        ChainKind { views: true, keep_alpha: true, live_lines: true },
+        ChainKind { views: false, keep_alpha: true, live_lines: false },
+    ];
+
+    fn compiled_for(p: &crate::render_fx::Plugin, kind: ChainKind) -> Vec<crate::render_fx::Compiled> {
+        p.compile_with(&[("LINE_EFFECT", kind.live_lines)]).unwrap()
+    }
+
+    fn chain_of(device: &wgpu::Device, compiled: Vec<crate::render_fx::Compiled>, kind: ChainKind, terms: Option<Vec<crate::render_fx::RegionTerm>>) -> crate::render_fx_gpu::Chain {
+        let mut c = crate::render_fx_gpu::Chain::new(device, wgpu::TextureFormat::Bgra8UnormSrgb, compiled, kind.keep_alpha).unwrap();
+        if !kind.views {
+            c = c.without_view_formats(device);
+        }
+        c.set_region_terms(terms);
+        c
+    }
+
+    /// One shot of `region_shots`: the region frame's pixels, the full pass's, and the plain
+    /// picture's, with the rects the region frame shaded.
+    struct RegionShot {
+        ms: u64,
+        region: Vec<u8>,
+        full: Vec<u8>,
+        rects: Option<Vec<crate::render_fx::PxRect>>,
+        cursor: [f32; 4],
+        last_cursor: [f32; 4],
+    }
+
+    /// The region tests' timeline over `frame`, every 50 ms from 0 to `until`: frame 0 draws
+    /// whole, every later frame is animation-only (`draw_fx_for` with the scene kept and the
+    /// region). The cursor moves one cell at 300 ms, jumps 20 rows at 700 ms, Enter at 1000 ms,
+    /// a cursor move per 50 ms (typing) from 1200 to 1400 ms. Each shot also runs the full pass
+    /// with the same uniforms. Shots at `shots` are read back. Without `events` the cursor
+    /// stays put and nothing is sent: only the idle animation plays.
+    #[allow(clippy::too_many_arguments)]
+    fn region_shots(r: &mut Renderer, p: &crate::render_fx::Plugin, frame: &Frame, size: (u32, u32), bg: crate::palette::Rgb, preset: [u8; 3], kind: ChainKind, until: u64, events: bool, shots: &dyn Fn(u64) -> bool) -> Vec<RegionShot> {
+        use crate::render_fx::{Clock, Signals, Uniforms};
+        use std::time::{Duration, Instant};
+        let (device, queue) = device();
+        let terms = p.manifest.region.clone().expect("a region");
+        let mut region = chain_of(&device, compiled_for(p, kind), kind, Some(terms.clone()));
+        let mut full = chain_of(&device, compiled_for(p, kind), kind, None);
+        let (win_r, win_f) = (Window::new(&device, size), Window::new(&device, size));
+        let (mut clock, mut u, mut sig) = (Clock::default(), Uniforms::default(), Signals::default());
+        u.background = [bg.r as f32 / 255.0, bg.g as f32 / 255.0, bg.b as f32 / 255.0];
+        let fx = frame.fx.clone().unwrap();
+        u.foreground = [fx.fg.r as f32 / 255.0, fx.fg.g as f32 / 255.0, fx.fg.b as f32 / 255.0];
+        u.input_box = fx.input_box.map_or([0.0; 4], |b| b.uniform());
+        u.input_box_x = fx.input_box.map_or([0.0; 4], |b| b.uniform_x());
+        u.prompt_mark = fx.uniform_mark();
+        let (cw, ch) = r.cell;
+        let base = fx.cursor.expect("a cursor");
+        let rows = size.1 as f32 / ch;
+        // 20 rows toward the side with room.
+        let jump = if base.rect[1] / ch > rows / 2.0 { -20.0 * ch } else { 20.0 * ch };
+        let t0 = Instant::now();
+        let mut out = Vec::new();
+        for ms in (0..=until).step_by(50) {
+            let now = t0 + Duration::from_millis(ms);
+            if events && ms == 1000 {
+                sig.enter(now, &crate::fx_profile::FxRules::default().done);
+            }
+            let mut c = base;
+            let typed = if (1200..=1400).contains(&ms) { (ms - 1150) / 50 } else if ms > 1400 { 5 } else { 0 };
+            if events {
+                c.rect[0] += cw * (u32::from(ms >= 300) as f32 + typed as f32);
+                c.rect[1] += if ms >= 700 { jump } else { 0.0 };
+            }
+            let [cr, cg, cb] = sig.apply(preset, now);
+            c.color = [cr as f32 / 255.0, cg as f32 / 255.0, cb as f32 / 255.0, 1.0];
+            let last = u.clone();
+            clock.frame(&mut u, now, size, Some(c), true);
+            let rects = crate::render_fx::frame_region(&terms, &u, &last, ch, size);
+            let same = ms > 0;
+            r.draw_fx_for(frame, &mut region, &u, win_r.out(kind), size.0, size.1, same, rects.as_deref()).unwrap();
+            if shots(ms) {
+                r.draw_fx_for(frame, &mut full, &u, win_f.out(kind), size.0, size.1, same, None).unwrap();
+                out.push(RegionShot { ms, region: win_r.read(&device, &queue), full: win_f.read(&device, &queue), rects, cursor: u.current_cursor, last_cursor: last.current_cursor });
+            }
+        }
+        out
+    }
+
+    /// Where two pictures differ: the count and the bounding box (left, top, right, bottom).
+    fn diff_box(a: &[u8], b: &[u8], w: u32) -> Option<(usize, [usize; 4])> {
+        let mut n = 0;
+        let mut bx = [usize::MAX, usize::MAX, 0, 0];
+        for (i, (pa, pb)) in a.chunks(4).zip(b.chunks(4)).enumerate() {
+            if pa != pb {
+                let (x, y) = (i % w as usize, i / w as usize);
+                n += 1;
+                bx = [bx[0].min(x), bx[1].min(y), bx[2].max(x), bx[3].max(y)];
+            }
+        }
+        (n > 0).then_some((n, bx))
+    }
+
+    fn region_plugins() -> Vec<crate::render_fx::Plugin> {
+        crate::render_fx::discover(None).0.into_iter().filter(|p| p.manifest.region.as_ref().is_some_and(|t| !t.contains(&crate::render_fx::RegionTerm::Full))).collect()
+    }
+
+    const AGENT_SCREENS: [&str; 14] = ["agy", "codex", "codex-after", "hermes", "hermes-after", "opencode", "opencode-after", "tmux-other-has-box", "tmux-split-band", "tmux-split-left", "tmux-split-right", "tmux-stacked", "tmux-three", "tmux-title-row"];
+
+    /// Runs `check` for every shipped effect with a region (or only TERMURION_REGION_ONLY), one
+    /// thread each: lavapipe runs one submission on few cores. Returns the shots and the misses.
+    fn per_region_plugin(check: &(dyn Fn(&crate::render_fx::Plugin) -> (usize, Vec<String>) + Sync)) -> (usize, Vec<String>) {
+        let only = std::env::var("TERMURION_REGION_ONLY").ok();
+        let plugins: Vec<_> = region_plugins().into_iter().filter(|p| only.as_deref().is_none_or(|o| o == p.id)).collect();
+        std::thread::scope(|scope| {
+            let runs: Vec<_> = plugins.iter().map(|p| scope.spawn(move || check(p))).collect();
+            runs.into_iter().map(|h| h.join().unwrap()).fold((0, Vec::new()), |(n, mut bad), (m, b)| {
+                bad.extend(b);
+                (n + m, bad)
+            })
+        })
+    }
+
+    /// Change 2: an animation-only frame that shades only the effect's region shows the same
+    /// bytes as the full pass, for every shipped effect with a region, on every agent screen,
+    /// through a cursor step, a 20-row jump, Enter and typing. The chain kinds (view formats,
+    /// alpha, Live Lines) take turns over the screens; a small cell and scale 2 run a few more.
+    #[test]
+    fn region_frames_match_full_frames_for_every_shipped_plugin() {
+        let (runs, bad) = per_region_plugin(&|p| {
+            let (device, queue) = device();
+            let (mut runs, mut bad) = (0, Vec::new());
+            let fonts: [(f32, &[&str]); 3] = [(14.0, &AGENT_SCREENS), (10.0, &["codex", "tmux-split-right"]), (28.0, &["hermes", "tmux-stacked"])];
+            for (px, screens) in fonts {
+                let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", px);
+                let preset = preset_of(p);
+                for (i, name) in screens.iter().enumerate() {
+                    let kind = CHAIN_KINDS[(i + p.id.len()) % CHAIN_KINDS.len()];
+                    let (frame, size, bg) = agent_frame(&r, name, preset);
+                    for s in region_shots(&mut r, p, &frame, size, bg, preset, kind, 2000, true, &|_| true) {
+                        runs += 1;
+                        if let Some((n, bx)) = diff_box(&s.region, &s.full, size.0) {
+                            bad.push(format!("{} {px}px {name} {kind:?} {} ms: {n} pixels differ in {bx:?}; cursor {:?} last {:?}, rects {:?}", p.id, s.ms, s.cursor, s.last_cursor, s.rects));
+                        }
+                        if !kind.keep_alpha && s.region.chunks(4).any(|px| px[3] != 255) {
+                            bad.push(format!("{} {px}px {name} {} ms: an opaque window got alpha below 255", p.id, s.ms));
+                        }
+                    }
+                }
+            }
+            (runs, bad)
+        });
+        assert!(runs > 0);
+        assert!(bad.is_empty(), "{} of {runs} shots differ:\n{}", bad.len(), bad.join("\n"));
+    }
+
+    /// The idle animations (a breathing glow, a stray ember, a sonar ping, a glint along the
+    /// box lines) come every few seconds, past the 2 s of the test above: 6 s of a still
+    /// cursor, region frames against the full pass every 100 ms, on a line box and a band.
+    #[test]
+    fn idle_region_frames_match_full_frames() {
+        let (runs, bad) = per_region_plugin(&|p| {
+            let (device, queue) = device();
+            let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+            let (mut runs, mut bad) = (0, Vec::new());
+            let preset = preset_of(p);
+            for (i, name) in ["hermes", "codex"].iter().enumerate() {
+                let kind = CHAIN_KINDS[(i * 2 + p.id.len()) % CHAIN_KINDS.len()];
+                let (frame, size, bg) = agent_frame(&r, name, preset);
+                let shots = region_shots(&mut r, p, &frame, size, bg, preset, kind, 6000, false, &|ms| ms % 100 == 0);
+                // Once the start's full frames are over, the idle frames shade only the region.
+                if !shots.iter().any(|s| s.rects.is_some()) {
+                    bad.push(format!("{} {name}: no frame shaded a region", p.id));
+                }
+                for s in shots {
+                    runs += 1;
+                    if let Some((n, bx)) = diff_box(&s.region, &s.full, size.0) {
+                        bad.push(format!("{} {name} {kind:?} {} ms: {n} pixels differ in {bx:?}; cursor {:?}, rects {:?}", p.id, s.ms, s.cursor, s.rects));
+                    }
+                }
+            }
+            (runs, bad)
+        });
+        assert!(runs > 0);
+        assert!(bad.is_empty(), "{} of {runs} shots differ:\n{}", bad.len(), bad.join("\n"));
+    }
+
+    /// The frame's own bytes through a chain (an identity pass), read like the region shots.
+    fn plain_through_chain(r: &mut Renderer, frame: &Frame, size: (u32, u32)) -> Vec<u8> {
+        let (device, queue) = device();
+        let copy = crate::render_fx::compile_glsl("void mainImage(out vec4 c, in vec2 p) { c = texture(iChannel0, p / iResolution.xy); }").unwrap();
+        let mut chain = chain_of(&device, vec![copy], CHAIN_KINDS[0], None);
+        let win = Window::new(&device, size);
+        let u = crate::render_fx::Uniforms { resolution: [size.0 as f32, size.1 as f32, 1.0], ..Default::default() };
+        r.draw_fx_for(frame, &mut chain, &u, win.out(CHAIN_KINDS[0]), size.0, size.1, false, None).unwrap();
+        win.read(&device, &queue)
+    }
+
+    /// Review focus 3: the cursor jumps 20 rows between animation frames. Around the old cursor
+    /// the region frame shows the plain picture wherever the full pass does: no glow is left.
+    #[test]
+    fn a_cursor_jump_erases_the_old_glow() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let ch = r.cell.1;
+        let mut bad = Vec::new();
+        let plugins = region_plugins();
+        assert!(!plugins.is_empty());
+        for (i, p) in plugins.iter().enumerate() {
+            let preset = preset_of(p);
+            let (frame, size, bg) = agent_frame(&r, "hermes", preset);
+            let plain = plain_through_chain(&mut r, &frame, size);
+            let kind = CHAIN_KINDS[i % CHAIN_KINDS.len()];
+            let shot = region_shots(&mut r, p, &frame, size, bg, preset, kind, 700, true, &|ms| ms == 700).pop().unwrap();
+            assert!((shot.cursor[1] - shot.last_cursor[1]).abs() >= 19.0 * ch, "the cursor jumped");
+            // The old cursor (y-down, y its bottom edge) and 3 cells around it.
+            let [x, y, cw, chh] = shot.last_cursor;
+            let (x0, y0) = ((x - 3.0 * ch).max(0.0) as usize, (y - chh - 3.0 * ch).max(0.0) as usize);
+            let (x1, y1) = (((x + cw + 3.0 * ch) as usize).min(size.0 as usize), ((y + 3.0 * ch) as usize).min(size.1 as usize));
+            let mut left = 0;
+            for yy in y0..y1 {
+                for xx in x0..x1 {
+                    let k = (yy * size.0 as usize + xx) * 4;
+                    if shot.full[k..k + 4] == plain[k..k + 4] && shot.region[k..k + 4] != plain[k..k + 4] {
+                        left += 1;
+                    }
+                }
+            }
+            if left > 0 {
+                bad.push(format!("{} {kind:?}: {left} pixels of old glow left near {:?}", p.id, shot.last_cursor));
+            }
+        }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
+
+    /// Review focus 4: after a new window size the next animation-only frame runs the full pass
+    /// (its rects are ignored) and the kept output is made again at the new size.
+    #[test]
+    fn a_new_size_runs_the_full_pass() {
+        use crate::render_fx::{PxRect, Uniforms};
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let p = region_plugins().into_iter().next().expect("a plugin with a region");
+        let preset = preset_of(&p);
+        let (frame, size, _) = agent_frame(&r, "hermes", preset);
+        let bigger = (size.0 + 64, size.1 + 32);
+        // Shades nothing: only a full pass draws the effect.
+        let tiny = [PxRect { x: 0, y: 0, w: 1, h: 1 }];
+        for kind in CHAIN_KINDS {
+            let mut region = chain_of(&device, compiled_for(&p, kind), kind, p.manifest.region.clone());
+            let mut full = chain_of(&device, compiled_for(&p, kind), kind, None);
+            let mut u = Uniforms { resolution: [size.0 as f32, size.1 as f32, 1.0], time: 0.5, ..Default::default() };
+            u.current_cursor = frame.fx.as_ref().unwrap().cursor.map_or([0.0; 4], |c| [c.rect[0], c.rect[1] + c.rect[3], c.rect[2], c.rect[3]]);
+            let win = Window::new(&device, size);
+            r.draw_fx_for(&frame, &mut region, &u, win.out(kind), size.0, size.1, false, None).unwrap();
+            r.draw_fx_for(&frame, &mut region, &u, win.out(kind), size.0, size.1, true, Some(&tiny)).unwrap();
+            let made = region.kept_made();
+            let (win_r, win_f) = (Window::new(&device, bigger), Window::new(&device, bigger));
+            u.resolution = [bigger.0 as f32, bigger.1 as f32, 1.0];
+            u.time = 1.0;
+            r.draw_fx_for(&frame, &mut region, &u, win_r.out(kind), bigger.0, bigger.1, true, Some(&tiny)).unwrap();
+            r.draw_fx_for(&frame, &mut full, &u, win_f.out(kind), bigger.0, bigger.1, false, None).unwrap();
+            assert_eq!(region.kept_made(), made + 1, "{kind:?}: the kept output is made again");
+            assert!(diff_box(&win_r.read(&device, &queue), &win_f.read(&device, &queue), bigger.0).is_none(), "{kind:?}: the new size drew the full pass");
+            // The chain alone: new textures leave nothing kept, so the rects are ignored there too.
+            let _ = region.frame_views(&device, size);
+            assert_eq!(region.kept_made(), made + 2);
+            r.draw_fx_for(&frame, &mut region, &u, win.out(kind), size.0, size.1, true, Some(&tiny)).unwrap();
+            r.draw_fx_for(&frame, &mut full, &u, win.out(kind), size.0, size.1, true, None).unwrap();
+        }
+    }
+
+    /// An opaque window (keep_alpha false) keeps every alpha byte at 255 on region frames, with
+    /// and without view formats, over a transparent clear.
+    #[test]
+    fn an_opaque_window_keeps_alpha_one() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let mut bad = Vec::new();
+        let plugins = region_plugins();
+        assert!(!plugins.is_empty());
+        for p in plugins {
+            let preset = preset_of(&p);
+            let (mut frame, size, bg) = agent_frame(&r, "codex", preset);
+            frame.clear = rgba(bg, 0.0);
+            for kind in CHAIN_KINDS.into_iter().filter(|k| !k.keep_alpha) {
+                for s in region_shots(&mut r, &p, &frame, size, bg, preset, kind, 1200, true, &|ms| ms % 300 == 0 && ms > 0) {
+                    let low = s.region.chunks(4).filter(|px| px[3] != 255).count();
+                    if low > 0 {
+                        bad.push(format!("{} {kind:?} {} ms: {low} pixels below alpha 255", p.id, s.ms));
+                    }
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
     /// Render plugins: the frame goes through each pass in order, with no vertical flip and no
