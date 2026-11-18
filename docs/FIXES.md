@@ -16,11 +16,6 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
     iTerm2's winner for each pair and use it on every OS, with the loser's shortcut dropped or
     shown as taken.
 
-29. **Every screen change rebuilds the whole picture.** Seen 2026-11-17 on macOS: with an
-    effect paused and only a tmux status bar and an idle Claude Code on screen, Termurion used 3
-    to 30% of a core. Each change (one status bar cell, one spinner) runs `build_frame` over every
-    cell of every pane. Ghostty rebuilds only the rows a change marked dirty. It should do the same.
-
 30. **The debug log has no folder on macOS and Linux.** Seen 2026-11-17 on macOS: Toggle Debug
     Logging and Start Debug Logging Automatically run, but `platform/unix/log_store.rs` has no log
     folder, so the log is never saved. It should save as it does on Windows, in a per-user folder
@@ -31,6 +26,8 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
 (none)
 
 ## Done
+
+29. **Every screen change rebuilt the whole picture.** Seen 2026-11-17 on macOS: with an effect paused and only a tmux status bar and an idle Claude Code on screen, Termurion used 3 to 30% of a core, and 27 to 37% while Claude streamed. Each change (one status bar cell, one spinner) ran `build_frame` over every cell of every pane and shaped every row again. Ghostty rebuilds only the rows a change marked dirty. Done in 1.1.7: each pane keeps the rows it built, found by their cells, highlights and the fraction of their pixel top (`scene_rows::RowCache`), and builds only rows that changed; the renderer finds shaped text by the row's content, so a scrolled row is not shaped again (`scrolled_rows_are_not_shaped_again`). Every pane builds in full at least every 0.5 s. Advanced > Drawing > Redraw only the rows that changed (on by default) turns it off. Reused frames equal full ones exactly (`both_ways` tests and the recorded pane frames in `tests/fixtures/pane-frames`).
 
 28. **An animated effect used a third of a core while nothing changed.** Seen 2026-11-17 on macOS with Lightning (30 to 45% CPU at an idle prompt) and on the W541, where Light pacing was the workaround. An `always` effect draws 30 frames a second, and each one rebuilt the whole scene (`build_frame`, three quarters of the frame time) and redrew the terminal before the shader ran. Ghostty draws its animation frames from the cells it already has. Done in 1.1.6: each window keeps the frame it built last (`scene_cache`), and a frame that only the animation asked for draws it again and runs only the shader passes over the picture already in the chain (`Renderer::draw_fx_for`, `Chain::frame_kept`). Any other request (`Gpu::redraw`), any window event, a new size, or a kept frame 0.5 s old builds anew (tests in `app::scene_cache` and `same_scene_frames_keep_the_window_picture`).
 
