@@ -3818,7 +3818,12 @@ fn trail(r: Option<Rect>, vertical: bool) -> Option<Rect> {
 /// The spinner's turn, 0 to 1: an eighth more at each half-second activity tick.
 fn spinner_turn() -> f32 {
     let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
-    ((ms / 500) % 8) as f32 / 8.0
+    (spinner_step(ms) % 8) as f32 / 8.0
+}
+
+/// The spinner's step: one per half second.
+pub fn spinner_step(ms_since_epoch: u128) -> u64 {
+    (ms_since_epoch / 500) as u64
 }
 
 /// The activity spinner: a three-quarter arc of dots around `rect`'s center, fading toward its
@@ -5811,6 +5816,13 @@ mod broadcast_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn spinner_step_matches_the_drawn_turn() {
+        for ms in [0u128, 499, 500, 3999, 4000] {
+            assert_eq!((super::spinner_step(ms) % 8) as f32 / 8.0, ((ms / 500) % 8) as f32 / 8.0);
+        }
+    }
+
     #[test]
     fn the_division_line_sits_under_the_menu_bar_when_there_is_one() {
         let mut f = Frame::default();

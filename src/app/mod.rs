@@ -1306,6 +1306,8 @@ pub struct App {
     side_bar_scroll: f32,
     /// The tab bar's flash in full screen (`tab_flash`).
     tab_flash: crate::tab_flash::Flash,
+    /// The spinner step last drawn, None while no tab bar shows a spinner.
+    spin_step: Option<u64>,
     /// The window kept its size when the tab bar showed, to stay on screen, so it keeps it
     /// when the bar hides again (`PT _excursionPrevented`).
     excursion_prevented: bool,
@@ -2751,6 +2753,7 @@ pub fn run() {
         side_bar_preferred,
         side_bar_scroll: 0.0,
         tab_flash: crate::tab_flash::Flash::new(),
+        spin_step: None,
         excursion_prevented: false,
         bar_was_visible: false,
         bar_grown: (0.0, 0.0),

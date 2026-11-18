@@ -89,8 +89,11 @@ impl App {
         for (pane, e) in events {
             self.activity_event(pane, e);
         }
-        // A spinner turns at each tick while a session is processing.
-        let spinning = !self.globals.bool("HideActivityIndicator") && self.activity.values().any(|a| a.is_processing(now));
+        // A spinner draws one frame per step, and only while a tab bar shows it.
+        let step = crate::scene::spinner_step(wall_ms());
+        let shown = self.spinner_shown(now);
+        let spinning = spin_draw(shown, self.spin_step, step);
+        self.spin_step = shown.then_some(step);
         match output_draw(0, changed, spinning) {
             Draw::None => {}
             Draw::Paced => {
@@ -100,6 +103,29 @@ impl App {
             }
         }
         waiting.then(|| now + Duration::from_millis(500))
+    }
+
+    /// Whether some window's tab bar is showing a spinner: a visible bar with a background tab
+    /// that is processing.
+    pub(super) fn spinner_shown(&self, now: Instant) -> bool {
+        let hide = self.globals.bool("HideActivityIndicator");
+        if hide {
+            return false;
+        }
+        let always = crate::tab_position::always_visible(self.globals.bool("HideTab"));
+        let full_bar = self.globals.bool("ShowFullScreenTabBar");
+        let processing = |p: &PaneId| self.activity.get(p).is_some_and(|a| a.is_processing(now));
+        let window = |full: bool, flashing: bool, tabs: &[Vec<PaneId>], active: usize| {
+            crate::tab_position::bar_visible(full, full_bar, flashing, always, tabs.len())
+                && tabs.iter().enumerate().any(|(i, t)| tab_processing(t.iter().any(processing), i == active, hide))
+        };
+        let here: Vec<Vec<PaneId>> = self.tabs.iter().map(|t| t.layout.panes()).collect();
+        window(self.full_screen(), self.tab_flash.flashing(), &here, self.active)
+            || self.windows.parked().any(|(_, s)| {
+                let tabs: Vec<Vec<PaneId>> = s.tabs.iter().map(|t| t.layout.panes()).collect();
+                let full = s.gpu.as_ref().is_some_and(|g| g.window.fullscreen().is_some());
+                window(full, s.tab_flash.flashing(), &tabs, s.active)
+            })
     }
 
     /// An idle, new-output, or activity-after-idle event (notifications and event triggers).
@@ -125,6 +151,15 @@ impl App {
     }
 }
 
+fn wall_ms() -> u128 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis())
+}
+
+/// The spinner draws when a bar shows it and its step has not been drawn yet.
+pub(super) fn spin_draw(shown: bool, last: Option<u64>, step: u64) -> bool {
+    shown && last != Some(step)
+}
+
 /// A tab shows the activity spinner while it is processing and not the foreground tab, unless
 /// `HideActivityIndicator` (`TAB:1328-1332`). New output is apart: unseen output while
 /// processing (`activity_icons`).
@@ -134,7 +169,7 @@ pub(super) fn tab_processing(any_processing: bool, foreground: bool, hide: bool)
 
 #[cfg(test)]
 mod tests {
-    use super::{output_draw, seen_changed_tab, tab_processing, Draw};
+    use super::{output_draw, seen_changed_tab, spin_draw, tab_processing, Draw};
 
     /// 13l review round 2, Critical 1: no source of output alone draws at once. Output (a pty,
     /// or a tmux or ssh pump that fed a pane), a tab state change and a spinner go through the
@@ -164,5 +199,22 @@ mod tests {
         for (any, foreground, hide) in [(false, false, false), (true, true, false), (true, false, true), (false, true, true), (true, true, true)] {
             assert!(!tab_processing(any, foreground, hide), "{any} {foreground} {hide}");
         }
+    }
+
+    #[test]
+    fn spinner_draws_only_when_shown_and_stepped() {
+        assert!(!spin_draw(false, None, 5));
+        assert!(spin_draw(true, None, 5));
+        assert!(!spin_draw(true, Some(5), 5));
+        assert!(spin_draw(true, Some(5), 6));
+    }
+
+    #[test]
+    fn tick_activity_uses_the_spinner_rule() {
+        let src = include_str!("activity_ui.rs");
+        let start = src.find("fn tick_activity").unwrap();
+        let body = &src[start..start + src[start..].find("\n    }\n").unwrap()];
+        assert!(body.contains("spin_draw(") && body.contains("spinner_shown("));
+        assert!(!body.contains("self.activity.values().any(|a| a.is_processing"), "the spinner no longer follows any processing session");
     }
 }
