@@ -1,0 +1,320 @@
+#!/usr/bin/env bash
+# Draw-speed benchmark: CPU and frames drawn by Termurion, Ghostty and iTerm2 on funtimes (macOS VM)
+# for the same window and the same output, with and without the Lightning effect.
+#
+# Each run writes a workload straight to the terminal's tty for SECS seconds while the terminal is
+# the front app, and measures over exactly those seconds:
+#   cpu%   CPU time of the terminal's processes (app plus its session host) per wall second
+#   ws%    the same for WindowServer (compositing the terminal's frames)
+#   fps    frames the terminal presented: dtrace counts -[CAMetalLayer nextDrawable] (Termurion,
+#          iTerm2) or -[CALayer setContents:] (Ghostty, which draws to IOSurfaces)
+#   MB/s   bytes the workload got into the tty (only the flood is limited by the terminal)
+#   other% CPU of every other process in the VM during the run (noise)
+# GPU busy is not measured: the VM's paravirtual GPU reports no utilization and powermetrics has
+# no GPU sampler for it.
+#
+# Workloads: idle (prompt, cursor still), stream20 (20 lines a second), claude (a spinner row and
+# an input box redrawn 10 times a second as Claude Code does, plus 5 new lines a second above them),
+# flood (a 1 MB block of colored text written as fast as the terminal reads it).
+# Configs: termurion, termurion-fx (Lightning), ghostty, ghostty-fx (the same Lightning shader as
+# a Ghostty custom-shader), iterm2.
+#
+# Messages in the VM is pulled to the front by the iMessage bridge at second 38 of every minute,
+# and a hidden window stops drawing, so runs are timed into two slots between those checks
+# (starting at seconds 40 and 8, each about 25 s long with its setup). A run that lost the front,
+# or during which other processes used more than a quarter of a core, is repeated (up to 8 tries,
+# the last one kept and marked "noisy"); no run starts until the VM has had no build or simulator
+# for 30 s.
+#
+# Needs: ssh funtimes, the apps in /Applications there, `vw read "funtimes VM"` for sudo (dtrace).
+# Every terminal setting it touches is saved first and put back on exit.
+# Usage: scripts/draw-bench [--secs N] [--passes N] [--sample] [--out DIR] [CONFIG...]
+#   --sample  also records a `sample` profile of the terminal during stream20, claude and flood (CPU
+#             numbers of those runs carry the profiler's cost; they are marked "sampled").
+set -uo pipefail
+# DRAW_BENCH_REPO: the checkout to read the shader from when running a copy of this script.
+repo="${DRAW_BENCH_REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
+host="${DRAW_BENCH_HOST:-funtimes}"
+secs=20; passes=1; sample=0; out=""
+configs=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --secs) secs="$2"; shift ;;
+        --passes) passes="$2"; shift ;;
+        --sample) sample=1 ;;
+        --out) out="$2"; shift ;;
+        termurion|termurion-fx|ghostty|ghostty-fx|iterm2) configs+=("$1") ;;
+        *) echo "usage: scripts/draw-bench [--secs N] [--passes N] [--sample] [--out DIR] [termurion|termurion-fx|ghostty|ghostty-fx|iterm2 ...]" >&2; exit 2 ;;
+    esac
+    shift
+done
+[ ${#configs[@]} -gt 0 ] || configs=(termurion termurion-fx ghostty ghostty-fx iterm2)
+[ "$secs" -le 20 ] || { echo "draw-bench: --secs must be 20 or less (a run must fit between the bridge's checks)" >&2; exit 2; }
+workloads=(idle stream20 claude flood)
+out="${out:-$repo/target/draw-bench/$(date +%Y%m%d-%H%M%S)}"
+mkdir -p "$out"
+results="$out/results.tsv"
+printf 'config\tworkload\tpass\twall_s\tcpu_pct\tws_pct\tfps\tmb_s\tother_pct\tfront\tnote\n' > "$results"
+
+vm() { ssh -o BatchMode=yes "$host" "$@"; }
+# The sudo password goes over stdin only, never on a command line.
+vm_sudo() { vw read "funtimes VM" | ssh -o BatchMode=yes "$host" "$@"; }
+
+# --- the pieces that run in the VM -----------------------------------------------------------
+
+stage=$(mktemp -d)
+trap 'rm -rf "$stage"' EXIT
+
+# A plain shell with a fixed prompt; it tells the driver its tty.
+cat > "$stage/shell.sh" <<'EOF'
+#!/bin/sh
+tty > "$HOME/termbench/tty.$1"
+export PS1="bench %% "
+exec /bin/zsh -f
+EOF
+
+# The workloads, written to the tty from outside (the terminal reads them like program output).
+cat > "$stage/writer.pl" <<'EOF'
+#!/usr/bin/perl
+# writer.pl WORKLOAD TTY SECS: prints the bytes written.
+use strict; use warnings; use Time::HiRes qw(time sleep);
+my ($mode, $tty, $secs) = @ARGV;
+open(my $fh, '>', $tty) or die "open $tty: $!";
+binmode $fh;
+my $bytes = 0;
+sub put { my $s = shift; my $n = syswrite($fh, $s); $bytes += $n if defined $n; }
+my @words = qw(the renderer keeps each row it built and draws only what changed since the last frame
+  while a spinner turns and new text arrives below the fold of a long answer about glyph atlases
+  instanced quads damage regions frame pacing and the cost of a shader at full retina size);
+my $seed = 7;
+sub rnd { $seed = ($seed * 1103515245 + 12345) % 2147483648; return $seed; }
+sub prose {
+    my $want = shift; my $s = '';
+    while (length($s) < $want) { $s .= $words[rnd() % @words] . ' '; }
+    return substr($s, 0, $want);
+}
+my $t0 = time; my $end = $t0 + $secs; my $n = 0;
+if ($mode eq 'idle') {
+    sleep($secs);
+} elsif ($mode eq 'stream20') {
+    # 20 lines a second, each a different line of 60 to 110 characters.
+    while ((my $now = time) < $end) {
+        $n++;
+        put(sprintf("%06d \e[1m%s\e[0m %s\r\n", $n, 'line', prose(60 + rnd() % 50)));
+        my $next = $t0 + $n * 0.05;
+        sleep($next - time) if $next > time;
+    }
+} elsif ($mode eq 'claude') {
+    # Claude Code's bottom area, redrawn 10 times a second: the spinner row and a 3-row input box,
+    # with a new line of answer above them every other tick. The cursor waits in the box.
+    my @spin = ("\xc2\xb7", "\xe2\x9c\xa2", "\xe2\x9c\xb3", "\xe2\x9c\xb6", "\xe2\x9c\xbb", "\xe2\x9c\xbd");
+    my $h = "\xe2\x94\x80" x 118;
+    put("\r\n\r\n\r\n\r\n");
+    my $tick = 0;
+    while (time < $end) {
+        my $s = "\r\e[2A\e[J";
+        $s .= "\e[38;5;252m" . prose(70 + rnd() % 40) . "\e[0m\r\n" if $tick % 2 == 0;
+        $s .= sprintf("\e[38;5;174m%s\e[0m \e[38;5;174mThinking\xe2\x80\xa6\e[0m \e[2m(%ds \xc2\xb7 \xe2\x86\x91 %.1fk tokens \xc2\xb7 esc to interrupt)\e[0m\r\n",
+                      $spin[$tick % @spin], int($tick / 10), 0.1 * $tick);
+        $s .= "\e[2m\xe2\x95\xad$h\xe2\x95\xae\e[0m\r\n";
+        $s .= "\e[2m\xe2\x94\x82\e[0m > " . (' ' x 115) . "\e[2m\xe2\x94\x82\e[0m\r\n";
+        $s .= "\e[2m\xe2\x95\xb0$h\xe2\x95\xaf\e[0m";
+        $s .= "\e[1A\r\e[4C";
+        put($s);
+        $tick++;
+        my $next = $t0 + $tick * 0.1;
+        sleep($next - time) if $next > time;
+    }
+} elsif ($mode eq 'flood') {
+    my $block = '';
+    my $i = 0;
+    while (length($block) < 1_000_000) {
+        $i++;
+        $block .= sprintf("%07d \e[3%dm%s\e[0m %s\r\n", $i, 1 + $i % 6, 'flood', prose(40 + rnd() % 80));
+    }
+    while (time < $end) { put($block); }
+} else {
+    die "unknown workload $mode";
+}
+close($fh);
+print "$bytes\n";
+EOF
+
+# One measured run: run.sh CONFIG WORKLOAD SECS SAMPLE. Reads the sudo password on stdin.
+cat > "$stage/run.sh" <<'EOF'
+#!/bin/bash
+cfg="$1"; wl="$2"; secs="$3"; want_sample="$4"
+B="$HOME/termbench"
+sudo -S -p "" -v 2>/dev/null || { echo "ERR sudo"; exit 1; }
+case "$cfg" in
+    termurion*) app=/Applications/Termurion.app; main=termurion; name=Termurion; tty="$B/tty.termurion" ;;
+    ghostty*) app=/Applications/Ghostty.app; main=ghostty; name=Ghostty; tty="$B/tty.ghostty" ;;
+    iterm2) app=/Applications/iTerm.app; main=iTerm2; name=iTerm2; tty="$B/tty.iterm2" ;;
+esac
+pids() {
+    case "$cfg" in
+        termurion*) pgrep -x termurion; pgrep -x termurion-host ;;
+        ghostty*) pgrep -x ghostty ;;
+        iterm2) pgrep -x iTerm2; pgrep -f 'iTermServer-[0-9]' ;;
+    esac
+}
+# Summed CPU seconds of the listed pids (ps prints M:SS.ss or H:MM:SS).
+secs_of() { awk -F: '{ if (NF == 3) s += $1 * 3600 + $2 * 60 + $3; else s += $1 * 60 + $2 } END { printf "%.2f", s }'; }
+cpu() { ps -o time= -p "$(echo $* | tr ' ' ,)" 2>/dev/null | secs_of; }
+# Every process in the VM: what is left after the terminal and WindowServer is noise.
+all() { ps -A -o time= | secs_of; }
+front() { lsappinfo info -only name "$(lsappinfo front)" | sed 's/.*="\(.*\)"/\1/'; }
+open -a "$app"; sleep 2
+f0=$(front)
+mp=$(pgrep -x "$main" | head -1)
+ws=$(pgrep -x WindowServer)
+P=$(pids | tr '\n' ' ')
+rm -f "$B/go" "$B/frames"
+sudo -n dtrace -w -q -Z -n "BEGIN { system(\"touch $B/go\"); } objc\$target:CAMetalLayer:-nextDrawable:entry { @n = count(); } objc\$target:CALayer:-setContents?:entry { @c = count(); } tick-${secs}s { printa(\"next %@d\n\", @n); printa(\"contents %@d\n\", @c); exit(0); }" -p "$mp" > "$B/frames" 2>&1 &
+dt=$!
+for _ in $(seq 1 100); do [ -e "$B/go" ] && break; sleep 0.1; done
+if [ "$want_sample" = 1 ]; then sample "$mp" "$secs" -file "$B/sample-$cfg-$wl.txt" >/dev/null 2>&1 & fi
+a0=$(all); c0=$(cpu $P); w0=$(cpu $ws); t0=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
+# The writer has exited before the second count, so its CPU is in neither: not noise.
+bytes=$(perl "$B/writer.pl" "$wl" "$(cat "$tty")" "$secs")
+a1=$(all); c1=$(cpu $P); w1=$(cpu $ws); t1=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
+wait "$dt"
+wait
+f1=$(front)
+n=$(awk '$1 == "next" { print $2 }' "$B/frames"); c=$(awk '$1 == "contents" { print $2 }' "$B/frames")
+frames=${n:-0}; [ "$frames" -gt 0 ] || frames=${c:-0}
+ok=yes; { [ "$f0" = "$name" ] && [ "$f1" = "$name" ]; } || ok="no($f0/$f1)"
+awk -v a0="$a0" -v a1="$a1" -v c0="$c0" -v c1="$c1" -v w0="$w0" -v w1="$w1" -v t0="$t0" -v t1="$t1" -v fr="$frames" -v secs="$secs" -v b="$bytes" -v ok="$ok" \
+    'BEGIN { wall = t1 - t0; printf "RESULT\t%.2f\t%.1f\t%.1f\t%.1f\t%.2f\t%.1f\t%s\n", wall, 100 * (c1 - c0) / wall, 100 * (w1 - w0) / wall, fr / secs, b / wall / 1e6, 100 * ((a1 - a0) - (c1 - c0) - (w1 - w0)) / wall, ok }'
+EOF
+
+# --- terminal settings, saved and put back -------------------------------------------------
+
+TSUP='Library/Application Support/Termurion'
+saved="$out/saved-settings"
+mkdir -p "$saved"
+vm "cat \"\$HOME/$TSUP/profiles.toml\"" > "$saved/profiles.toml" || { echo "draw-bench: cannot read Termurion's profiles on $host" >&2; exit 2; }
+vm "cat \"\$HOME/$TSUP/settings.toml\"" > "$saved/settings.toml"
+vm "cat \"\$HOME/$TSUP/state\" 2>/dev/null" > "$saved/state"
+vm 'cat ~/.config/ghostty/config 2>/dev/null' > "$saved/ghostty-config"
+vm 'defaults read com.googlecode.iterm2 "Default Bookmark Guid" 2>/dev/null' > "$saved/iterm2-default-guid"
+
+quit_all() {
+    vm 'for p in $(pgrep -x termurion) $(pgrep -x ghostty) $(pgrep -x iTerm2); do kill $p; done; sleep 2
+        for p in $(pgrep -x termurion-host) $(pgrep -f "iTermServer-[0-9]"); do kill $p; done; sleep 1
+        for p in $(pgrep -x termurion) $(pgrep -x ghostty) $(pgrep -x iTerm2) $(pgrep -x termurion-host); do kill -9 $p; done; true' 2>/dev/null
+}
+
+restore() {
+    quit_all
+    vm "cat > \"\$HOME/$TSUP/profiles.toml\"" < "$saved/profiles.toml"
+    vm "cat > \"\$HOME/$TSUP/settings.toml\"" < "$saved/settings.toml"
+    if [ -s "$saved/state" ]; then vm "cat > \"\$HOME/$TSUP/state\"" < "$saved/state"; else vm "rm -f \"\$HOME/$TSUP/state\""; fi
+    if [ -s "$saved/ghostty-config" ]; then vm 'cat > ~/.config/ghostty/config' < "$saved/ghostty-config"; else vm 'rm -f ~/.config/ghostty/config'; fi
+    vm 'rm -f ~/Library/Application\ Support/iTerm2/DynamicProfiles/termbench.json'
+    if [ -s "$saved/iterm2-default-guid" ]; then vm "defaults write com.googlecode.iterm2 'Default Bookmark Guid' '$(cat "$saved/iterm2-default-guid")'"; else vm 'defaults delete com.googlecode.iterm2 "Default Bookmark Guid" 2>/dev/null; true'; fi
+    rm -rf "$stage"
+    echo "draw-bench: settings restored" >&2
+}
+trap restore EXIT
+trap 'exit 130' INT TERM
+
+vm 'mkdir -p ~/termbench ~/.config/ghostty ~/Library/Application\ Support/iTerm2/DynamicProfiles'
+for f in shell.sh writer.pl run.sh; do vm "cat > ~/termbench/$f" < "$stage/$f"; done
+vm 'cat > ~/termbench/lightning.glsl' < "$repo/resources/render_plugins/lightning/lightning-cursor.glsl"
+vm 'chmod +x ~/termbench/*.sh ~/termbench/writer.pl'
+
+# The window: 220 columns, as tall as the screen allows, at the same place for every terminal.
+COLS=220; ROWS=63; X=60; Y=40
+setup() {
+    local cfg="$1"
+    quit_all
+    case "$cfg" in
+        termurion*)
+            # The Default profile runs the bench shell at the bench size; -fx turns Lightning on.
+            local fx=""; [ "$cfg" = termurion-fx ] && fx='"Render Plugins" = ["lightning"]'
+            awk -v fx="$fx" -v cols="$COLS" -v rows="$ROWS" '
+                /^(Columns|Rows|Command|"Custom Command"|"Render Plugins") = / && inside { next }
+                { print }
+                /^Name = "Default"$/ && !done { inside = 1; done = 1; print "Columns = " cols; print "Rows = " rows; print "\"Custom Command\" = \"Yes\""; print "Command = \"/Users/admin/termbench/shell.sh termurion\""; if (fx != "") print fx }
+                /^\[\[profile\]\]/ && done { inside = 0 }' "$saved/profiles.toml" | vm "cat > \"\$HOME/$TSUP/profiles.toml\""
+            { awk '/^\[settings.SavedWindowFrames\]/{exit} {print}' "$saved/settings.toml"
+              printf '[settings.SavedWindowFrames]\n"%s 0" = [%d.0, %d.0, 1595.0, 992.0]\n' "$(sed -n 's/^Default = "\(.*\)"/\1/p' "$saved/profiles.toml")" "$X" "$Y"; } | vm "cat > \"\$HOME/$TSUP/settings.toml\""
+            vm "rm -f \"\$HOME/$TSUP/state\""
+            ;;
+        ghostty*)
+            { printf 'font-family = Monaco\nfont-size = 12\nwindow-width = %d\nwindow-height = %d\nwindow-position-x = %d\nwindow-position-y = %d\n' "$COLS" "$ROWS" "$X" "$Y"
+              printf 'command = /Users/admin/termbench/shell.sh ghostty\ncursor-style-blink = false\nwindow-save-state = never\nconfirm-close-surface = false\nquit-after-last-window-closed = true\n'
+              [ "$cfg" = ghostty-fx ] && printf 'custom-shader = /Users/admin/termbench/lightning.glsl\ncustom-shader-animation = always\ncursor-color = #9fd0fe\n'; } | vm 'cat > ~/.config/ghostty/config'
+            ;;
+        iterm2)
+            printf '{"Profiles":[{"Guid":"TERMBENCH-0001","Name":"Bench","Columns":%d,"Rows":%d,"Normal Font":"Monaco 12","Custom Command":"Yes","Command":"/Users/admin/termbench/shell.sh iterm2","Blinking Cursor":false}]}\n' "$COLS" "$ROWS" \
+                | vm 'cat > ~/Library/Application\ Support/iTerm2/DynamicProfiles/termbench.json'
+            vm 'defaults write com.googlecode.iterm2 "Default Bookmark Guid" TERMBENCH-0001; defaults write com.googlecode.iterm2 PromptOnQuit -bool false; defaults write com.googlecode.iterm2 SUEnableAutomaticChecks -bool false'
+            ;;
+    esac
+    local app; case "$cfg" in termurion*) app=Termurion ;; ghostty*) app=Ghostty ;; iterm2) app=iTerm ;; esac
+    local key=${cfg%-fx}
+    vm "rm -f ~/termbench/tty.*; open -a /Applications/$app.app"
+    for _ in $(seq 1 30); do vm "test -s ~/termbench/tty.$key" && break; sleep 1; done
+    vm "test -s ~/termbench/tty.$key" || { echo "draw-bench: $cfg did not start its shell" >&2; return 1; }
+    sleep 3
+    echo "draw-bench: $cfg is up, $(vm "stty -f \$(cat ~/termbench/tty.$key) size" | awk '{print $2"x"$1}') cells" >&2
+}
+
+# Waits while the VM builds or runs simulators (another job's load would land in the numbers).
+# The VM must have been free of them for 30 s (a simulator winds down slowly); the noise check
+# of each run catches the rest.
+wait_quiet() {
+    local said=0 quiet=0
+    while [ "$quiet" -lt 2 ]; do
+        if vm 'pgrep -x xcodebuild || pgrep -x launchd_sim || pgrep -f CoreSimulator/Devices || pgrep -x rustc || pgrep -x cargo' >/dev/null; then
+            [ "$said" = 1 ] || echo "draw-bench: the VM is busy (a build or a simulator); waiting" >&2
+            said=1; quiet=0
+        else
+            quiet=$((quiet + 1))
+        fi
+        sleep 15
+    done
+}
+
+# Waits for the next slot: second 40 (after the bridge's check at 38) or second 8.
+wait_slot() {
+    while :; do
+        local s; s=$(date +%-S)
+        if [ "$s" -eq 40 ] || [ "$s" -eq 8 ]; then return; fi
+        sleep 0.5
+    done
+}
+
+for pass in $(seq 1 "$passes"); do
+    for cfg in "${configs[@]}"; do
+        wait_quiet
+        setup "$cfg" || continue
+        for wl in "${workloads[@]}"; do
+            want=0; note=""
+            if [ "$sample" = 1 ] && [ "$wl" != idle ]; then want=1; note=sampled; fi
+            for try in 1 2 3 4 5 6 7 8; do
+                wait_quiet
+                wait_slot
+                line=$(vm_sudo "bash ~/termbench/run.sh $cfg $wl $secs $want" | grep '^RESULT')
+                front=$(printf '%s' "$line" | cut -f8)
+                other=$(printf '%s' "$line" | cut -f7)
+                if [ "$front" = yes ] && awk -v o="${other:-999}" 'BEGIN { exit !(o < 25) }'; then break; fi
+                echo "draw-bench: $cfg $wl try $try: front $front, other processes ${other}% of a core; again" >&2
+                [ "$try" = 8 ] && note="${note:+$note,}noisy"
+            done
+            printf '%s\t%s\t%s\t%s\t%s\n' "$cfg" "$wl" "$pass" "$(printf '%s' "$line" | cut -f2-8)" "$note" >> "$results"
+            printf '%-13s %-9s pass %s: %s\n' "$cfg" "$wl" "$pass" "$(printf '%s' "$line" | cut -f2-8 | awk -F'\t' '{printf "cpu %s%%  ws %s%%  fps %s  %s MB/s  other %s%%  front %s", $2, $3, $4, $5, $6, $7}')" >&2
+            if [ "$want" = 1 ]; then vm "cat ~/termbench/sample-$cfg-$wl.txt" > "$out/sample-$cfg-$wl.txt"; fi
+        done
+    done
+done
+
+# The table: the median over passes of each config and workload.
+echo
+awk -F'\t' 'NR > 1 { k = $1 "\t" $2; n[k]++; cpu[k, n[k]] = $5; ws[k, n[k]] = $6; fps[k, n[k]] = $7; mb[k, n[k]] = $8; if (!(k in seen)) { seen[k] = 1; order[++m] = k } }
+    function med(a, k, c,   i, j, t, v) { for (i = 1; i <= c; i++) v[i] = a[k, i]; for (i = 1; i <= c; i++) for (j = i + 1; j <= c; j++) if (v[j] < v[i]) { t = v[i]; v[i] = v[j]; v[j] = t } return c % 2 ? v[(c + 1) / 2] : (v[c / 2] + v[c / 2 + 1]) / 2 }
+    END { printf "| config | workload | CPU %% | WindowServer %% | frames/s | MB/s |\n|---|---|---|---|---|---|\n"
+          for (i = 1; i <= m; i++) { k = order[i]; split(k, p, "\t"); printf "| %s | %s | %.1f | %.1f | %.1f | %.2f |\n", p[1], p[2], med(cpu, k, n[k]), med(ws, k, n[k]), med(fps, k, n[k]), med(mb, k, n[k]) } }' "$results" | tee "$out/table.md"
+echo "draw-bench: results in $out" >&2
