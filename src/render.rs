@@ -4231,6 +4231,96 @@ mod tests {
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
+    /// A frame and chains for the bind group and uniform tests: (renderer, frame, a Lightning
+    /// pass list's compile, uniforms with a cursor).
+    fn fx_bench() -> (wgpu::Device, wgpu::Queue, Frame, crate::render_fx::Uniforms) {
+        let (device, queue) = device();
+        let frame = Frame {
+            clear: rgba(rgb(20, 22, 30), 1.0),
+            fade: 1.0,
+            quads: vec![Quad { rect: Rect { x: 0.0, y: 0.0, w: 40.0, h: 20.0 }, color: rgba(rgb(200, 40, 10), 1.0) }],
+            ..Default::default()
+        };
+        let u = crate::render_fx::Uniforms { resolution: [96.0, 48.0, 1.0], current_cursor: [50.0, 24.0, 8.0, 12.0], ..Default::default() };
+        (device, queue, frame, u)
+    }
+
+    fn lightning() -> crate::render_fx::Plugin {
+        crate::render_fx::discover(None).0.into_iter().find(|p| p.id.contains("lightning")).expect("the Lightning plugin")
+    }
+
+    #[test]
+    fn chain_keeps_its_bind_groups_between_frames() {
+        let (device, queue, frame, u) = fx_bench();
+        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        for views in [true, false] {
+            r.set_view_formats(views);
+            let mut chain = crate::render_fx_gpu::Chain::new(&device, format, lightning().compile().unwrap(), false).unwrap();
+            if !views {
+                chain = chain.without_view_formats(&device);
+            }
+            r.draw_offscreen_fx(&frame, Some((&mut chain, &u)), 96, 48).unwrap();
+            let made = chain.bind_groups_made();
+            assert!(made > 0, "views {views}: the first frame makes them");
+            r.draw_offscreen_fx(&frame, Some((&mut chain, &u)), 96, 48).unwrap();
+            r.draw_offscreen_fx(&frame, Some((&mut chain, &u)), 96, 48).unwrap();
+            assert_eq!(chain.bind_groups_made(), made, "views {views}: later frames at one size make none");
+            r.draw_offscreen_fx(&frame, Some((&mut chain, &u)), 80, 40).unwrap();
+            assert!(chain.bind_groups_made() > made, "views {views}: a new size makes new ones");
+        }
+        r.set_view_formats(true);
+    }
+
+    #[test]
+    fn unchanged_uniforms_are_not_written() {
+        let (device, queue, frame, mut u) = fx_bench();
+        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        let shaders = lightning().compile().unwrap();
+        let with_layout = shaders.iter().filter(|s| crate::render_fx::uniform_layout(&s.module).is_some()).count() as u64;
+        assert!(with_layout > 0);
+        let mut chain = crate::render_fx_gpu::Chain::new(&device, format, shaders, false).unwrap();
+        r.draw_offscreen_fx(&frame, Some((&mut chain, &u)), 96, 48).unwrap();
+        assert_eq!(chain.uniform_writes(), with_layout, "the first frame writes every pass");
+        r.draw_offscreen_fx(&frame, Some((&mut chain, &u)), 96, 48).unwrap();
+        assert_eq!(chain.uniform_writes(), with_layout, "the same uniforms write nothing");
+        u.time += 0.5;
+        r.draw_offscreen_fx(&frame, Some((&mut chain, &u)), 96, 48).unwrap();
+        assert_eq!(chain.uniform_writes(), with_layout * 2, "a new time writes every pass with a layout");
+    }
+
+    /// Ten animation frames through one chain, with its kept bind groups and skipped writes,
+    /// give the bytes a fresh chain gives each frame.
+    #[test]
+    fn kept_bind_groups_draw_the_same_pixels() {
+        let (device, queue, frame, u) = fx_bench();
+        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        for views in [true, false] {
+            r.set_view_formats(views);
+            let make = || {
+                let c = crate::render_fx_gpu::Chain::new(&device, format, lightning().compile().unwrap(), false).unwrap();
+                if views { c } else { c.without_view_formats(&device) }
+            };
+            let mut kept = make();
+            let mut clock = crate::render_fx::Clock::default();
+            let mut u = u.clone();
+            let t0 = std::time::Instant::now();
+            let cursor = crate::render_fx::Cursor { rect: [50.0, 24.0, 8.0, 12.0], color: [0.62, 0.82, 0.996, 1.0], style: crate::render_fx::style::BLOCK, visible: true };
+            for i in 0..10u64 {
+                // Every other frame the cursor holds still, so the kept buffers see both a change and none.
+                let c = crate::render_fx::Cursor { rect: [50.0 + (i / 2) as f32, 24.0, 8.0, 12.0], ..cursor };
+                clock.frame(&mut u, t0 + std::time::Duration::from_millis(33 * i), (96, 48), Some(c), true);
+                let a = r.draw_offscreen_fx(&frame, Some((&mut kept, &u)), 96, 48).unwrap();
+                let mut fresh = make();
+                let b = r.draw_offscreen_fx(&frame, Some((&mut fresh, &u)), 96, 48).unwrap();
+                assert!(a == b, "views {views}: frame {i} differs");
+            }
+        }
+        r.set_view_formats(true);
+    }
+
     /// OpenGL has no second view of a texture, so the chain copies the frame into plain textures
     /// and back (`without_view_formats`). Every built-in effect must give the same pixels both
     /// ways, so an effect looks the same on OpenGL as on Vulkan, Metal and DirectX.

@@ -7357,10 +7357,14 @@ impl App {
         // The next edge drag snaps to what this frame shows.
         self.publish_snap();
         let scene_start = timing.then(Instant::now);
-        // The effects first: their cursor color is part of the frame (`draw_prefs`).
-        self.fx_sync();
-        // A frame only the effects' animation wants draws the kept scene again (`scene_cache`).
+        // A frame only the effects' animation wants draws the kept scene again (`scene_cache`),
+        // and then has no frame work to do: nothing it shows changed.
         let size = self.gpu.as_ref().map_or((0, 0), |g| (g.config.width, g.config.height));
+        let will_reuse = self.gpu.as_ref().is_some_and(|g| g.scene.would_reuse(size, now));
+        // The effects first: their cursor color is part of the frame (`draw_prefs`).
+        if !will_reuse {
+            self.fx_sync();
+        }
         if let Some(g) = self.gpu.as_ref() {
             g.scene.sync_look(g.renderer.look_epoch());
         }
@@ -7378,20 +7382,25 @@ impl App {
         };
         // Nothing on screen changed: the window keeps what it shows (`skip_gpu`).
         let same = worth_comparing(&frame) && last.as_ref() == Some(&frame);
-        // The caption's hit tests answer from what this frame drew.
-        self.publish_caption();
-        let (title, menu_text) = self.caption_text();
-        if self.window_menu_text != menu_text {
-            self.window_menu_text = menu_text;
-            self.refresh_window_list();
+        let mut title = None;
+        if !will_reuse {
+            // The caption's hit tests answer from what this frame drew.
+            self.publish_caption();
+            let (text, menu_text) = self.caption_text();
+            if self.window_menu_text != menu_text {
+                self.window_menu_text = menu_text;
+                self.refresh_window_list();
+            }
+            // iTerm2 shows the Leader as sparkles on the cursor; Termurion says so in the title.
+            title = Some(if self.leader_on { format!("[Leader] {text}") } else { text });
         }
-        // iTerm2 shows the Leader as sparkles on the cursor; Termurion says so in the title.
-        let title = if self.leader_on { format!("[Leader] {title}") } else { title };
         // A mode change reconfigures the surface once; this frame draws with it.
         let transparent = self.frame_alpha;
         let alpha_changed = self.sync_surface_alpha(transparent);
         // Tab switches, focus, restore from minimized: the backdrop follows what this frame shows.
-        self.sync_blur();
+        if !will_reuse {
+            self.sync_blur();
+        }
         // Window numbers show from 1 in the saved logs (P20).
         let window_n = self.window_number() + 1;
         let focused_window = self.focused;
@@ -7411,7 +7420,9 @@ impl App {
         }
         let Some(gpu) = self.gpu.as_mut() else { return };
         // Only a changed title goes out: the compositor hears every set_title (H2).
-        gpu.title_sent.send(&gpu.window, &crate::platform::window::os_title(&title));
+        if let Some(title) = &title {
+            gpu.title_sent.send(&gpu.window, &crate::platform::window::os_title(title));
+        }
         let skip = Skip { same, fx_active: gpu.fx.as_ref().is_some_and(|f| f.active()), bar_busy: bar_on || gpu.bar.busy(), alpha_changed, fade: frame.fade };
         if skip_gpu(&skip) {
             gpu.scene.keep(frame, built, size);

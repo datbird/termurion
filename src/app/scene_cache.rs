@@ -70,6 +70,11 @@ impl<F> SceneCache<F> {
         self.fx_asked = true;
     }
 
+    /// Whether `take` at this size and time would answer `Reuse`, using nothing up.
+    pub(super) fn would_reuse(&self, size: (u32, u32), now: Instant) -> bool {
+        self.fx_asked && !self.changed.get() && self.kept.as_ref().is_some_and(|k| k.size == size && now.saturating_duration_since(k.built) < MAX_AGE)
+    }
+
     /// `Reuse` (the kept frame and when it was built) when only the animation asked for this
     /// frame, the window has the same size and the frame is younger than `MAX_AGE`. Else `Build`,
     /// carrying the kept frame only when an app request asked for this one at the same size and
@@ -112,6 +117,27 @@ mod tests {
         let mut c = kept(t0);
         c.fx_asked();
         assert_eq!(c.take((800, 600), t0 + Duration::from_millis(33)), Take::Reuse(7, t0));
+    }
+
+    #[test]
+    fn would_reuse_matches_take_and_uses_nothing_up() {
+        let t0 = Instant::now();
+        let later = t0 + Duration::from_millis(33);
+        let mut c = kept(t0);
+        assert!(!c.would_reuse((800, 600), later), "nothing asked");
+        c.fx_asked();
+        assert!(c.would_reuse((800, 600), later));
+        assert!(c.would_reuse((800, 600), later), "asking twice changes nothing");
+        assert!(!c.would_reuse((801, 600), later), "a new size");
+        assert!(!c.would_reuse((800, 600), t0 + MAX_AGE), "an old frame");
+        c.changed();
+        assert!(!c.would_reuse((800, 600), later), "another request too");
+        let mut c = kept(t0);
+        c.fx_asked();
+        assert!(c.would_reuse((800, 600), later));
+        assert_eq!(c.take((800, 600), later), Take::Reuse(7, t0));
+        c.fx_asked();
+        assert!(!c.would_reuse((800, 600), later), "the frame was taken");
     }
 
     #[test]
@@ -242,6 +268,25 @@ mod tests {
             for bad in ["g.window.request_redraw()", "gpu.window.request_redraw()"] {
                 assert!(!src.contains(bad), "{name} calls {bad}; use redraw() or redraw_fx()");
             }
+        }
+    }
+
+    /// An animation frame has no frame work to do: these sit behind the `would_reuse` check.
+    #[test]
+    fn an_animation_frame_skips_the_frame_work() {
+        let src = include_str!("mod.rs");
+        let body = &src[src.find("fn render_frame(").unwrap()..];
+        let body = &body[..body.find("\n/// iTerm2's button numbers").unwrap()];
+        let at = |what: &str| body.find(what).unwrap_or_else(|| panic!("{what} in render_frame"));
+        let ask = at("would_reuse(");
+        for call in ["self.fx_sync()", "self.publish_caption()", "self.caption_text()", "self.sync_blur()", "title_sent.send("] {
+            let i = at(call);
+            assert!(i > ask, "{call} comes after the would_reuse check");
+            // The nearest line above that opens a block must be the will_reuse guard.
+            let head = &body[..i];
+            let guard = head.rfind("if !will_reuse {").into_iter().chain(head.rfind("if let Some(title) = &title {")).max();
+            let guard = guard.unwrap_or_else(|| panic!("{call} sits in no guard"));
+            assert!(!head[guard..].contains("\n        }\n"), "{call} is inside the guard, not after it");
         }
     }
 }

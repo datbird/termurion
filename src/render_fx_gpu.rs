@@ -101,6 +101,14 @@ pub struct Chain {
     /// The frame texture holds the window's last terminal picture (`draw_fx` drew it there and
     /// nothing has replaced it since), so a frame of the same scene can run the passes alone.
     frame_drawn: bool,
+    /// One bind group per pass, made with the textures they read (`remake_binds`), never per frame.
+    binds: Vec<wgpu::BindGroup>,
+    /// Without view formats: the decode copy's and the encode copy's bind groups.
+    copy_binds: Vec<wgpu::BindGroup>,
+    /// What each pass's uniform buffer holds: a frame whose packed bytes are the same writes nothing.
+    last_packed: Vec<Vec<u8>>,
+    binds_made: u64,
+    uniform_writes: u64,
 }
 
 /// The format the passes write: the window's, without the sRGB suffix.
@@ -176,7 +184,8 @@ impl Chain {
             let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("render_fx uniforms"), size, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
             passes.push(Pass { pipeline, uniforms, layout });
         }
-        Ok(Chain { passes, bind_layout, sampler, format, size: (0, 0), targets: Vec::new(), blits: None, plain: None, keep_alpha, frame_drawn: false })
+        let last_packed = vec![Vec::new(); passes.len()];
+        Ok(Chain { passes, bind_layout, sampler, format, size: (0, 0), targets: Vec::new(), blits: None, plain: None, keep_alpha, frame_drawn: false, binds: Vec::new(), copy_binds: Vec::new(), last_packed, binds_made: 0, uniform_writes: 0 })
     }
 
     /// For a card that cannot view a texture in a second format (`view_formats_supported` false):
@@ -218,6 +227,8 @@ impl Chain {
         let encode = pipe(ENCODE, self.format, out_mask);
         self.blits = Some(Blits { layout, decode, encode });
         self.targets.clear();
+        self.binds.clear();
+        self.copy_binds.clear();
         self.size = (0, 0);
         self
     }
@@ -279,6 +290,7 @@ impl Chain {
                 self.plain = Some(Self::plain(device, self.format, size));
                 self.size = size;
                 self.frame_drawn = false;
+                self.remake_binds(device);
             }
             let p = self.plain.as_ref().expect("made above");
             return (&p.frame, None);
@@ -288,6 +300,7 @@ impl Chain {
             self.targets = (0..wanted).map(|_| Self::target(device, self.format, size)).collect();
             self.size = size;
             self.frame_drawn = false;
+            self.remake_binds(device);
         }
         (&self.targets[0].srgb, Some(&self.targets[0].raw))
     }
@@ -305,8 +318,7 @@ impl Chain {
     }
 
     /// One copy pass from `src` into `dst`.
-    fn blit(device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, blits: &Blits, pipeline: &wgpu::RenderPipeline, src: &wgpu::TextureView, dst: &wgpu::TextureView) {
-        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("render_fx copy"), layout: &blits.layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(src) }] });
+    fn blit(encoder: &mut wgpu::CommandEncoder, bind: &wgpu::BindGroup, pipeline: &wgpu::RenderPipeline, dst: &wgpu::TextureView) {
         let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("render_fx copy"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: dst, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
@@ -316,12 +328,72 @@ impl Chain {
             multiview_mask: None,
         });
         rp.set_pipeline(pipeline);
-        rp.set_bind_group(0, &bind, &[]);
+        rp.set_bind_group(0, bind, &[]);
         rp.draw(0..3, 0..1);
     }
 
+    /// Makes the bind groups for the textures just made: the passes read the same views every
+    /// frame, so `run` makes none.
+    fn remake_binds(&mut self, device: &wgpu::Device) {
+        let plain = match (&self.blits, &self.plain) {
+            (Some(b), Some(p)) => Some((b, p)),
+            _ => None,
+        };
+        self.binds = (0..self.passes.len())
+            .map(|i| {
+                let input = match plain {
+                    Some((_, p)) => &p.raw[i % 2],
+                    None => &self.targets[i % 2].raw,
+                };
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("render_fx"),
+                    layout: &self.bind_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(input) },
+                        wgpu::BindGroupEntry { binding: 1, resource: self.passes[i].uniforms.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                    ],
+                })
+            })
+            .collect();
+        self.copy_binds = match plain {
+            Some((b, p)) => {
+                let last = self.passes.len().saturating_sub(1);
+                let make = |src: &wgpu::TextureView| device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("render_fx copy"), layout: &b.layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(src) }] });
+                vec![make(&p.frame), make(&p.raw[(last + 1) % 2])]
+            }
+            None => Vec::new(),
+        };
+        self.binds_made += (self.binds.len() + self.copy_binds.len()) as u64;
+    }
+
+    /// How many bind groups this chain has made (they follow the textures, not the frames).
+    pub fn bind_groups_made(&self) -> u64 {
+        self.binds_made
+    }
+
+    /// How many uniform buffer writes `run` has made.
+    pub fn uniform_writes(&self) -> u64 {
+        self.uniform_writes
+    }
+
     /// Runs every pass; the last writes `out`, a non-sRGB view of the window texture.
-    pub fn run(&self, device: &wgpu::Device, queue: &wgpu::Queue, uniforms: &Uniforms, out: &wgpu::TextureView) {
+    pub fn run(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, uniforms: &Uniforms, out: &wgpu::TextureView) {
+        // Nothing to draw into yet (no frame_views call).
+        if self.targets.is_empty() && self.plain.is_none() {
+            return;
+        }
+        // The uniform buffers hold what the last frame packed; only a change is written.
+        for (i, pass) in self.passes.iter().enumerate() {
+            if let Some(layout) = &pass.layout {
+                let packed = uniforms.pack(layout);
+                if self.last_packed[i] != packed {
+                    queue.write_buffer(&pass.uniforms, 0, &packed);
+                    self.last_packed[i] = packed;
+                    self.uniform_writes += 1;
+                }
+            }
+        }
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("render_fx") });
         let last = self.passes.len().saturating_sub(1);
         // Without view formats every pass reads and writes the plain pair, and the copies wrap them.
@@ -330,30 +402,15 @@ impl Chain {
             (Some(_), None) => return,
             (None, _) => None,
         };
-        if plain.is_none() && self.targets.is_empty() {
-            return;
-        }
         if let Some((b, p)) = plain {
-            Self::blit(device, &mut encoder, b, &b.decode, &p.frame, &p.raw[0]);
+            Self::blit(&mut encoder, &self.copy_binds[0], &b.decode, &p.raw[0]);
         }
         for (i, pass) in self.passes.iter().enumerate() {
-            if let Some(layout) = &pass.layout {
-                queue.write_buffer(&pass.uniforms, 0, &uniforms.pack(layout));
-            }
             // Ping-pong: pass i reads target i % 2 and writes the other (or the window).
             let (input, output) = match plain {
                 Some((_, p)) => (&p.raw[i % 2], &p.raw[(i + 1) % 2]),
                 None => (&self.targets[i % 2].raw, if i == last { out } else { &self.targets[(i + 1) % 2].raw }),
             };
-            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("render_fx"),
-                layout: &self.bind_layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(input) },
-                    wgpu::BindGroupEntry { binding: 1, resource: pass.uniforms.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                ],
-            });
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("render_fx"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: output, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
@@ -363,11 +420,11 @@ impl Chain {
                 multiview_mask: None,
             });
             rp.set_pipeline(&pass.pipeline);
-            rp.set_bind_group(0, &bind, &[]);
+            rp.set_bind_group(0, &self.binds[i], &[]);
             rp.draw(0..3, 0..1);
         }
-        if let Some((b, p)) = plain {
-            Self::blit(device, &mut encoder, b, &b.encode, &p.raw[(last + 1) % 2], out);
+        if let Some((b, _)) = plain {
+            Self::blit(&mut encoder, &self.copy_binds[1], &b.encode, out);
         }
         queue.submit([encoder.finish()]);
     }
