@@ -1920,7 +1920,7 @@ fn row_context(cx: &RowCtx, focused: bool) -> u64 {
         None => 0u8.hash(&mut h),
         Some(hl) => {
             1u8.hash(&mut h);
-            hash_debug(&mut h, &(hl.color, hl.link, hl.dim, hl.bg_alpha, hl.opaque_colors, hl.text_blink_on, hl.key_cursor));
+            hash_debug(&mut h, &(hl.color, hl.link, hl.dim, hl.bg_alpha, hl.opaque_colors, hl.key_cursor));
         }
     }
     std::hash::Hasher::finish(&h)
@@ -1982,6 +1982,13 @@ fn row_extra(cx: &RowCtx, row: usize, frac: f32) -> u64 {
         NO_HIGHLIGHTS.hash(&mut h);
     }
     frac.to_bits().hash(&mut h);
+    // The blink phase moves with the cursor's, so only a row that blinks may depend on it.
+    if cx.screen.blink_allowed {
+        let cells = &cx.term.grid()[Line(row as i32 - cx.display_offset)][..];
+        if cells.iter().any(|c| c.flags.contains(Flags::BLINK)) {
+            cx.highlights.is_none_or(|hl| hl.text_blink_on).hash(&mut h);
+        }
+    }
     std::hash::Hasher::finish(&h)
 }
 
@@ -11300,6 +11307,8 @@ mod row_reuse_tests {
         notes: Vec<(Match, Option<String>)>,
         selections: Vec<crate::seltext::Sub>,
         dim: Option<crate::dim::Dim>,
+        /// The blinking text's off phase.
+        blink_off: bool,
     }
 
     impl Marks {
@@ -11315,7 +11324,7 @@ mod row_reuse_tests {
                 key_cursor: false,
                 bg_alpha: 1.0,
                 opaque_colors: false,
-                text_blink_on: true,
+                text_blink_on: !self.blink_off,
                 selections: &self.selections,
                 command_region: None,
                 shade: None,
@@ -11387,6 +11396,33 @@ mod row_reuse_tests {
         let script: Vec<&[u8]> = lines.iter().map(|l| l.as_bytes()).collect();
         let served = both_ways(80, 24, &script, |_, _, _| {});
         assert!(*served.last().unwrap() >= 20, "served {:?}", served.last());
+    }
+
+    #[test]
+    fn blinking_text_follows_the_phase_through_the_cache() {
+        let script: Vec<&[u8]> = std::iter::once(&b"plain\r\n\x1b[5mblinks\x1b[0m here\r\nmore plain\r\n\r\n\r\nlast"[..]).chain(std::iter::repeat_n(&b""[..], 5)).collect();
+        both_ways(30, 6, &script, |s, cfg, i| {
+            s.blink_allowed = true;
+            cfg.marks = Some(Marks { blink_off: i % 2 == 1, ..Marks::default() });
+        });
+    }
+
+    #[test]
+    fn a_blink_edge_keeps_rows_without_blinking_text() {
+        let mut s = Screen::new(30, 6);
+        s.blink_allowed = true;
+        s.feed(b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix");
+        let mut cfg = Cfg::new();
+        let mut cache = RowCache::new();
+        cfg.marks = Some(Marks::default());
+        draw(&s, &cfg, true, Some(&mut cache));
+        cache.end_frame();
+        cfg.marks = Some(Marks { blink_off: true, ..Marks::default() });
+        let before = cache.hits();
+        draw(&s, &cfg, true, Some(&mut cache));
+        let served = cache.hits() - before;
+        // Every row but the cursor's.
+        assert!(served >= 5, "served {served}");
     }
 
     #[test]
