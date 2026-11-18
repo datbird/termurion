@@ -10533,6 +10533,14 @@ mod agent_box_tests {
         s.feed("ascii \u{4e2d}\u{6587}\u{5b57} wide\r\n\u{ff21}\u{ff22}x\u{1f600}y\r\nab \u{5d0}\u{5d1}\u{5d2} cd\r\n\u{627}\u{644}\u{639}\u{631}\u{628}\u{64a}\u{629} end".as_bytes());
         cases.push(("cjk-rtl".into(), plain(&s), false));
 
+        // A pane whose top is half a pixel down (a margin at 125% scale): underlines and strikes
+        // still snap to whole device pixels.
+        let mut s = crate::screen::Screen::new(30, 6);
+        s.feed(b"\x1b[4munder\x1b[0m line\r\n\x1b[9mstruck\x1b[0m line\r\n\x1b[4;9mboth\x1b[0m\r\n\x1b[4:3mcurly\x1b[0m");
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, crate::layout::Rect { y: 6.5, ..rect }, cell, true, &CursorLook::shown(true), &DrawPrefs::default(), None, face, None);
+        cases.push(("fractional-top".into(), format!("{f:#?}"), false));
+
         let mut s = crate::screen::Screen::new(30, 6);
         s.feed("\u{250c}\u{2500}\u{2500}\u{252c}\u{2500}\u{2510}\r\n\u{2502}ab\u{2502}cd\u{2502}\r\n\u{2514}\u{2500}\u{2500}\u{2534}\u{2500}\u{2518}\r\n\u{e0b0}\u{e0b2}\u{e0b4} \u{2588}\u{2591}\u{2592}".as_bytes());
         cases.push(("box-and-powerline".into(), plain(&s), false));

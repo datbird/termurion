@@ -1,0 +1,605 @@
+Frame {
+    clear: [
+        0.000,
+        0.000,
+        0.000,
+        0.000,
+    ],
+    backgrounds: [],
+    quads: [
+        Quad {
+            rect: Rect {
+                x: 54.000,
+                y: 66.500,
+                w: 10.000,
+                h: 20.000,
+            },
+            color: [
+                1.000,
+                1.000,
+                1.000,
+                1.000,
+            ],
+        },
+    ],
+    images: [],
+    rows: [
+        TextRow {
+            x: 4.000,
+            y: 6.500,
+            spans: [
+                Span {
+                    text: "under line                    ",
+                    color: Rgb {
+                        r: 220,
+                        g: 220,
+                        b: 220,
+                    },
+                    bold: false,
+                    italic: false,
+                    alt_font: false,
+                    icon: false,
+                    prose: false,
+                    badge: false,
+                    toolbelt: false,
+                    fake_bold: false,
+                    ligatures: 0,
+                    mask: 0,
+                    font: 0,
+                },
+            ],
+            clip: Rect {
+                x: 4.000,
+                y: 6.500,
+                w: 800.000,
+                h: 480.000,
+            },
+            scale: 1.000,
+            face: 0,
+        },
+        TextRow {
+            x: 4.000,
+            y: 26.500,
+            spans: [
+                Span {
+                    text: "struck line                   ",
+                    color: Rgb {
+                        r: 220,
+                        g: 220,
+                        b: 220,
+                    },
+                    bold: false,
+                    italic: false,
+                    alt_font: false,
+                    icon: false,
+                    prose: false,
+                    badge: false,
+                    toolbelt: false,
+                    fake_bold: false,
+                    ligatures: 0,
+                    mask: 0,
+                    font: 0,
+                },
+            ],
+            clip: Rect {
+                x: 4.000,
+                y: 6.500,
+                w: 800.000,
+                h: 480.000,
+            },
+            scale: 1.000,
+            face: 0,
+        },
+        TextRow {
+            x: 4.000,
+            y: 46.500,
+            spans: [
+                Span {
+                    text: "both                          ",
+                    color: Rgb {
+                        r: 220,
+                        g: 220,
+                        b: 220,
+                    },
+                    bold: false,
+                    italic: false,
+                    alt_font: false,
+                    icon: false,
+                    prose: false,
+                    badge: false,
+                    toolbelt: false,
+                    fake_bold: false,
+                    ligatures: 0,
+                    mask: 0,
+                    font: 0,
+                },
+            ],
+            clip: Rect {
+                x: 4.000,
+                y: 6.500,
+                w: 800.000,
+                h: 480.000,
+            },
+            scale: 1.000,
+            face: 0,
+        },
+        TextRow {
+            x: 4.000,
+            y: 66.500,
+            spans: [
+                Span {
+                    text: "curly",
+                    color: Rgb {
+                        r: 220,
+                        g: 220,
+                        b: 220,
+                    },
+                    bold: false,
+                    italic: false,
+                    alt_font: false,
+                    icon: false,
+                    prose: false,
+                    badge: false,
+                    toolbelt: false,
+                    fake_bold: false,
+                    ligatures: 0,
+                    mask: 0,
+                    font: 0,
+                },
+            ],
+            clip: Rect {
+                x: 4.000,
+                y: 6.500,
+                w: 800.000,
+                h: 480.000,
+            },
+            scale: 1.000,
+            face: 0,
+        },
+    ],
+    glyphs: [],
+    overlay: [],
+    underlines: [
+        Quad {
+            rect: Rect {
+                x: 4.000,
+                y: 26.000,
+                w: 50.000,
+                h: 1.000,
+            },
+            color: [
+                0.716,
+                0.716,
+                0.716,
+                1.000,
+            ],
+        },
+        Quad {
+            rect: Rect {
+                x: 4.000,
+                y: 66.000,
+                w: 40.000,
+                h: 1.000,
+            },
+            color: [
+                0.716,
+                0.716,
+                0.716,
+                1.000,
+            ],
+        },
+        Quad {
+            rect: Rect {
+                x: 4.000,
+                y: 85.000,
+                w: 3.000,
+                h: 1.000,
+            },
+            color: [
+                0.716,
+                0.716,
+                0.716,
+                1.000,
+            ],
+        },
+        Quad {
+            rect: Rect {
+                x: 10.000,
+                y: 85.000,
+                w: 3.000,
+                h: 1.000,
+            },
+            color: [
+                0.716,
+                0.716,
+                0.716,
+                1.000,
+            ],
+        },
+        Quad {
+            rect: Rect {
+                x: 16.000,
+                y: 85.000,
+                w: 3.000,
+                h: 1.000,
+            },
+            color: [
+                0.716,
+                0.716,
+                0.716,
+                1.000,
+            ],
+        },
+        Quad {
+            rect: Rect {
+                x: 22.000,
+                y: 85.000,
+                w: 3.000,
+                h: 1.000,
+            },
+            color: [
+                0.716,
+                0.716,
+                0.716,
+                1.000,
+            ],
+        },
+        Quad {
+            rect: Rect {
+                x: 28.000,
+                y: 85.000,
+                w: 3.000,
+                h: 1.000,
+            },
+            color: [
+                0.716,
+                0.716,
+                0.716,
+                1.000,
+            ],
+        },
+        Quad {
+            rect: Rect {
+                x: 34.000,
+                y: 85.000,
+                w: 3.000,
+                h: 1.000,
+            },
+            color: [
+                0.716,
+                0.716,
+                0.716,
+                1.000,
+            ],
+        },
+        Quad {
+            rect: Rect {
+                x: 40.000,
+                y: 85.000,
+                w: 3.000,
+                h: 1.000,
+            },
+            color: [
+                0.716,
+                0.716,
+                0.716,
+                1.000,
+            ],
+        },
+        Quad {
+            rect: Rect {
+                x: 46.000,
+                y: 85.000,
+                w: 3.000,
+                h: 1.000,
+            },
+            color: [
+                0.716,
+                0.716,
+                0.716,
+                1.000,
+            ],
+        },
+        Quad {
+            rect: Rect {
+                x: 52.000,
+                y: 85.000,
+                w: 2.000,
+                h: 1.000,
+            },
+            color: [
+                0.716,
+                0.716,
+                0.716,
+                1.000,
+            ],
+        },
+        Quad {
+            rect: Rect {
+                x: 7.000,
+                y: 84.000,
+                w: 3.000,
+                h: 1.000,
+            },
+            color: [
+                0.716,
+                0.716,
+                0.716,
+                1.000,
+            ],
+        },
+        Quad {
+            rect: Rect {
+                x: 13.000,
+                y: 84.000,
+                w: 3.000,
+                h: 1.000,
+            },
+            color: [
+                0.716,
+                0.716,
+                0.716,
+                1.000,
+            ],
+        },
+        Quad {
+            rect: Rect {
+                x: 19.000,
+                y: 84.000,
+                w: 3.000,
+                h: 1.000,
+            },
+            color: [
+                0.716,
+                0.716,
+                0.716,
+                1.000,
+            ],
+        },
+        Quad {
+            rect: Rect {
+                x: 25.000,
+                y: 84.000,
+                w: 3.000,
+                h: 1.000,
+            },
+            color: [
+                0.716,
+                0.716,
+                0.716,
+                1.000,
+            ],
+        },
+        Quad {
+            rect: Rect {
+                x: 31.000,
+                y: 84.000,
+                w: 3.000,
+                h: 1.000,
+            },
+            color: [
+                0.716,
+                0.716,
+                0.716,
+                1.000,
+            ],
+        },
+        Quad {
+            rect: Rect {
+                x: 37.000,
+                y: 84.000,
+                w: 3.000,
+                h: 1.000,
+            },
+            color: [
+                0.716,
+                0.716,
+                0.716,
+                1.000,
+            ],
+        },
+        Quad {
+            rect: Rect {
+                x: 43.000,
+                y: 84.000,
+                w: 3.000,
+                h: 1.000,
+            },
+            color: [
+                0.716,
+                0.716,
+                0.716,
+                1.000,
+            ],
+        },
+        Quad {
+            rect: Rect {
+                x: 49.000,
+                y: 84.000,
+                w: 3.000,
+                h: 1.000,
+            },
+            color: [
+                0.716,
+                0.716,
+                0.716,
+                1.000,
+            ],
+        },
+    ],
+    strikes: [
+        Quad {
+            rect: Rect {
+                x: 4.000,
+                y: 42.000,
+                w: 60.000,
+                h: 1.000,
+            },
+            color: [
+                0.716,
+                0.716,
+                0.716,
+                1.000,
+            ],
+        },
+        Quad {
+            rect: Rect {
+                x: 4.000,
+                y: 62.000,
+                w: 40.000,
+                h: 1.000,
+            },
+            color: [
+                0.716,
+                0.716,
+                0.716,
+                1.000,
+            ],
+        },
+    ],
+    gap_underlines: false,
+    popups: [],
+    scrollbars: [],
+    face_heights: [],
+    fade: 1.000,
+    fx: Some(
+        FxPane {
+            cursor: Some(
+                Cursor {
+                    rect: [
+                        54.000,
+                        66.500,
+                        10.000,
+                        20.000,
+                    ],
+                    color: [
+                        1.000,
+                        1.000,
+                        1.000,
+                        1.000,
+                    ],
+                    style: 0,
+                    visible: true,
+                },
+            ),
+            focused: true,
+            bg: Rgb {
+                r: 21,
+                g: 25,
+                b: 31,
+            },
+            fg: Rgb {
+                r: 220,
+                g: 220,
+                b: 220,
+            },
+            cursor_color: Rgb {
+                r: 255,
+                g: 255,
+                b: 255,
+            },
+            program_cursor: None,
+            cursor_text: Rgb {
+                r: 0,
+                g: 0,
+                b: 0,
+            },
+            selection: Rgb {
+                r: 179,
+                g: 215,
+                b: 255,
+            },
+            selected_text: Some(
+                Rgb {
+                    r: 0,
+                    g: 0,
+                    b: 0,
+                },
+            ),
+            ansi: [
+                Rgb {
+                    r: 20,
+                    g: 25,
+                    b: 30,
+                },
+                Rgb {
+                    r: 180,
+                    g: 60,
+                    b: 42,
+                },
+                Rgb {
+                    r: 0,
+                    g: 194,
+                    b: 0,
+                },
+                Rgb {
+                    r: 199,
+                    g: 196,
+                    b: 0,
+                },
+                Rgb {
+                    r: 39,
+                    g: 68,
+                    b: 199,
+                },
+                Rgb {
+                    r: 192,
+                    g: 64,
+                    b: 190,
+                },
+                Rgb {
+                    r: 0,
+                    g: 197,
+                    b: 199,
+                },
+                Rgb {
+                    r: 199,
+                    g: 199,
+                    b: 199,
+                },
+                Rgb {
+                    r: 104,
+                    g: 104,
+                    b: 104,
+                },
+                Rgb {
+                    r: 221,
+                    g: 121,
+                    b: 117,
+                },
+                Rgb {
+                    r: 88,
+                    g: 231,
+                    b: 144,
+                },
+                Rgb {
+                    r: 236,
+                    g: 225,
+                    b: 0,
+                },
+                Rgb {
+                    r: 167,
+                    g: 171,
+                    b: 242,
+                },
+                Rgb {
+                    r: 225,
+                    g: 126,
+                    b: 225,
+                },
+                Rgb {
+                    r: 96,
+                    g: 253,
+                    b: 255,
+                },
+                Rgb {
+                    r: 255,
+                    g: 255,
+                    b: 255,
+                },
+            ],
+            input_box: None,
+            prompt_mark: None,
+        },
+    ),
+}
