@@ -113,6 +113,152 @@ pub struct Manifest {
     pub cursor_color: Option<String>,
     pub author: String,
     pub license: String,
+    /// Where the effect can draw (`region` in plugin.toml); None means anywhere, the full pass.
+    pub region: Option<Vec<RegionTerm>>,
+}
+
+/// One place an effect can light. The number is a pad in cell heights.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RegionTerm {
+    Full,
+    Cursor(f32),
+    CursorPath(f32),
+    PromptMark(f32),
+    InputBox(f32),
+    /// The whole window for this long after the cursor changes.
+    FullAfterChange(Duration),
+}
+
+fn parse_region(v: &toml::Value) -> Result<Vec<RegionTerm>, String> {
+    let items: Vec<&str> = match v {
+        toml::Value::Array(a) => a.iter().filter_map(|x| x.as_str()).collect(),
+        toml::Value::String(one) => vec![one.as_str()],
+        _ => return Err("plugin.toml: region must be a list of terms".into()),
+    };
+    items
+        .into_iter()
+        .map(|t| {
+            let (name, num) = match t.split_once(':') {
+                Some((n, x)) => (n.trim(), Some(x.trim())),
+                None => (t.trim(), None),
+            };
+            let pad = || match num {
+                None => Ok(0.0),
+                Some(x) => x.parse::<f32>().ok().filter(|p| p.is_finite() && *p >= 0.0).ok_or(format!("plugin.toml: region term \"{t}\" needs a number")),
+            };
+            Ok(match name {
+                "full" => RegionTerm::Full,
+                "cursor" => RegionTerm::Cursor(pad()?),
+                "cursor_path" => RegionTerm::CursorPath(pad()?),
+                "prompt_mark" => RegionTerm::PromptMark(pad()?),
+                "input_box" => RegionTerm::InputBox(pad()?),
+                "full_after_change" => {
+                    let ms = num.and_then(|x| x.parse::<u64>().ok()).ok_or(format!("plugin.toml: region term \"{t}\" needs a number"))?;
+                    RegionTerm::FullAfterChange(Duration::from_millis(ms))
+                }
+                _ => return Err(format!("plugin.toml: unknown region term \"{t}\"")),
+            })
+        })
+        .collect()
+}
+
+/// A rectangle in window pixels, top-left origin.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PxRect {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
+
+/// The terms of a chain of plugins: None (the full screen) if any plugin has no region or
+/// asks for `Full`, else every term.
+pub fn chain_region(manifests: &[&Manifest]) -> Option<Vec<RegionTerm>> {
+    let mut all = Vec::new();
+    for m in manifests {
+        let terms = m.region.as_ref()?;
+        if terms.contains(&RegionTerm::Full) {
+            return None;
+        }
+        all.extend(terms.iter().cloned());
+    }
+    Some(all)
+}
+
+/// The pixels an effect can change this frame, or None for the whole screen. `cell_h` is the
+/// default face's cell height. The caller unites this with last frame's rects.
+pub fn region_rects(terms: &[RegionTerm], u: &Uniforms, cell_h: f32, size: (u32, u32)) -> Option<Vec<PxRect>> {
+    let (sw, sh) = (size.0 as f32, size.1 as f32);
+    // (left, top, right, bottom) in float pixels, grown by pad cells
+    let mut boxes: Vec<[f32; 4]> = Vec::new();
+    // Cursors are stored y-down with y the bottom edge (see `Clock::frame`).
+    let cursor = |c: [f32; 4]| [c[0], c[1] - c[3], c[0] + c[2], c[1]];
+    let grow = |b: [f32; 4], p: f32| {
+        let g = p * cell_h;
+        [b[0] - g, b[1] - g, b[2] + g, b[3] + g]
+    };
+    for t in terms {
+        match t {
+            RegionTerm::Full => return None,
+            RegionTerm::FullAfterChange(d) => {
+                if u.time - u.time_cursor_change < d.as_secs_f32() {
+                    return None;
+                }
+            }
+            RegionTerm::Cursor(p) => boxes.push(grow(cursor(u.current_cursor), *p)),
+            RegionTerm::CursorPath(p) => {
+                let (a, b) = (cursor(u.previous_cursor), cursor(u.current_cursor));
+                boxes.push(grow([a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])], *p));
+            }
+            RegionTerm::PromptMark(p) => {
+                let m = u.prompt_mark;
+                if m[2] > 0.5 {
+                    boxes.push(grow([m[0], m[1], m[0] + m[3], m[1] + cell_h], *p));
+                }
+            }
+            RegionTerm::InputBox(p) => {
+                let (top, bottom, z) = (u.input_box[0], u.input_box[1], u.input_box[2]);
+                let (l, r) = if u.input_box_x[1] > 0.0 { (u.input_box_x[0], u.input_box_x[1]) } else { (0.0, sw) };
+                if z > 1.5 {
+                    boxes.push(grow([l, top, r, bottom], *p));
+                } else if z > 0.5 {
+                    // A line's value is its row's middle.
+                    for y in [top, bottom] {
+                        boxes.push(grow([l, y - cell_h / 2.0, r, y + cell_h / 2.0], *p));
+                    }
+                }
+            }
+        }
+    }
+    Some(round_and_merge(boxes, (sw, sh)))
+}
+
+/// Rounds boxes outward to whole pixels, clamps them to the window, merges overlapping ones and
+/// collapses more than 8 into their bounding box.
+fn round_and_merge(boxes: Vec<[f32; 4]>, (sw, sh): (f32, f32)) -> Vec<PxRect> {
+    let mut rects: Vec<[f32; 4]> = boxes
+        .into_iter()
+        .map(|b| [b[0].floor().clamp(0.0, sw), b[1].floor().clamp(0.0, sh), b[2].ceil().clamp(0.0, sw), b[3].ceil().clamp(0.0, sh)])
+        .filter(|b| b[2] > b[0] && b[3] > b[1])
+        .collect();
+    'again: loop {
+        for i in 0..rects.len() {
+            for j in i + 1..rects.len() {
+                let (a, b) = (rects[i], rects[j]);
+                if a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3] {
+                    rects[i] = [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])];
+                    rects.remove(j);
+                    continue 'again;
+                }
+            }
+        }
+        break;
+    }
+    if rects.len() > 8 {
+        let all = rects.iter().fold([f32::MAX, f32::MAX, 0.0, 0.0], |a, b| [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]);
+        rects = vec![all];
+    }
+    rects.into_iter().map(|b| PxRect { x: b[0] as u32, y: b[1] as u32, w: (b[2] - b[0]) as u32, h: (b[3] - b[1]) as u32 }).collect()
 }
 
 pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
@@ -133,7 +279,8 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
         other => return Err(format!("plugin.toml: animation must be auto, always or off, not {other:?}")),
     };
     let cursor_color = Some(s("cursor_color")).filter(|c| !c.is_empty());
-    Ok(Manifest { name: s("name"), description: s("description"), shaders, animation, cursor_color, author: s("author"), license: s("license") })
+    let region = v.get("region").map(parse_region).transpose()?;
+    Ok(Manifest { name: s("name"), description: s("description"), shaders, animation, cursor_color, author: s("author"), license: s("license"), region })
 }
 
 /// Where a plugin's files are.
@@ -894,6 +1041,110 @@ mod tests {
         assert_eq!(m.shaders, ["a.glsl", "b.wgsl"]);
         assert_eq!(m.animation, Animation::Always);
         assert_eq!(m.cursor_color.as_deref(), Some("#ff00ff"));
+    }
+
+    fn region_manifest(r: &str) -> Manifest {
+        parse_manifest(&format!("shaders = \"a.glsl\"\nregion = {r}")).unwrap()
+    }
+
+    /// Uniforms after one frame with the cursor at (x, y, w, h), top-left.
+    fn cursor_uniforms(rect: [f32; 4]) -> Uniforms {
+        let mut u = Uniforms::default();
+        let mut clock = Clock::default();
+        let c = Cursor { rect, color: [1.0; 4], style: 0, visible: true };
+        clock.frame(&mut u, Instant::now(), (800, 600), Some(c), true);
+        u
+    }
+
+    fn covers(rects: &[PxRect], (x, y, w, h): (u32, u32, u32, u32)) -> bool {
+        rects.iter().any(|r| r.x <= x && r.y <= y && r.x + r.w >= x + w && r.y + r.h >= y + h)
+    }
+
+    #[test]
+    fn region_terms_parse() {
+        let m = region_manifest("[\"cursor:2.5\", \"cursor_path:2.5\", \"prompt_mark:1\", \"input_box:1\", \"full_after_change:600\"]");
+        assert_eq!(m.region.unwrap(), [RegionTerm::Cursor(2.5), RegionTerm::CursorPath(2.5), RegionTerm::PromptMark(1.0), RegionTerm::InputBox(1.0), RegionTerm::FullAfterChange(Duration::from_millis(600))]);
+        assert_eq!(region_manifest("[\"full\"]").region.unwrap(), [RegionTerm::Full]);
+        assert_eq!(region_manifest("[\"cursor\"]").region.unwrap(), [RegionTerm::Cursor(0.0)]);
+    }
+
+    #[test]
+    fn a_bad_region_term_is_an_error() {
+        assert_eq!(parse_manifest("shaders = \"a.glsl\"\nregion = [\"glow\"]").unwrap_err(), "plugin.toml: unknown region term \"glow\"");
+        assert_eq!(parse_manifest("shaders = \"a.glsl\"\nregion = [\"full_after_change\"]").unwrap_err(), "plugin.toml: region term \"full_after_change\" needs a number");
+    }
+
+    #[test]
+    fn no_region_key_means_none() {
+        assert_eq!(parse_manifest("shaders = \"a.glsl\"").unwrap().region, None);
+    }
+
+    #[test]
+    fn cursor_region_covers_the_cursor() {
+        let u = cursor_uniforms([100.0, 40.0, 10.0, 20.0]);
+        let r = region_rects(&[RegionTerm::Cursor(1.0)], &u, 20.0, (800, 600)).unwrap();
+        assert_eq!(r.len(), 1);
+        assert!(covers(&r, (80, 20, 50, 60)), "{r:?}");
+    }
+
+    #[test]
+    fn cursor_path_spans_both_cursors() {
+        let mut u = cursor_uniforms([100.0, 40.0, 10.0, 20.0]);
+        let mut clock = Clock::default();
+        let c = Cursor { rect: [300.0, 200.0, 10.0, 20.0], color: [1.0; 4], style: 0, visible: true };
+        clock.frame(&mut u, Instant::now(), (800, 600), Some(c), true);
+        let r = region_rects(&[RegionTerm::CursorPath(0.0)], &u, 20.0, (800, 600)).unwrap();
+        assert_eq!(r, [PxRect { x: 100, y: 40, w: 210, h: 180 }]);
+    }
+
+    #[test]
+    fn input_box_lines_and_band() {
+        let mut u = Uniforms::default();
+        assert_eq!(region_rects(&[RegionTerm::InputBox(1.0)], &u, 20.0, (800, 600)), Some(vec![]));
+        u.input_box = [100.0, 300.0, 1.0, 0.0];
+        let r = region_rects(&[RegionTerm::InputBox(0.0)], &u, 20.0, (800, 600)).unwrap();
+        assert_eq!(r, [PxRect { x: 0, y: 90, w: 800, h: 20 }, PxRect { x: 0, y: 290, w: 800, h: 20 }]);
+        u.input_box = [100.0, 300.0, 2.0, 0.0];
+        u.input_box_x = [50.0, 400.0, 0.0, 0.0];
+        let r = region_rects(&[RegionTerm::InputBox(1.0)], &u, 20.0, (800, 600)).unwrap();
+        assert_eq!(r, [PxRect { x: 30, y: 80, w: 390, h: 240 }]);
+    }
+
+    #[test]
+    fn full_after_change_is_full_only_while_it_plays() {
+        let mut u = Uniforms::default();
+        u.time_cursor_change = 1.0;
+        let t = [RegionTerm::FullAfterChange(Duration::from_millis(600))];
+        u.time = 1.5;
+        assert_eq!(region_rects(&t, &u, 20.0, (800, 600)), None);
+        u.time = 1.7;
+        assert_eq!(region_rects(&t, &u, 20.0, (800, 600)), Some(vec![]));
+        assert_eq!(region_rects(&[RegionTerm::Full], &u, 20.0, (800, 600)), None);
+    }
+
+    #[test]
+    fn a_chain_with_one_regionless_plugin_is_full() {
+        let a = region_manifest("[\"cursor\"]");
+        let b = parse_manifest("shaders = \"a.glsl\"").unwrap();
+        let c = region_manifest("[\"input_box\"]");
+        let f = region_manifest("[\"full\"]");
+        assert_eq!(chain_region(&[&a, &b]), None);
+        assert_eq!(chain_region(&[&a, &f]), None);
+        assert_eq!(chain_region(&[&a, &c]), Some(vec![RegionTerm::Cursor(0.0), RegionTerm::InputBox(0.0)]));
+    }
+
+    #[test]
+    fn rects_are_clamped_and_merged() {
+        let u = cursor_uniforms([790.0, 40.0, 10.0, 20.0]);
+        let r = region_rects(&[RegionTerm::Cursor(1.0)], &u, 20.0, (800, 600)).unwrap();
+        assert_eq!(r, [PxRect { x: 770, y: 20, w: 30, h: 60 }]);
+        let mut u = Uniforms::default();
+        u.prompt_mark = [0.0, 0.0, 1.0, 10.0];
+        u.current_cursor = [5.0, 20.0, 10.0, 20.0];
+        let t = [RegionTerm::PromptMark(0.0), RegionTerm::Cursor(0.0)];
+        assert_eq!(region_rects(&t, &u, 20.0, (800, 600)).unwrap().len(), 1);
+        let nine: Vec<[f32; 4]> = (0..9).map(|i| [i as f32 * 20.0, 0.0, i as f32 * 20.0 + 10.0, 10.0]).collect();
+        assert_eq!(round_and_merge(nine, (800.0, 600.0)), [PxRect { x: 0, y: 0, w: 170, h: 10 }]);
     }
 
     #[test]
