@@ -7,6 +7,7 @@
 mod cache;
 mod custom_glyph;
 mod error;
+mod row_render;
 mod text_atlas;
 #[cfg(test)]
 mod test_gpu;
@@ -18,7 +19,10 @@ pub use custom_glyph::{
     ContentType, CustomGlyph, CustomGlyphId, RasterizeCustomGlyphRequest, RasterizedCustomGlyph,
 };
 pub use error::{PrepareError, RenderError};
+// Termurion patch 4: GlyphKey names a cached glyph for hold and release.
 pub use text_atlas::{ColorMode, GlyphKey, TextAtlas};
+// Termurion patch 6: the row renderer.
+pub use row_render::{RowArea, RowRenderer};
 pub use text_render::TextRenderer;
 pub use viewport::Viewport;
 

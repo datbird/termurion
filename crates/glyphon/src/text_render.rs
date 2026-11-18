@@ -1,8 +1,8 @@
 use crate::{
     custom_glyph::CustomGlyphCacheKey, ColorMode, ContentType, FontSystem, GlyphDetails,
     GlyphToRender, GpuCacheStatus, PrepareError, RasterizeCustomGlyphRequest,
-    RasterizedCustomGlyph, RenderError, State, SwashCache, SwashContent, TextArea, TextAtlas,
-    Viewport,
+    RasterizedCustomGlyph, RenderError, Resolution, State, SwashCache, SwashContent, TextArea,
+    TextAtlas, TextBounds, Viewport,
 };
 use cosmic_text::{Color, SubpixelBin};
 use std::slice;
@@ -146,27 +146,7 @@ impl TextRenderer {
         let resolution = viewport.resolution();
 
         for text_area in text_areas {
-            let x_min = text_area.bounds.left.max(0);
-            let y_min = text_area.bounds.top.max(0);
-
-            let bounds = GlyphBounds {
-                x: Bounds {
-                    min: x_min,
-                    max: text_area
-                        .bounds
-                        .right
-                        .min(resolution.width as i32)
-                        .max(x_min),
-                },
-                y: Bounds {
-                    min: y_min,
-                    max: text_area
-                        .bounds
-                        .bottom
-                        .min(resolution.height as i32)
-                        .max(y_min),
-                },
-            };
+            let bounds = GlyphBounds::clamped(text_area.bounds, resolution);
 
             for glyph in text_area.custom_glyphs.iter() {
                 let x = text_area.left + (glyph.left * text_area.scale);
@@ -281,35 +261,8 @@ impl TextRenderer {
                             scale_factor: text_area.scale,
                         },
                         bounds,
-                        |system, _rasterize_custom_glyph| -> Option<GetGlyphImageResult> {
-                            let mut image = system
-                                .cache
-                                .get_image_uncached(system.font_system, physical_glyph.cache_key)?;
-                            // Termurion patch 1: filter the mask of an aliased or thin-stroke glyph.
-                            if matches!(image.content, SwashContent::Mask) {
-                                crate::filter_text_mask(
-                                    physical_glyph.cache_key.flags.bits(),
-                                    &mut image.data,
-                                );
-                            }
-
-                            let content_type = match image.content {
-                                SwashContent::Color => ContentType::Color,
-                                SwashContent::Mask => ContentType::Mask,
-                                SwashContent::SubpixelMask => {
-                                    // Not implemented yet, but don't panic if this happens.
-                                    ContentType::Mask
-                                }
-                            };
-
-                            Some(GetGlyphImageResult {
-                                content_type,
-                                top: image.placement.top as i16,
-                                left: image.placement.left as i16,
-                                width: image.placement.width as u16,
-                                height: image.placement.height as u16,
-                                data: image.data,
-                            })
+                        |system, _rasterize_custom_glyph| {
+                            text_glyph_image(system, physical_glyph.cache_key)
                         },
                         &mut metadata_to_depth,
                         &mut rasterize_custom_glyph,
@@ -386,7 +339,7 @@ pub(crate) enum GlyphonCacheKey {
     Custom(CustomGlyphCacheKey),
 }
 
-fn next_copy_buffer_size(size: u64) -> u64 {
+pub(crate) fn next_copy_buffer_size(size: u64) -> u64 {
     let align_mask = COPY_BUFFER_ALIGNMENT - 1;
     ((size.next_power_of_two() + align_mask) & !align_mask).max(COPY_BUFFER_ALIGNMENT)
 }
@@ -413,11 +366,11 @@ fn create_oversized_buffer(
     (buffer, size)
 }
 
-fn zero_depth(_: usize) -> f32 {
+pub(crate) fn zero_depth(_: usize) -> f32 {
     0f32
 }
 
-struct GetGlyphImageResult {
+pub(crate) struct GetGlyphImageResult {
     content_type: ContentType,
     top: i16,
     left: i16,
@@ -426,35 +379,91 @@ struct GetGlyphImageResult {
     data: Vec<u8>,
 }
 
-struct GlyphMetadata {
-    x: i32,
-    y: i32,
-    line_y: f32,
-    scale_factor: f32,
-    color: Color,
-    metadata: usize,
-    cache_key: GlyphonCacheKey,
+pub(crate) struct GlyphMetadata {
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) line_y: f32,
+    pub(crate) scale_factor: f32,
+    pub(crate) color: Color,
+    pub(crate) metadata: usize,
+    pub(crate) cache_key: GlyphonCacheKey,
 }
 
 #[derive(Clone, Copy)]
-struct Bounds {
-    min: i32,
-    max: i32,
+pub(crate) struct Bounds {
+    pub(crate) min: i32,
+    pub(crate) max: i32,
 }
 
 #[derive(Clone, Copy)]
-struct GlyphBounds {
-    x: Bounds,
-    y: Bounds,
+pub(crate) struct GlyphBounds {
+    pub(crate) x: Bounds,
+    pub(crate) y: Bounds,
 }
 
-struct GlyphSystem<'a> {
-    atlas: &'a mut TextAtlas,
-    cache: &'a mut SwashCache,
-    font_system: &'a mut FontSystem,
+impl GlyphBounds {
+    /// The bounds clamped to the viewport (shared with `RowRenderer`'s clip rectangles).
+    pub(crate) fn clamped(bounds: TextBounds, resolution: Resolution) -> Self {
+        let x_min = bounds.left.max(0);
+        let y_min = bounds.top.max(0);
+        Self {
+            x: Bounds {
+                min: x_min,
+                max: bounds.right.min(resolution.width as i32).max(x_min),
+            },
+            y: Bounds {
+                min: y_min,
+                max: bounds.bottom.min(resolution.height as i32).max(y_min),
+            },
+        }
+    }
+
+    /// Termurion patch 6: clips nothing (`RowRenderer` clips in its vertex shader).
+    pub(crate) const UNBOUNDED: Self = Self {
+        x: Bounds { min: i32::MIN, max: i32::MAX },
+        y: Bounds { min: i32::MIN, max: i32::MAX },
+    };
 }
 
-fn prepare_glyph<R>(
+pub(crate) struct GlyphSystem<'a> {
+    pub(crate) atlas: &'a mut TextAtlas,
+    pub(crate) cache: &'a mut SwashCache,
+    pub(crate) font_system: &'a mut FontSystem,
+}
+
+/// Termurion patch 6: rasterizes a text glyph for its first upload (shared with `RowRenderer`).
+pub(crate) fn text_glyph_image(
+    system: &mut GlyphSystem,
+    cache_key: cosmic_text::CacheKey,
+) -> Option<GetGlyphImageResult> {
+    let mut image = system
+        .cache
+        .get_image_uncached(system.font_system, cache_key)?;
+    // Termurion patch 1: filter the mask of an aliased or thin-stroke glyph.
+    if matches!(image.content, SwashContent::Mask) {
+        crate::filter_text_mask(cache_key.flags.bits(), &mut image.data);
+    }
+
+    let content_type = match image.content {
+        SwashContent::Color => ContentType::Color,
+        SwashContent::Mask => ContentType::Mask,
+        SwashContent::SubpixelMask => {
+            // Not implemented yet, but don't panic if this happens.
+            ContentType::Mask
+        }
+    };
+
+    Some(GetGlyphImageResult {
+        content_type,
+        top: image.placement.top as i16,
+        left: image.placement.left as i16,
+        width: image.placement.width as u16,
+        height: image.placement.height as u16,
+        data: image.data,
+    })
+}
+
+pub(crate) fn prepare_glyph<R>(
     state: &State,
     system: &mut GlyphSystem,
     metadata: GlyphMetadata,

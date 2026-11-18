@@ -20,13 +20,27 @@ through `[patch.crates-io]` in Termurion's Cargo.toml. The `examples/`, `benches
 4. Use counts in the atlas (`text_atlas.rs`, `lib.rs`). `GlyphKey` names a cached glyph;
    `TextAtlas::hold` and `release` keep a use count per key (a release at 0 does nothing), `held()`
    counts the keys above 0, and `generation()` is raised by every successful grow. `InnerAtlas::try_allocate`
-   walks the LRU from the oldest end and evicts the first entry that has atlas space and is neither in
-   use nor held; a busy entry at the oldest end no longer ends the search (the caller grows when none
-   qualifies). Both inner atlases keep the counts, since a key may sit in either.
+   walks the LRU from the oldest end and evicts the first entry that is neither in use nor held (a
+   zero-size entry takes no atlas space, so dropping it is free); a busy entry at the oldest end no
+   longer ends the search (the caller grows when none qualifies). Both inner atlases keep the counts,
+   since a key may sit in either.
 5. `text_atlas.rs`: `set_max_size(px)` (doc hidden) caps both atlases' `max_texture_dimension_2d`
    so tests can force eviction at a small size. Tests: `text_atlas::tests` on a headless GPU
    (`test_gpu.rs`, one process-wide device). The root `Cargo.toml` lists glyphon as a workspace member
    so `cargo test -p glyphon --lib` runs, and glyphon has `pollster` and `wgpu` (default backends) as
    dev-dependencies.
+6. Row renderer (`row_render.rs`, `row_shader.wgsl`, `cache.rs`, `text_render.rs`). `RowRenderer`
+   keeps each `RowArea`'s prepared glyph instances on the GPU, so a row that did not change runs no
+   `prepare_glyph`. A row is made as `TextRenderer` makes a text area at scale 1, but with no bounds
+   clipping and no run culling; it holds its glyph keys (patch 4) while kept. It is reused under
+   `(serial, left, default_color)` plus `top`, or at any `top` when every glyph's y term is whole,
+   both tops are at least 0 and each term's truncation moves by the same `dy`. Rows not drawn in a
+   frame are dropped and release their keys; a new atlas generation drops every row, and a
+   `prepare` that grows the atlas runs again. Instances live in power-of-two slots of one vertex
+   buffer; a row table (a uniform buffer with dynamic offsets) gives each draw its `dy` and clip
+   rectangle, and `vs_row` clips in the same integer steps as `prepare_glyph`, so the pixels match
+   `TextRenderer` byte for byte. No storage buffers and no `first_instance` (GLES 3.0). `cache.rs`
+   holds the row pipeline; `text_render.rs` shares `prepare_glyph`, `text_glyph_image` and the
+   bounds clamp (`GlyphBounds::clamped`). Tests: `row_render::tests`.
 
 To update glyphon, copy the new version here and apply these changes again.

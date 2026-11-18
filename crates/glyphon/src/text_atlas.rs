@@ -85,22 +85,20 @@ impl InnerAtlas {
                 return allocation;
             }
 
-            // Termurion patch 4: evict the oldest entry that holds atlas space and is neither in
-            // use nor held. A busy entry at the oldest end no longer stops the search; when none
-            // qualifies the caller grows the atlas.
+            // Termurion patch 4: evict the oldest entry that is neither in use nor held. A busy
+            // entry at the oldest end no longer stops the search; when none qualifies the caller
+            // grows the atlas. A zero-size entry holds no space, so popping it is free.
             let victim = self
                 .glyph_cache
                 .iter()
                 .rev()
-                .find(|(key, value)| {
-                    value.atlas_id.is_some()
-                        && !self.glyphs_in_use.contains(*key)
-                        && !self.held.contains_key(*key)
-                })
+                .find(|(key, _)| !self.glyphs_in_use.contains(*key) && !self.held.contains_key(*key))
                 .map(|(key, _)| *key)?;
 
             let value = self.glyph_cache.pop(&victim).unwrap();
-            self.packer.deallocate(value.atlas_id.unwrap());
+            if let Some(id) = value.atlas_id {
+                self.packer.deallocate(id);
+            }
         }
     }
 
@@ -293,7 +291,7 @@ pub enum ColorMode {
 
 /// An atlas containing a cache of rasterized glyphs that can be rendered.
 pub struct TextAtlas {
-    cache: Cache,
+    pub(crate) cache: Cache,
     pub(crate) bind_group: BindGroup,
     pub(crate) color_atlas: InnerAtlas,
     pub(crate) mask_atlas: InnerAtlas,
@@ -474,6 +472,8 @@ mod tests {
         font_system: FontSystem,
         swash: SwashCache,
         buffer: Buffer,
+        /// Custom glyphs rasterize as color (into the color atlas) when set.
+        color: bool,
     }
 
     impl Rig {
@@ -502,6 +502,7 @@ mod tests {
                 font_system,
                 swash: SwashCache::new(),
                 buffer,
+                color: false,
             }
         }
 
@@ -534,6 +535,10 @@ mod tests {
                 default_color: crate::Color::rgb(255, 255, 255),
                 custom_glyphs: glyphs,
             };
+            let (channels, content_type) = match self.color {
+                true => (4, ContentType::Color),
+                false => (1, ContentType::Mask),
+            };
             self.renderer.prepare_with_custom(
                 &self.device,
                 &self.queue,
@@ -544,8 +549,8 @@ mod tests {
                 &mut self.swash,
                 |req| {
                     Some(RasterizedCustomGlyph {
-                        data: vec![255; req.width as usize * req.height as usize],
-                        content_type: ContentType::Mask,
+                        data: vec![255; req.width as usize * req.height as usize * channels],
+                        content_type,
                     })
                 },
             )
@@ -558,7 +563,11 @@ mod tests {
         }
 
         fn at(&self, id: u16) -> Option<(u16, u16)> {
-            match self.atlas.mask_atlas.glyph_cache.peek(&key(id).0)?.gpu_cache {
+            let inner = match self.color {
+                true => &self.atlas.color_atlas,
+                false => &self.atlas.mask_atlas,
+            };
+            match inner.glyph_cache.peek(&key(id).0)?.gpu_cache {
                 GpuCacheStatus::InAtlas { x, y, .. } => Some((x, y)),
                 GpuCacheStatus::SkipRasterization => None,
             }
@@ -641,5 +650,66 @@ mod tests {
         rig.prepare_keep(&glyphs).unwrap();
         assert!(rig.atlas.generation() >= 1);
         assert!(rig.atlas.mask_size() > 256);
+    }
+
+    fn glyph(id: u16) -> CustomGlyph {
+        CustomGlyph {
+            id,
+            width: SIDE as f32,
+            height: SIDE as f32,
+            snap_to_physical_pixel: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn glyphs_in_use_are_never_evicted() {
+        let mut rig = Rig::new();
+        rig.prepare(&[0]).unwrap();
+        let before = rig.at(0).unwrap();
+        // Glyph 0 stays in use (never trimmed between frames) but is not held.
+        for id in 1..201 {
+            rig.atlas.trim();
+            rig.prepare_keep(&[glyph(0), glyph(id)]).unwrap();
+        }
+        assert_eq!(rig.atlas.held(), 0);
+        assert_eq!(rig.at(0), Some(before));
+        assert_eq!(rig.atlas.mask_size(), 256);
+    }
+
+    #[test]
+    fn held_color_glyphs_stay_in_the_color_atlas() {
+        let mut rig = Rig::new();
+        rig.color = true;
+        rig.prepare(&[0]).unwrap();
+        let before = rig.at(0).unwrap();
+        rig.atlas.hold(key(0));
+        rig.flood(1, 201);
+        assert_eq!(rig.at(0), Some(before));
+        assert!(rig.atlas.mask_atlas.glyph_cache.is_empty(), "color glyphs went to the mask atlas");
+        rig.atlas.release(key(0));
+        rig.flood(201, 401);
+        assert_eq!(rig.at(0), None, "a released color glyph can be evicted");
+    }
+
+    #[test]
+    fn zero_size_entries_are_evicted_for_free() {
+        let mut rig = Rig::new();
+        rig.color = true;
+        // A zero-size glyph (a space) is cached with no atlas space, here at the LRU's oldest end.
+        let zero = key(999).0;
+        rig.atlas.color_atlas.glyph_cache.put(
+            zero,
+            GlyphDetails {
+                width: 0,
+                height: 0,
+                gpu_cache: GpuCacheStatus::SkipRasterization,
+                atlas_id: None,
+                top: 0,
+                left: 0,
+            },
+        );
+        rig.flood(1, 201);
+        assert!(!rig.atlas.color_atlas.glyph_cache.contains(&zero), "the zero-size entry stayed");
     }
 }

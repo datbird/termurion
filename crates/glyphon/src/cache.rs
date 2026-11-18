@@ -17,6 +17,9 @@ use wgpu::{
     VertexFormat, VertexState,
 };
 
+/// Termurion patch 6: the size of `RowUniform` in `row_shader.wgsl`.
+pub(crate) const ROW_UNIFORM_SIZE: u64 = 32;
+
 /// A cache to share common resources (e.g., pipelines, layouts, shaders) between multiple text
 /// renderers.
 #[derive(Debug, Clone)]
@@ -40,6 +43,11 @@ struct Inner {
     uniforms_layout: BindGroupLayout,
     pipeline_layout: PipelineLayout,
     cache: InnerCache,
+    /// Termurion patch 6: `RowRenderer`'s shader, row table layout and pipelines.
+    row_shader: ShaderModule,
+    rows_layout: BindGroupLayout,
+    row_pipeline_layout: PipelineLayout,
+    row_cache: Mutex<Vec<(TextureFormat, MultisampleState, RenderPipeline)>>,
 }
 
 impl Cache {
@@ -148,6 +156,35 @@ impl Cache {
             ..Default::default()
         });
 
+        // Termurion patch 6: the row pipeline adds group 2, one row entry by dynamic offset.
+        let row_shader = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("glyphon row shader"),
+            source: ShaderSource::Wgsl(Cow::Borrowed(include_str!("row_shader.wgsl"))),
+        });
+
+        let rows_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::VERTEX,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: NonZeroU64::new(ROW_UNIFORM_SIZE),
+                },
+                count: None,
+            }],
+            label: Some("glyphon rows bind group layout"),
+        });
+
+        let row_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            bind_group_layouts: &[
+                Some(&atlas_layout),
+                Some(&uniforms_layout),
+                Some(&rows_layout),
+            ],
+            ..Default::default()
+        });
+
         Self(Arc::new(Inner {
             sampler,
             shader,
@@ -156,6 +193,10 @@ impl Cache {
             atlas_layout,
             pipeline_layout,
             cache: Mutex::new(Vec::new()),
+            row_shader,
+            rows_layout,
+            row_pipeline_layout,
+            row_cache: Mutex::new(Vec::new()),
         }))
     }
 
@@ -194,6 +235,77 @@ impl Cache {
             }],
             label: Some("glyphon uniforms bind group"),
         })
+    }
+
+    /// Termurion patch 6: binds one `ROW_UNIFORM_SIZE` window of the row table.
+    pub(crate) fn create_rows_bind_group(&self, device: &Device, buffer: &Buffer) -> BindGroup {
+        device.create_bind_group(&BindGroupDescriptor {
+            layout: &self.0.rows_layout,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer,
+                    offset: 0,
+                    size: NonZeroU64::new(ROW_UNIFORM_SIZE),
+                }),
+            }],
+            label: Some("glyphon rows bind group"),
+        })
+    }
+
+    /// Termurion patch 6: the pipeline `RowRenderer` draws with (no depth stencil).
+    pub(crate) fn get_or_create_row_pipeline(
+        &self,
+        device: &Device,
+        format: TextureFormat,
+        multisample: MultisampleState,
+    ) -> RenderPipeline {
+        let Inner {
+            row_cache,
+            row_pipeline_layout,
+            row_shader,
+            vertex_buffers,
+            ..
+        } = self.0.deref();
+
+        let mut cache = row_cache.lock().expect("Write row pipeline cache");
+        if let Some((_, _, p)) = cache
+            .iter()
+            .find(|(fmt, ms, _)| fmt == &format && ms == &multisample)
+        {
+            return p.clone();
+        }
+
+        let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: Some("glyphon row pipeline"),
+            layout: Some(row_pipeline_layout),
+            vertex: VertexState {
+                module: row_shader,
+                entry_point: Some("vs_row"),
+                buffers: vertex_buffers,
+                compilation_options: PipelineCompilationOptions::default(),
+            },
+            fragment: Some(FragmentState {
+                module: row_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(ColorTargetState {
+                    format,
+                    blend: Some(BlendState::ALPHA_BLENDING),
+                    write_mask: ColorWrites::default(),
+                })],
+                compilation_options: PipelineCompilationOptions::default(),
+            }),
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleStrip,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample,
+            cache: None,
+            multiview_mask: None,
+        });
+        cache.push((format, multisample, pipeline.clone()));
+        pipeline
     }
 
     pub(crate) fn get_or_create_pipeline(
