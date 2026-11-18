@@ -46,6 +46,15 @@ pub struct Globals {
     /// "Custom Color Presets" as its write point read it (`color_presets::bound_custom`), shared
     /// by readers; replaced, never changed, so a reader can tell a new write by the pointer.
     custom_presets: std::sync::Arc<Vec<(String, crate::color_presets::Preset)>>,
+    /// Moves on every write, so a reader that resolved settings can tell they are stale. Drawn
+    /// from one counter, so a Globals built later never repeats an earlier one's number.
+    generation: u64,
+}
+
+/// The next generation number, unique across every Globals.
+fn next_generation() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// How a value is bounded at the one write point (B4): what a key may hold whatever wrote it
@@ -152,7 +161,7 @@ fn default_of(key: &str) -> Option<Value> {
 impl Globals {
     /// All defaults, saved at `path`.
     pub fn empty(path: &Path) -> Globals {
-        Globals { values: BTreeMap::new(), path: path.to_path_buf(), custom_presets: Default::default() }
+        Globals { values: BTreeMap::new(), path: path.to_path_buf(), custom_presets: Default::default(), generation: next_generation() }
     }
 
     pub fn load(path: &Path) -> Result<Globals, String> {
@@ -162,7 +171,7 @@ impl Globals {
             Err(e) => return Err(format!("{}: {e}", path.display())),
         };
         let file: FileFormat = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-        let mut g = Globals { values: file.settings, path: path.to_path_buf(), custom_presets: Default::default() };
+        let mut g = Globals { values: file.settings, path: path.to_path_buf(), custom_presets: Default::default(), generation: next_generation() };
         g.bound_values();
         Ok(g)
     }
@@ -170,6 +179,7 @@ impl Globals {
     /// Applies the write-point bounds to values written in bulk (the file at load, a remote-prefs
     /// snapshot), as `set` does for one value.
     pub fn bound_values(&mut self) {
+        self.generation = next_generation();
         self.migrate_renamed();
         // The Win shortcut key is retired (FIXES 13): a saved Win (1) is the default, Ctrl+Shift.
         if self.values.get(crate::shortcut_key::KEY).and_then(|v| v.as_integer()) == Some(1) {
@@ -232,6 +242,11 @@ impl Globals {
         self.values.get(key)
     }
 
+    /// Changes whenever a value is written; equal numbers mean the same settings.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// The stored value, else iTerm2's default.
     pub fn get(&self, key: &str) -> Option<Value> {
         self.values.get(key).cloned().or_else(|| default_of(key))
@@ -240,6 +255,7 @@ impl Globals {
     /// Stores a value. A value equal to the default is removed, so the file keeps only changes,
     /// except for a key whose having been set at all is read (`KEPT_WHEN_DEFAULT`).
     pub fn set(&mut self, key: &str, value: Value) {
+        self.generation = next_generation();
         // Custom color presets are bounded and sanitized here, whatever wrote them (B3).
         let value = if key == crate::color_presets::CUSTOM_KEY {
             let (value, list) = crate::color_presets::bound_custom(&value);
@@ -289,6 +305,7 @@ impl Globals {
 
     /// Removes a stored value, so the file drops the key (an optional bool's Unspecified).
     pub fn unset(&mut self, key: &str) {
+        self.generation = next_generation();
         self.values.remove(key);
         if key == crate::color_presets::CUSTOM_KEY {
             self.custom_presets = Default::default();
@@ -328,6 +345,21 @@ mod tests {
     /// 13y2 Task 9b: a settings.toml written before the Advanced rename sweep holds lower-case keys.
     /// Each loads into its new name, the capitalized one wins when both exist, and the old entry is
     /// gone after the next save; a key not renamed is untouched.
+    #[test]
+    fn generation_moves_on_every_write() {
+        let mut g = Globals::empty(Path::new("never-written.toml"));
+        let a = g.generation();
+        let _ = g.get("MaximumFrameRate");
+        let _ = g.bool("HideTab");
+        assert_eq!(g.generation(), a, "a read leaves it alone");
+        g.set("MaximumFrameRate", Value::Integer(30));
+        let b = g.generation();
+        assert_ne!(a, b);
+        g.unset("MaximumFrameRate");
+        assert_ne!(b, g.generation());
+        assert_ne!(Globals::empty(Path::new("never-written.toml")).generation(), g.generation(), "a new Globals never repeats");
+    }
+
     #[test]
     fn renamed_keys_migrate() {
         let (_td, path) = scratch("renamed");

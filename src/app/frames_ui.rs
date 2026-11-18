@@ -35,9 +35,9 @@ pub(super) fn split_tabs(tabs: Vec<Vec<PaneId>>, active: usize) -> (Vec<PaneId>,
 }
 
 impl App {
-    /// The cadence settings, read from the globals each time (a few lookups).
+    /// The cadence settings, resolved with the other frame settings.
     pub(super) fn cadence_prefs(&self) -> Prefs {
-        Prefs::from_globals(&self.globals)
+        self.fs().cadence
     }
 
     /// Low Power Mode: Windows battery saver, sampled when asked (at most once a second; no

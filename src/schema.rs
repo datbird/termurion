@@ -142,8 +142,18 @@ pub fn global() -> &'static [Setting] {
     })
 }
 
+/// A hash lookup: the frame loop reads settings many times a frame.
 pub fn find_global(key: &str) -> Option<&'static Setting> {
-    global().iter().find(|s| s.key == key)
+    static INDEX: OnceLock<rustc_hash::FxHashMap<&'static str, usize>> = OnceLock::new();
+    let index = INDEX.get_or_init(|| {
+        let mut m = rustc_hash::FxHashMap::default();
+        for (i, s) in global().iter().enumerate() {
+            // The first of a repeated key wins, as the old scan did.
+            m.entry(s.key.as_str()).or_insert(i);
+        }
+        m
+    });
+    index.get(key).map(|&i| &global()[i])
 }
 
 /// True when a setting's default has the shape its kind needs.
@@ -167,6 +177,15 @@ mod tests {
     use super::*;
 
     /// Invariant 6: no raw non-ASCII ellipsis in the schema (labels use escapes).
+    #[test]
+    fn find_global_finds_every_key_and_no_other() {
+        for s in global() {
+            let first = global().iter().find(|t| t.key == s.key).unwrap();
+            assert!(std::ptr::eq(find_global(&s.key).unwrap(), first), "{}", s.key);
+        }
+        assert!(find_global("NoSuchKey").is_none());
+    }
+
     #[test]
     fn global_schema_has_no_raw_ellipsis() {
         assert!(!include_str!("../schema/global.toml").contains('\u{2026}'));

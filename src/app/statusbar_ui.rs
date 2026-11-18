@@ -307,7 +307,7 @@ impl App {
 
     /// `statusBarHeight` in points (default 21).
     pub(super) fn status_bar_pt(&self) -> f32 {
-        self.globals.get("StatusBarHeight").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(21.0).max(1.0) as f32
+        self.fs().status_bar_pt
     }
 
     /// A bar's height in pixels: `statusBarHeight` points (21) at the window's scale.
@@ -316,13 +316,13 @@ impl App {
     }
 
     pub(super) fn status_bar_position(&self) -> Position {
-        Position::from_code(self.globals.int("StatusBarPosition"))
+        self.fs().status_bar_position
     }
 
     /// Bars per pane: "Separate status bars per pane", except in a tmux tab, whose bar
     /// is always the window's (`PTYTab.m:600-608`).
     pub(super) fn per_pane_bars(&self, tab: &Tab) -> bool {
-        self.globals.bool("SeparateStatusBarsPerPane") && !self.panes.get(&tab.focused).is_some_and(|p| p.tmux_io().is_some())
+        self.fs().separate_status_bars && !self.panes.get(&tab.focused).is_some_and(|p| p.tmux_io().is_some())
     }
 
     /// The session whose bar the window shows across the tab: the current session, when

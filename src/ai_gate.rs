@@ -89,7 +89,7 @@ pub fn grant(g: &mut Globals, host: &str) {
 
 /// Settings' "Forget Allowed Hosts": every host asks again.
 pub fn forget_all(g: &mut Globals) {
-    g.values.remove(CONSENT);
+    g.unset(CONSENT);
 }
 
 /// What an alert's answer does. Later plans (12c to 12f) add variants for their own alerts and

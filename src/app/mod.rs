@@ -65,6 +65,7 @@ const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 mod actions;
 mod fx_ui;
 mod scene_cache;
+mod frame_settings;
 mod gpu_capture;
 mod paste_ui;
 mod edit_session_ui;
@@ -524,6 +525,8 @@ pub struct App {
     /// Global bindings to Do Not Remap Modifiers, for the hook.
     exempt_map: Arc<std::sync::RwLock<toml::Table>>,
     globals: Globals,
+    /// The frame loop's resolved settings (`fs`).
+    frame_settings: std::cell::RefCell<frame_settings::FrameSettings>,
     /// The workgroups (13y1): the definitions, their latches and where each came from. Read by the
     /// editor, the menu and the entry code of the later tasks.
     workgroup_model: crate::workgroup::Model,
@@ -2395,6 +2398,7 @@ pub fn run() {
         remap_tags: Arc::new(std::sync::RwLock::new(crate::remap::Tags::from_globals(&globals))),
         route_snapshot: Arc::new(std::sync::RwLock::new(keyroute::Snapshot::default())),
         exempt_map: Arc::new(std::sync::RwLock::new(toml::Table::new())),
+        frame_settings: frame_settings::cell(&globals),
         globals,
         workgroup_model,
         workgroups: Default::default(),
@@ -3159,7 +3163,7 @@ impl App {
 
     /// The edge the tab bar sits on (`TabViewType`).
     pub(super) fn tab_position(&self) -> TabPosition {
-        tab_position::from_value(self.globals.int("TabViewType"))
+        self.fs().tab_position
     }
 
     /// The tab bar shows (`tab_position::bar_visible`): while it flashes; in full screen only
@@ -3268,8 +3272,9 @@ impl App {
     /// Whether a window's tab bar shows, given its full-screen state, flash and tab count (this
     /// window or a parked one).
     fn window_bar_visible(&self, full_screen: bool, flashing: bool, tabs: usize) -> bool {
-        let always = tab_position::always_visible(self.globals.bool("HideTab"));
-        tab_position::bar_visible(full_screen, self.globals.bool("ShowFullScreenTabBar"), flashing, always, tabs)
+        let fs = self.fs();
+        let always = tab_position::always_visible(fs.hide_tab);
+        tab_position::bar_visible(full_screen, fs.show_full_screen_tab_bar, flashing, always, tabs)
     }
 
     /// The window is full screen (Toggle Full Screen: borderless).
@@ -3948,7 +3953,7 @@ impl App {
     fn division_visible(&self) -> bool {
         let decorated = self.gpu.as_ref().is_some_and(|g| g.window.is_decorated());
         let top_bar = self.tab_bar_visible() && self.tab_position() == TabPosition::Top;
-        crate::chrome::division_visible(self.globals.bool("EnableDivisionView"), self.tab_style(), decorated, self.compact_window(), self.full_screen(), top_bar)
+        crate::chrome::division_visible(self.fs().division_view, self.tab_style(), decorated, self.compact_window(), self.full_screen(), top_bar)
     }
 
     /// The window's room for tabs: beside the tab bar, above any banner, left of the toolbelt.
@@ -4011,7 +4016,10 @@ impl App {
     /// theme draws (`tab_theme::font_pt`) unless a custom size is on. The one place that builds
     /// them, so layout, hits and drags agree.
     pub(super) fn tab_settings(&self) -> tab_layout::Settings {
-        let mut s = tab_layout::Settings::from_globals(&self.globals).with_theme_font(&self.globals, crate::tab_theme::font_pt(self.resolved_style()));
+        let mut s = self.fs().tab_layout.clone();
+        if !self.fs().custom_tab_font {
+            s.font = crate::tab_theme::font_pt(self.resolved_style());
+        }
         s.height = self.theme_bar_height(self.compact_window(), self.tab_position(), s.height);
         s
     }
@@ -4029,7 +4037,7 @@ impl App {
         if !self.compact_window() {
             return None;
         }
-        let regular = tab_layout::Settings::from_globals(&self.globals).height;
+        let regular = self.fs().tab_layout.height;
         Some((self.theme_bar_height(true, TabPosition::Top, regular) * self.scale()).round())
     }
 
@@ -4139,8 +4147,7 @@ impl App {
 
     /// The Theme setting (`TabStyleWithAutomaticOption`), Automatic when unset.
     pub(super) fn tab_style(&self) -> crate::tab_theme::TabStyle {
-        use crate::tab_theme::{KEY, TabStyle, from_value};
-        self.globals.get(KEY).and_then(|v| v.as_integer()).map_or(TabStyle::Automatic, from_value)
+        self.fs().tab_style
     }
 
     /// The fixed style the current window draws (`crate::tab_theme::resolved`).
@@ -7382,7 +7389,7 @@ impl App {
         // Window numbers show from 1 in the saved logs (P20).
         let window_n = self.window_number() + 1;
         let focused_window = self.focused;
-        let fx_pacing = crate::render_fx::Pacing::from_setting(self.globals.int("EffectsAnimation"));
+        let fx_pacing = self.fs().effects_pacing;
         // Render plugins: the focused pane's Enter and done signals (done fires on quiet here).
         let signals_on = self.gpu.as_ref().and_then(|g| g.fx.as_ref()).is_some_and(|f| f.signals);
         let fx_signals = self.tabs.get(self.active).map(|t| t.focused).and_then(|id| self.panes.get_mut(&id)).filter(|_| signals_on).map(|p| {
@@ -8194,9 +8201,10 @@ impl ApplicationHandler<UserEvent> for App {
         self.sync_host_policy();
         // The prompt state machine follows View > Auto Composer before it reads output (the
         // Task 3 contract: every pane, new ones included).
-        let auto_composer = self.globals.bool("AutoComposer");
-        let smart_logging = self.globals.bool("SmartLoggingWithAutoComposer");
-        let always_line_marks = self.globals.bool("AlwaysUseLineStyleMarks");
+        let (auto_composer, smart_logging, always_line_marks) = {
+            let fs = self.fs();
+            (fs.auto_composer, fs.smart_logging, fs.always_line_marks)
+        };
         for (id, p) in self.panes.iter_mut() {
             p.own_mut().prompt_state.enabled = auto_composer;
             p.log_compact = (smart_logging, auto_composer);
