@@ -13,6 +13,8 @@ struct Kept<F> {
     frame: F,
     built: Instant,
     size: (u32, u32),
+    /// The cache's epoch when it was drawn (`invalidate`).
+    epoch: u64,
 }
 
 pub(super) struct SceneCache<F> {
@@ -21,6 +23,12 @@ pub(super) struct SceneCache<F> {
     changed: Cell<bool>,
     /// The animation asked for a frame since the last take.
     fx_asked: bool,
+    /// Counts what makes the screen differ from the kept frame without the frame differing:
+    /// a surface configure, a renderer setting, an effect or menu drawn, a window shown. A
+    /// frame is handed back for comparing only while the epoch it was drawn in is current.
+    epoch: Cell<u64>,
+    /// The last renderer setting epoch seen (`sync_look`).
+    look: Cell<u64>,
 }
 
 /// What `take` decides for a frame.
@@ -34,7 +42,7 @@ pub(super) enum Take<F> {
 
 impl<F> Default for SceneCache<F> {
     fn default() -> Self {
-        SceneCache { kept: None, changed: Cell::new(false), fx_asked: false }
+        SceneCache { kept: None, changed: Cell::new(false), fx_asked: false, epoch: Cell::new(0), look: Cell::new(0) }
     }
 }
 
@@ -44,6 +52,19 @@ impl<F> SceneCache<F> {
         self.changed.set(true);
     }
 
+    /// The screen no longer shows exactly what the kept frame says (or may not): the next built
+    /// frame draws, equal or not.
+    pub(super) fn invalidate(&self) {
+        self.epoch.set(self.epoch.get() + 1);
+    }
+
+    /// The renderer's setting epoch (`Renderer::look_epoch`): a change invalidates.
+    pub(super) fn sync_look(&self, look: u64) {
+        if self.look.replace(look) != look {
+            self.invalidate();
+        }
+    }
+
     /// The animation asked for a frame.
     pub(super) fn fx_asked(&mut self) {
         self.fx_asked = true;
@@ -51,7 +72,8 @@ impl<F> SceneCache<F> {
 
     /// `Reuse` (the kept frame and when it was built) when only the animation asked for this
     /// frame, the window has the same size and the frame is younger than `MAX_AGE`. Else `Build`,
-    /// carrying the kept frame only when an app request asked for this one at the same size: the
+    /// carrying the kept frame only when an app request asked for this one at the same size and
+    /// nothing was invalidated since it was drawn: the
     /// caller may find the new frame equal to it. Either way the kept frame and both requests are
     /// used up.
     pub(super) fn take(&mut self, size: (u32, u32), now: Instant) -> Take<F> {
@@ -65,12 +87,12 @@ impl<F> SceneCache<F> {
             return Take::Reuse(kept.frame, kept.built);
         }
         // A redraw nobody asked for (the system's) may show what the screen lost: it never skips.
-        Take::Build { last: (changed && kept.size == size).then_some(kept.frame) }
+        Take::Build { last: (changed && kept.size == size && kept.epoch == self.epoch.get()).then_some(kept.frame) }
     }
 
     /// Keeps the frame just drawn (`built` is when its scene was built, not when it was drawn).
     pub(super) fn keep(&mut self, frame: F, built: Instant, size: (u32, u32)) {
-        self.kept = Some(Kept { frame, built, size });
+        self.kept = Some(Kept { frame, built, size, epoch: self.epoch.get() });
     }
 }
 
@@ -154,6 +176,50 @@ mod tests {
         assert_eq!(c.take((800, 600), t0), Take::Reuse(8, t0));
         // Taken: nothing is kept until the drawn frame is kept again.
         c.fx_asked();
+        assert_eq!(c.take((800, 600), t0), Take::Build { last: None });
+    }
+
+    #[test]
+    fn a_reconfigure_at_the_same_size_hands_back_nothing() {
+        let t0 = Instant::now();
+        let mut c = kept(t0);
+        c.invalidate();
+        c.changed();
+        assert_eq!(c.take((800, 600), t0), Take::Build { last: None });
+    }
+
+    #[test]
+    fn a_renderer_setting_change_hands_back_nothing() {
+        let t0 = Instant::now();
+        let mut c = kept(t0);
+        c.sync_look(0);
+        c.changed();
+        assert_eq!(c.take((800, 600), t0), Take::Build { last: Some(7) }, "same settings");
+        c.keep(7, t0, (800, 600));
+        c.sync_look(1);
+        c.changed();
+        assert_eq!(c.take((800, 600), t0), Take::Build { last: None }, "a setting changed");
+    }
+
+    #[test]
+    fn a_frame_drawn_after_an_invalidate_is_comparable_again() {
+        let t0 = Instant::now();
+        let mut c = kept(t0);
+        c.invalidate();
+        c.keep(9, t0, (800, 600));
+        c.changed();
+        assert_eq!(c.take((800, 600), t0), Take::Build { last: Some(9) });
+    }
+
+    #[test]
+    fn a_failed_draw_keeps_nothing() {
+        // The caller keeps only a drawn frame: after a failure the next take has nothing.
+        let t0 = Instant::now();
+        let mut c = kept(t0);
+        c.changed();
+        let _ = c.take((800, 600), t0);
+        c.invalidate();
+        c.changed();
         assert_eq!(c.take((800, 600), t0), Take::Build { last: None });
     }
 

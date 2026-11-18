@@ -560,6 +560,8 @@ pub struct Renderer {
     badge_family: String,
     /// Whether the badge draws bold (`BadgeFontIsBold`).
     badge_bold: bool,
+    /// Counts every setting change that alters how the same frame draws (`look_epoch`).
+    look: u64,
     /// The toolbelt's list font: `toolbeltFont` when installed, else Consolas.
     toolbelt_family: String,
     /// The toolbelt font's size in points (`toolbeltFontSize`, 0 meaning 11).
@@ -656,6 +658,7 @@ impl Renderer {
             prose_family: String::new(),
             badge_family: "Arial".into(),
             badge_bold: true,
+            look: 0,
             toolbelt_family: "Consolas".into(),
             toolbelt_pt: 11.0,
             widths: std::collections::HashMap::new(),
@@ -721,6 +724,7 @@ impl Renderer {
     /// The width is not rounded. Glyphs advance by the exact width, so a rounded cell
     /// would drift away from the text along a row (the cursor landed two cells short).
     pub fn set_font_px(&mut self, px: f32) {
+        self.look += 1;
         self.font_px = px;
         let family = self.family.clone();
         let (cell, base, ul) = self.measure(&family, px, self.h_spacing, self.v_spacing);
@@ -792,6 +796,7 @@ impl Renderer {
         if list == self.generous_list {
             return;
         }
+        self.look += 1;
         self.generous_list = list.to_string();
         self.set_font_px(self.font_px);
         for i in 1..self.faces.len() {
@@ -809,6 +814,7 @@ impl Renderer {
         if difference == self.bold_difference {
             return;
         }
+        self.look += 1;
         self.bold_difference = difference;
         self.default_bold = self.bold_face(&self.family.clone(), 400);
         for i in 0..self.faces.len() {
@@ -904,6 +910,7 @@ impl Renderer {
     /// `EnableContextualAlternates` changed: faces keep their ids, rows shape again.
     pub fn set_contextual_alternates(&mut self, calt: bool) {
         if calt != self.calt {
+            self.look += 1;
             self.calt = calt;
             self.buffers.clear();
             self.advances.clear();
@@ -1132,11 +1139,16 @@ impl Renderer {
     /// The badge font: `name` when installed (Helvetica is not on Windows), else Arial.
     pub fn set_badge_family(&mut self, name: &str) {
         let resolved = self.resolve_family(name);
-        self.badge_family = if self.has_family(&resolved) { resolved } else { "Arial".into() };
+        let family = if self.has_family(&resolved) { resolved } else { "Arial".into() };
+        if family != self.badge_family {
+            self.look += 1;
+            self.badge_family = family;
+        }
     }
 
     /// `BadgeFontIsBold`: the badge draws and measures in the bold face, or the regular one.
     pub fn set_badge_bold(&mut self, bold: bool) {
+        self.look += u64::from(bold != self.badge_bold);
         self.badge_bold = bold;
     }
 
@@ -1144,14 +1156,20 @@ impl Renderer {
     /// else Consolas, Windows' monospaced system font.
     pub fn set_toolbelt_family(&mut self, name: &str) {
         let resolved = self.resolve_family(name);
-        self.toolbelt_family = if self.has_family(&resolved) { resolved } else { "Consolas".into() };
+        let family = if self.has_family(&resolved) { resolved } else { "Consolas".into() };
+        if family != self.toolbelt_family {
+            self.look += 1;
+            self.toolbelt_family = family;
+        }
         self.toolbelt_widths.clear();
     }
 
     /// The toolbelt font's size in points; 0 is the system default, 11 points
     /// (`smallSystemFontSize`).
     pub fn set_toolbelt_size(&mut self, points: f32) {
-        self.toolbelt_pt = if points > 0.0 { points } else { 11.0 };
+        let pt = if points > 0.0 { points } else { 11.0 };
+        self.look += u64::from(pt != self.toolbelt_pt);
+        self.toolbelt_pt = pt;
     }
 
     /// The toolbelt font's size in pixels at `scale`.
@@ -1296,6 +1314,7 @@ impl Renderer {
     /// The scale the faces are measured at; faces re-measure in place when it changes: the same
     /// ids, new cells (a key the app builds at the new scale finds its face again).
     pub fn set_scale(&mut self, scale: f32) {
+        self.look += u64::from(scale != self.scale);
         if scale == self.scale || self.scale <= 0.0 {
             self.scale = scale;
             return;
@@ -1360,8 +1379,15 @@ impl Renderer {
         Ok(())
     }
 
+    /// Changes whenever a setting changed that alters how an equal frame draws: a frame equal to
+    /// the last one may skip the draw only while this stays the same.
+    pub fn look_epoch(&self) -> u64 {
+        self.look
+    }
+
     /// Says whether the card can view a texture in a second format (`render_fx_gpu::view_formats_supported`).
     pub fn set_view_formats(&mut self, ok: bool) {
+        self.look += u64::from(ok != self.view_formats);
         self.view_formats = ok;
     }
 
@@ -2375,6 +2401,37 @@ mod tests {
         let ranges: Vec<_> = table.entries.iter().map(|e| e.range()).collect();
         assert_eq!(ranges, vec![0xE000..0xE010, 0xE010..0xE018], "clipped, and the ASCII entry gone");
         assert_eq!(r.face_of(face).table_fonts.len(), 2);
+    }
+
+    /// A frame equal to the last may skip the draw only while no setting that changes how it
+    /// draws has changed (`look_epoch`).
+    #[test]
+    fn a_look_setting_moves_the_look_epoch_and_a_repeat_does_not() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let e = r.look_epoch();
+        r.set_contextual_alternates(!r.calt);
+        assert!(r.look_epoch() > e, "contextual alternates");
+        let e = r.look_epoch();
+        let same = r.calt;
+        r.set_contextual_alternates(same);
+        r.set_scale(r.scale);
+        r.set_badge_bold(r.badge_bold);
+        assert_eq!(r.look_epoch(), e, "repeating a setting changes nothing");
+        r.set_bold_difference(r.bold_difference + 100);
+        assert!(r.look_epoch() > e, "bold difference");
+        let e = r.look_epoch();
+        r.set_generous_list("X");
+        assert!(r.look_epoch() > e, "generous list");
+        let e = r.look_epoch();
+        r.set_badge_bold(!r.badge_bold);
+        assert!(r.look_epoch() > e, "badge bold");
+        let e = r.look_epoch();
+        r.set_toolbelt_size(r.toolbelt_pt + 1.0);
+        assert!(r.look_epoch() > e, "toolbelt size");
+        let e = r.look_epoch();
+        r.set_scale(r.scale * 2.0);
+        assert!(r.look_epoch() > e, "scale");
     }
 
     /// The installed families that have a Normal face and no weight that `bold_weight` accepts

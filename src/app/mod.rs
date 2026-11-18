@@ -462,6 +462,13 @@ impl Gpu {
         self.window.request_redraw();
     }
 
+    /// Configures the surface again. Its contents are undefined after that, so the next frame
+    /// draws even when it equals the last.
+    fn reconfigure(&self) {
+        self.surface.configure(self.render_device(), &self.config);
+        self.scene.invalidate();
+    }
+
     /// Asks the window for a frame only the effects' animation wants: it may draw the kept one.
     fn redraw_fx(&mut self) {
         self.scene.fx_asked();
@@ -5299,7 +5306,7 @@ impl App {
         if now != (g.config.width, g.config.height) {
             g.config.width = now.0;
             g.config.height = now.1;
-            g.surface.configure(g.render_device(), &g.config);
+            g.reconfigure();
         }
         g.layout = pending_for(now, want, std::time::Instant::now());
     }
@@ -7325,6 +7332,9 @@ impl App {
         self.fx_sync();
         // A frame only the effects' animation wants draws the kept scene again (`scene_cache`).
         let size = self.gpu.as_ref().map_or((0, 0), |g| (g.config.width, g.config.height));
+        if let Some(g) = self.gpu.as_ref() {
+            g.scene.sync_look(g.renderer.look_epoch());
+        }
         let taken = self.gpu.as_mut().map_or(scene_cache::Take::Build { last: None }, |g| g.scene.take(size, now));
         let same_scene = matches!(taken, scene_cache::Take::Reuse(..));
         let (frame, built, last) = match taken {
@@ -7373,8 +7383,11 @@ impl App {
         let Some(gpu) = self.gpu.as_mut() else { return };
         // Only a changed title goes out: the compositor hears every set_title (H2).
         gpu.title_sent.send(&gpu.window, &crate::platform::window::os_title(&title));
-        if skip_gpu(same, gpu.fx.as_ref().is_some_and(|f| f.active()), bar_on || gpu.bar.busy(), alpha_changed, frame.fade) {
+        let skip = Skip { same, fx_active: gpu.fx.as_ref().is_some_and(|f| f.active()), bar_busy: bar_on || gpu.bar.busy(), alpha_changed, fade: frame.fade };
+        if skip_gpu(&skip) {
             gpu.scene.keep(frame, built, size);
+            // Counted as a frame that needed no drawable.
+            self.perf_frames.entry(window_n).or_default().frame(before.map(|b| now.saturating_duration_since(b).as_secs_f64() * 1000.0), None, false, &mut self.perf, window_n);
             return;
         }
         let wait_start = Instant::now();
@@ -7388,7 +7401,7 @@ impl App {
             wgpu::CurrentSurfaceTexture::Success(t) => t,
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Suboptimal(_) => {
-                gpu.surface.configure(gpu.render_device(), &gpu.config);
+                gpu.reconfigure();
                 gpu.redraw();
                 return;
             }
@@ -7402,7 +7415,7 @@ impl App {
                     Err(e) => self.banners.set("gpu", format!("Lost the window surface: {e}")),
                 }
                 if let Some(gpu) = self.gpu.as_mut() {
-                    gpu.surface.configure(gpu.render_device(), &gpu.config);
+                    gpu.reconfigure();
                     gpu.redraw();
                 }
                 return;
@@ -7443,7 +7456,11 @@ impl App {
                 gpu.redraw_fx();
             }
         }
-        gpu.scene.keep(frame, built, (w, h));
+        if drawn.is_ok() {
+            gpu.scene.keep(frame, built, (w, h));
+        } else {
+            gpu.scene.invalidate();
+        }
         if let Some(t) = draw_start {
             self.draw_timers.stats[2].add(t.elapsed().as_secs_f64(), 1);
         }
@@ -7462,6 +7479,8 @@ impl App {
             let frame = menu_bar_ui::BarFrame { device: &device, queue: &queue, target: &view, format: gpu.config.format, size: (w, h), scale: bar_scale, dark: bar_dark };
             let menu = self.menu_bar.as_ref().map(|b| &b.menu).filter(|_| bar_on);
             chosen = gpu.bar.draw(&frame, menu);
+            // Drawn over the frame, which does not say so: the next one draws whole.
+            gpu.scene.invalidate();
             if gpu.bar.animating() {
                 gpu.redraw();
             }
@@ -7526,10 +7545,22 @@ fn launch_events(proxy: Arc<Mutex<EventLoopProxy<UserEvent>>>) -> Box<dyn Fn(cra
     })
 }
 
+/// What decides whether a frame draws (`skip_gpu`).
+pub(super) struct Skip {
+    /// The new frame equals the one on screen.
+    pub same: bool,
+    pub fx_active: bool,
+    /// The menu bar or a menu draws over the frame.
+    pub bar_busy: bool,
+    /// The surface was reconfigured for this frame.
+    pub alpha_changed: bool,
+    pub fade: f32,
+}
+
 /// A new frame equal to the one on screen needs no draw, when nothing else draws over or
 /// around it: no effect chain, no menu bar, no surface change, no fade.
-pub(super) fn skip_gpu(same: bool, fx_active: bool, bar_busy: bool, alpha_changed: bool, fade: f32) -> bool {
-    same && !fx_active && !bar_busy && !alpha_changed && fade >= 1.0
+pub(super) fn skip_gpu(s: &Skip) -> bool {
+    s.same && !s.fx_active && !s.bar_busy && !s.alpha_changed && s.fade >= 1.0
 }
 
 /// Images and backgrounds compare by pixel value, which would cost more than the draw.
@@ -7821,7 +7852,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some((w, h)) = usable_size(s.width, s.height) {
                     g.config.width = w;
                     g.config.height = h;
-                    g.surface.configure(g.render_device(), &g.config);
+                    g.reconfigure();
                 }
             }
             self.relayout();
@@ -8416,7 +8447,7 @@ impl ApplicationHandler<UserEvent> for App {
                         if resized_is_stale(p, (w, h), std::time::Instant::now()) {
                             g.config.width = w;
                             g.config.height = h;
-                            g.surface.configure(g.render_device(), &g.config);
+                            g.reconfigure();
                             return;
                         }
                         g.layout = None;
@@ -8424,7 +8455,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(g) = self.gpu.as_mut() {
                     g.config.width = w;
                     g.config.height = h;
-                    g.surface.configure(g.render_device(), &g.config);
+                    g.reconfigure();
                 }
                 // Locked split pane widths hold through the resize (`TAB:6596-6640`).
                 self.apply_width_pins();
@@ -8445,6 +8476,13 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.apply_fonts();
                 self.relayout();
+            }
+            // Shown again: the compositor may have dropped what the window showed.
+            WindowEvent::Occluded(false) => {
+                if let Some(g) = self.gpu.as_ref() {
+                    g.scene.invalidate();
+                    g.redraw();
+                }
             }
             WindowEvent::Focused(f) => self.window_focus(id, f),
             WindowEvent::ModifiersChanged(m) => {
@@ -9129,12 +9167,54 @@ mod tests {
 
     #[test]
     fn skip_gpu_needs_every_condition() {
-        assert!(skip_gpu(true, false, false, false, 1.0));
-        assert!(!skip_gpu(false, false, false, false, 1.0));
-        assert!(!skip_gpu(true, true, false, false, 1.0));
-        assert!(!skip_gpu(true, false, true, false, 1.0));
-        assert!(!skip_gpu(true, false, false, true, 1.0));
-        assert!(!skip_gpu(true, false, false, false, 0.5));
+        let all = Skip { same: true, fx_active: false, bar_busy: false, alpha_changed: false, fade: 1.0 };
+        assert!(skip_gpu(&all));
+        assert!(!skip_gpu(&Skip { same: false, ..all }));
+        assert!(!skip_gpu(&Skip { fx_active: true, ..all }));
+        assert!(!skip_gpu(&Skip { bar_busy: true, ..all }));
+        assert!(!skip_gpu(&Skip { alpha_changed: true, ..all }));
+        assert!(!skip_gpu(&Skip { fade: 0.5, ..all }));
+    }
+
+    fn live_source() -> &'static str {
+        include_str!("mod.rs").split("#[cfg(test)]\nmod tests").next().unwrap()
+    }
+
+    /// A surface configure leaves its contents undefined, so each goes through
+    /// `Gpu::reconfigure`, which invalidates the kept frame. (A new Gpu starts with no kept frame.)
+    #[test]
+    fn every_surface_configure_invalidates_the_kept_frame() {
+        for (name, src) in [("mod.rs", live_source()), ("fx_ui.rs", include_str!("fx_ui.rs")), ("transparency_ui.rs", include_str!("transparency_ui.rs"))] {
+            for (i, line) in src.lines().enumerate() {
+                let raw = line.contains("gpu.surface.configure(") || line.contains("g.surface.configure(") || line.contains("self.surface.configure(");
+                let helper = name == "mod.rs" && line.contains("self.surface.configure(self.render_device()");
+                assert!(!raw || helper, "{name}:{}: configure through reconfigure()", i + 1);
+            }
+        }
+    }
+
+    #[test]
+    fn a_failed_draw_is_not_kept_as_on_screen() {
+        let src = live_source();
+        let keep = src.find("gpu.scene.keep(frame, built, (w, h))").expect("keep after the draw");
+        let head = &src[..keep];
+        assert!(head.trim_end().ends_with("if drawn.is_ok() {"), "keep only when the draw succeeded");
+        assert!(src[keep..].starts_with("gpu.scene.keep(frame, built, (w, h));\n        } else {\n            gpu.scene.invalidate();"), "a failed draw invalidates");
+    }
+
+    #[test]
+    fn effects_menus_and_shows_invalidate_the_kept_frame() {
+        let src = live_source();
+        let bar = src.find("chosen = gpu.bar.draw(").unwrap();
+        assert!(src[bar..bar + 300].contains("gpu.scene.invalidate()"), "a drawn menu bar invalidates");
+        assert!(src.contains("WindowEvent::Occluded(false) => {\n                if let Some(g) = self.gpu.as_ref() {\n                    g.scene.invalidate();"), "an expose invalidates");
+        assert!(src.contains("g.scene.sync_look(g.renderer.look_epoch())"), "renderer settings invalidate");
+        let fx = include_str!("fx_ui.rs");
+        let sync = &fx[fx.find("fn fx_sync").unwrap()..];
+        let after_check = sync.find("return;\n        }").unwrap();
+        assert!(sync[after_check..after_check + 200].contains("gpu.scene.invalidate()"), "an effect change invalidates, turning off included");
+        let hot = include_str!("hotkey_ui.rs");
+        assert_eq!(hot.matches("set_visible(").count(), hot.matches("scene.invalidate()").count(), "every hide or show invalidates");
     }
 
     /// Round 4 (I2 on X11): with no hotkey set, an OS without system-wide hotkeys raises no banner

@@ -100,6 +100,8 @@ impl App {
         if gpu.fx.as_ref().map(|f| (&f.ids, f.keep_alpha)) == Some((&wanted, keep_alpha)) || (gpu.fx.is_none() && wanted.0.is_empty()) {
             return;
         }
+        // The window shows the old effects' output, or none: the next frame draws whole.
+        gpu.scene.invalidate();
         if wanted.0.is_empty() {
             gpu.fx = None;
             self.banners.clear(BANNER);
@@ -133,7 +135,7 @@ impl App {
         let raw = render_fx_gpu::raw_format(format);
         if views && raw != format && !gpu.config.view_formats.contains(&raw) {
             gpu.config.view_formats.push(raw);
-            gpu.surface.configure(gpu.render_device(), &gpu.config);
+            gpu.reconfigure();
         }
         let chain = if shaders.is_empty() {
             None

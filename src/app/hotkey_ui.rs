@@ -188,6 +188,7 @@ impl App {
             if let (Some(hwnd), Some(g)) = (self.view(), &self.gpu) {
                 // The taskbar button comes back through `presence_tick`.
                 g.window.set_window_level(winit::window::WindowLevel::Normal);
+                g.scene.invalidate();
                 g.window.set_visible(true);
                 crate::platform::hotkey::cloak(hwnd, false);
             }
@@ -335,6 +336,7 @@ impl App {
         // macOS: it opens on the Space the person is on.
         crate::platform::hotkey::join_active_space(hwnd);
         let Some(g) = &self.gpu else { return };
+        g.scene.invalidate();
         g.window.set_visible(true);
         g.window.set_minimized(false);
         // A hotkey window shows on the desktop the person is on (iTerm2 opens it in the active
@@ -516,6 +518,7 @@ impl App {
             }
             // Cloaking does not take focus away: hiding the window makes Windows activate the
             // next one, so typing never goes into an invisible shell.
+            g.scene.invalidate();
             g.window.set_visible(false);
         }
         let previous = self.hotkey.as_mut().and_then(|h| {

@@ -165,7 +165,7 @@ impl App {
         let mode = transparency::pick_alpha_mode(&caps.alpha_modes, transparent);
         if mode != g.config.alpha_mode {
             g.config.alpha_mode = mode;
-            g.surface.configure(g.render_device(), &g.config);
+            g.reconfigure();
             return true;
         }
         false
