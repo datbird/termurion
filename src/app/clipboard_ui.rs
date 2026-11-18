@@ -23,7 +23,7 @@ impl App {
     /// Each pane's trust and clipboard claim follow the global settings.
     pub(super) fn sync_output_policy(&mut self) {
         let trusted = !self.globals.bool("DisablePotentiallyInsecureEscapeSequences");
-        let chosen = self.globals.values.contains_key("AllowClipboardAccess");
+        let chosen = self.globals.values().contains_key("AllowClipboardAccess");
         let wide = self.globals.bool("DefaultWideMode");
         let allowed = self.globals.bool("AllowClipboardAccess");
         let advertise = clipboard_osc::advertise_52(

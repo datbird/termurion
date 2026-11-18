@@ -618,12 +618,12 @@ mod tests {
     fn a_saved_win_value_becomes_ctrl_shift() {
         assert_eq!(ShortcutKey::from_value(1), ShortcutKey::CtrlShift);
         let mut g = crate::globals::Globals::empty(std::path::Path::new("unused.toml"));
-        g.values.insert(KEY.into(), toml::Value::Integer(1));
+        g.raw_insert(KEY, toml::Value::Integer(1));
         let on_mac = crate::platform::keys::CMD_IS_A_KEY;
         assert_eq!(ShortcutKey::from_globals(&g), if on_mac { ShortcutKey::Command } else { ShortcutKey::CtrlShift });
         g.bound_values();
         assert!(g.raw(KEY).is_none(), "the migrated value is the default again");
-        g.values.insert(KEY.into(), toml::Value::Integer(2));
+        g.raw_insert(KEY, toml::Value::Integer(2));
         g.bound_values();
         assert_eq!(ShortcutKey::from_globals(&g), if on_mac { ShortcutKey::Command } else { ShortcutKey::CtrlAlt }, "Ctrl+Alt stays");
     }
@@ -1196,7 +1196,7 @@ mod tests {
     #[test]
     fn the_mode_is_command_only_on_macos() {
         let mut g = crate::globals::Globals::empty(std::path::Path::new("unused.toml"));
-        g.values.insert(KEY.into(), toml::Value::Integer(2));
+        g.raw_insert(KEY, toml::Value::Integer(2));
         let want = if crate::platform::keys::CMD_IS_A_KEY { ShortcutKey::Command } else { ShortcutKey::CtrlAlt };
         assert_eq!(ShortcutKey::from_globals(&g), want);
         assert_eq!(ShortcutKey::from_value(3), ShortcutKey::CtrlShift);

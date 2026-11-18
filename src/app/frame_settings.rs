@@ -73,9 +73,19 @@ impl FrameSettings {
 impl super::App {
     /// The resolved settings, current with the globals.
     pub(super) fn fs(&self) -> Ref<'_, FrameSettings> {
-        self.frame_settings.borrow_mut().refresh(&self.globals);
-        self.frame_settings.borrow()
+        current(&self.frame_settings, &self.globals)
     }
+}
+
+/// The cell's settings, refreshed first when the globals moved. Never panics on nesting: while a
+/// `Ref` is held the refresh waits and the current values are served.
+pub(super) fn current<'a>(cell: &'a RefCell<FrameSettings>, g: &Globals) -> Ref<'a, FrameSettings> {
+    if cell.borrow().generation != g.generation()
+        && let Ok(mut fs) = cell.try_borrow_mut()
+    {
+        fs.refresh(g);
+    }
+    cell.borrow()
 }
 
 pub(super) fn cell(g: &Globals) -> RefCell<FrameSettings> {
@@ -86,6 +96,24 @@ pub(super) fn cell(g: &Globals) -> RefCell<FrameSettings> {
 mod tests {
     use super::*;
     use toml::Value;
+
+    #[test]
+    fn fs_nests_inside_a_held_fs() {
+        let mut g = Globals::empty(std::path::Path::new("never-written.toml"));
+        let cell = cell(&g);
+        let held = current(&cell, &g);
+        // A nested read (`division_visible` reads `tab_style` inside a held Ref) must not panic.
+        let inner = current(&cell, &g);
+        assert_eq!(inner.cadence.maximum_frame_rate, held.cadence.maximum_frame_rate);
+        drop((held, inner));
+        // A change made while a Ref is held shows on the next read after the Refs drop.
+        let held = current(&cell, &g);
+        g.set("MaximumFrameRate", Value::Integer(30));
+        let nested = current(&cell, &g);
+        assert_eq!(nested.cadence.maximum_frame_rate, 60.0, "stale while a Ref is held, no panic");
+        drop((held, nested));
+        assert_eq!(current(&cell, &g).cadence.maximum_frame_rate, 30.0);
+    }
 
     #[test]
     fn frame_settings_follow_a_change() {

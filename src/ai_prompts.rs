@@ -267,7 +267,7 @@ mod tests {
         g.set("AI Prompt", Value::String("x".into()));
         assert_eq!(g.string("AI Prompt"), "x");
         g.set("AI Prompt", Value::String(default_text("AI Prompt").unwrap().into()));
-        assert!(!g.values.contains_key("AI Prompt"), "a value equal to the default is not stored");
+        assert!(!g.values().contains_key("AI Prompt"), "a value equal to the default is not stored");
         assert_eq!(g.string("AI Prompt"), default_text("AI Prompt").unwrap());
     }
 

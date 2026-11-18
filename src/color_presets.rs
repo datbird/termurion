@@ -1052,7 +1052,7 @@ mod tests {
     }
 
     fn stored_len(g: &Globals) -> usize {
-        g.values.get(CUSTOM_KEY).and_then(Value::as_table).map_or(0, |t| t.len())
+        g.values().get(CUSTOM_KEY).and_then(Value::as_table).map_or(0, |t| t.len())
     }
 
     #[test]
@@ -1061,7 +1061,7 @@ mod tests {
         let mut g = globals();
         g.set(CUSTOM_KEY, big_custom_table());
         assert_eq!(stored_len(&g), MAX_CUSTOM);
-        let t = g.values[CUSTOM_KEY].as_table().unwrap();
+        let t = g.values()[CUSTOM_KEY].as_table().unwrap();
         assert!(t.keys().all(|n| name_ok(n)) && !t.contains_key("A nan") && !t.contains_key("not a table"));
         assert_eq!(custom(&g).len(), MAX_CUSTOM);
         // Globals::load: the settings file.
@@ -1077,7 +1077,7 @@ mod tests {
         assert_eq!(custom(&loaded).len(), MAX_CUSTOM);
         // A bulk write (the remote-prefs load) is bounded by `bound_values`.
         let mut bulk = globals();
-        bulk.values.insert(CUSTOM_KEY.into(), big_custom_table());
+        bulk.raw_insert(CUSTOM_KEY, big_custom_table());
         bulk.bound_values();
         assert_eq!(stored_len(&bulk), MAX_CUSTOM);
         assert_eq!(custom(&bulk).len(), MAX_CUSTOM);

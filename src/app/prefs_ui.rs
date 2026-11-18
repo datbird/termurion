@@ -182,7 +182,7 @@ fn start(g: &Globals, home: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>,
 /// when it has none, as Termurion always has a profile).
 pub(super) fn apply_snapshot(snap: &Snapshot, g: &mut Globals, store: &mut Store) {
     let before = (g.string(crate::workgroup::KEY), g.string(crate::workgroup::KEY_IMPORTED));
-    rp::apply(snap, &mut g.values);
+    g.edit_raw(|v| rp::apply(snap, v));
     // The snapshot's values are bounded as the one write point bounds them (custom presets).
     g.bound_values();
     // Its workgroups are marked Imported and it cannot carry or clear the marks (13y1 trust ruling).
@@ -276,7 +276,7 @@ impl App {
 
     /// The local settings as the folder would hold them (a plist's form when the file is iTerm2's).
     fn prefs_local(&self) -> Snapshot {
-        let snap = Snapshot::from_local(&self.globals.values, &self.store.saved_default_guid(), &self.store.file_profiles());
+        let snap = Snapshot::from_local(self.globals.values(), &self.store.saved_default_guid(), &self.store.file_profiles());
         if self.prefs_file().is_some_and(|f| rp::is_plist(&f)) { snap.plist_view() } else { snap }
     }
 
@@ -619,8 +619,8 @@ mod tests {
         let mut g = Globals::empty(&dir.join("settings.toml"));
         g.set(rp::LOAD_KEY, Value::Boolean(true));
         g.set(rp::FOLDER_KEY, Value::String(location.to_string()));
-        g.values.insert("TmuxTitlePrefix".into(), Value::String("local".into()));
-        g.values.insert("NoSyncX".into(), Value::Boolean(true));
+        g.raw_insert("TmuxTitlePrefix", Value::String("local".into()));
+        g.raw_insert("NoSyncX", Value::Boolean(true));
         let mut store = Store::fresh(&dir.join("profiles.toml"));
         store.profiles[0].set(crate::profile::NAME, Value::String("Local".into()));
         (g, store)
@@ -640,8 +640,8 @@ mod tests {
         let mut snap = remote();
         snap.settings.insert("disableTopRightIndicators".into(), Value::Boolean(true)); // old key on purpose
         apply_snapshot(&snap, &mut g, &mut store);
-        assert_eq!(g.values.get("DisableTopRightIndicators"), Some(&Value::Boolean(true)));
-        assert!(!g.values.contains_key("disableTopRightIndicators")); // old key on purpose
+        assert_eq!(g.values().get("DisableTopRightIndicators"), Some(&Value::Boolean(true)));
+        assert!(!g.values().contains_key("disableTopRightIndicators")); // old key on purpose
     }
 
     fn names(store: &Store) -> Vec<String> {
@@ -657,9 +657,9 @@ mod tests {
     }
 
     fn assert_applied(g: &Globals, store: &Store, location: &str) {
-        assert_eq!(g.values.get("FocusFollowsMouse"), Some(&Value::Boolean(true)));
-        assert!(!g.values.contains_key("TmuxTitlePrefix"), "a local syncable key goes");
-        assert_eq!(g.values.get("NoSyncX"), Some(&Value::Boolean(true)));
+        assert_eq!(g.values().get("FocusFollowsMouse"), Some(&Value::Boolean(true)));
+        assert!(!g.values().contains_key("TmuxTitlePrefix"), "a local syncable key goes");
+        assert_eq!(g.values().get("NoSyncX"), Some(&Value::Boolean(true)));
         assert!(g.bool(rp::LOAD_KEY));
         assert_eq!(g.string(rp::FOLDER_KEY), location);
         assert_eq!(names(store), ["Remote"]);
@@ -667,8 +667,8 @@ mod tests {
     }
 
     fn assert_untouched(g: &Globals, store: &Store) {
-        assert_eq!(g.values.get("TmuxTitlePrefix"), Some(&Value::String("local".into())));
-        assert!(!g.values.contains_key("FocusFollowsMouse"));
+        assert_eq!(g.values().get("TmuxTitlePrefix"), Some(&Value::String("local".into())));
+        assert!(!g.values().contains_key("FocusFollowsMouse"));
         assert_eq!(names(store), ["Local"]);
     }
 
@@ -691,18 +691,18 @@ mod tests {
         std::fs::write(folder.join(rp::PREFS_FILE), snap.to_toml()).unwrap();
         let t = folder.display().to_string();
         let (mut g, mut store) = local(&dir, &t);
-        g.values.insert(ai::PERMISSIONS[1].0.into(), Value::Integer(2));
+        g.raw_insert(ai::PERMISSIONS[1].0, Value::Integer(2));
         let (loaded, asks) = load_at_start(&mut g, &mut store, &never);
         assert!(asks.is_empty());
         assert_applied(&g, &store, &t);
         for key in [ai::ADMIN, ai::ENABLE_AI, ai::AI_COMPLETIONS] {
-            assert!(!g.values.contains_key(key), "{key} came from the folder");
+            assert!(!g.values().contains_key(key), "{key} came from the folder");
         }
         for (i, (key, _)) in ai::PERMISSIONS.iter().enumerate() {
             let want = (i == 1).then_some(Value::Integer(2));
-            assert_eq!(g.values.get(*key), want.as_ref(), "{key}");
+            assert_eq!(g.values().get(*key), want.as_ref(), "{key}");
         }
-        let now = Snapshot::from_local(&g.values, &store.default_guid, &store.profiles.iter().map(|p| p.values.clone()).collect::<Vec<_>>());
+        let now = Snapshot::from_local(g.values(), &store.default_guid, &store.profiles.iter().map(|p| p.values.clone()).collect::<Vec<_>>());
         assert!(!rp::differs(&loaded.unwrap(), &now), "a kept switch is no local change");
     }
 
@@ -884,7 +884,7 @@ mod tests {
         let (snap, asks) = load_at_start(&mut g, &mut store, &never);
         assert!(asks.is_empty(), "the plist is found");
         assert_eq!(names(&store), ["Mac"]);
-        assert_eq!(g.values.get("FocusFollowsMouse"), Some(&Value::Boolean(true)));
+        assert_eq!(g.values().get("FocusFollowsMouse"), Some(&Value::Boolean(true)));
         let snap = snap.expect("loaded");
         let mut changed = snap.clone();
         changed.profiles[0].insert("Name".into(), Value::String("Windows".into()));
@@ -1048,7 +1048,7 @@ mod tests {
         let profile = map(&[("Guid", Value::String("g1".into())), ("Name", Value::String("R".into()))]);
         let snap = Snapshot { settings: map(&[(crate::color_presets::CUSTOM_KEY, Value::Table(presets))]), default: "g1".into(), profiles: vec![profile] };
         apply_snapshot(&snap, &mut g, &mut store);
-        let stored = g.values[crate::color_presets::CUSTOM_KEY].as_table().unwrap();
+        let stored = g.values()[crate::color_presets::CUSTOM_KEY].as_table().unwrap();
         assert_eq!(stored.len(), crate::color_presets::MAX_CUSTOM);
         assert!(!stored.contains_key("A bad"));
         assert_eq!(crate::color_presets::custom(&g).len(), crate::color_presets::MAX_CUSTOM);

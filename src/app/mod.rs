@@ -3953,7 +3953,8 @@ impl App {
     fn division_visible(&self) -> bool {
         let decorated = self.gpu.as_ref().is_some_and(|g| g.window.is_decorated());
         let top_bar = self.tab_bar_visible() && self.tab_position() == TabPosition::Top;
-        crate::chrome::division_visible(self.fs().division_view, self.tab_style(), decorated, self.compact_window(), self.full_screen(), top_bar)
+        let division_view = self.fs().division_view;
+        crate::chrome::division_visible(division_view, self.tab_style(), decorated, self.compact_window(), self.full_screen(), top_bar)
     }
 
     /// The window's room for tabs: beside the tab bar, above any banner, left of the toolbelt.

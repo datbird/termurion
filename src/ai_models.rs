@@ -1372,9 +1372,9 @@ mod tests {
 
         let mut n = empty();
         n.set(ai::MODEL, Value::String("not-in-catalog".into()));
-        let before = n.values.clone();
+        let before = n.values().clone();
         model_did_change(&mut n, cat);
-        assert_eq!(n.values, before, "a model the catalog does not know writes nothing");
+        assert_eq!(*n.values(), before, "a model the catalog does not know writes nothing");
         n.set(ai::MODEL, Value::String("my-claude".into()));
         model_did_change(&mut n, cat);
         assert_eq!(n.int(ai::API), 7, "iTerm2 guesses the API from the name");
@@ -1402,9 +1402,9 @@ mod tests {
 
         // A dynamic entry has no single model name, so it never becomes the default (`G:2981`).
         let mut d = empty();
-        let before = d.values.clone();
+        let before = d.values().clone();
         select_manual(&mut d, named(&models, "d"));
-        assert_eq!(d.values, before);
+        assert_eq!(*d.values(), before);
     }
 
     #[test]
@@ -1420,9 +1420,9 @@ mod tests {
         assert_eq!(named(&models, "b").custom_headers, [("Z".to_string(), "2".to_string())]);
         assert_eq!(named(&models, "c").custom_headers, migrated);
         assert!(g.bool(MIGRATION_FLAG));
-        let after = g.values.clone();
+        let after = g.values().clone();
         assert!(!migrate_legacy_headers(&mut g));
-        assert_eq!(g.values, after);
+        assert_eq!(*g.values(), after);
 
         let mut off = globals_with(configs);
         off.set(ai::CUSTOM_HEADERS, value(r#"[{name="X-Key", value="1"}]"#));
@@ -1437,7 +1437,7 @@ mod tests {
         assert!(migrate_legacy_headers(&mut none));
         let mut expect: Vec<&str> = vec![ai::CUSTOM_HEADERS, ai::CUSTOM_HEADERS_ENABLED, MIGRATION_FLAG];
         expect.sort();
-        assert_eq!(none.values.keys().map(String::as_str).collect::<Vec<_>>(), expect, "only the flag is added");
+        assert_eq!(none.values().keys().map(String::as_str).collect::<Vec<_>>(), expect, "only the flag is added");
 
         // Imported settings run the migration again over the imported configurations.
         let mut imported = globals_with(configs);

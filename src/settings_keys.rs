@@ -3404,20 +3404,20 @@ mod tests {
         g.set("FocusFollowsMouse", Value::Boolean(true));
         assert!(!global_is_default(&g, ffm));
         g.set("FocusFollowsMouse", Value::Boolean(false));
-        assert!(!g.values.contains_key("FocusFollowsMouse"), "the file drops a default");
+        assert!(!g.values().contains_key("FocusFollowsMouse"), "the file drops a default");
         assert!(global_is_default(&g, ffm));
         // Numbers: within 0.001 of the default is default (`isNullablyEqualToObject:epsilon:0.001`).
         let height = schema::find_global("StatusBarHeight").unwrap();
-        g.values.insert("StatusBarHeight".into(), Value::Float(21.0005));
+        g.raw_insert("StatusBarHeight", Value::Float(21.0005));
         assert!(global_is_default(&g, height));
-        g.values.insert("StatusBarHeight".into(), Value::Integer(21));
+        g.raw_insert("StatusBarHeight", Value::Integer(21));
         assert!(global_is_default(&g, height));
-        g.values.insert("StatusBarHeight".into(), Value::Float(21.01));
+        g.raw_insert("StatusBarHeight", Value::Float(21.01));
         assert!(!global_is_default(&g, height));
         // An optional bool has no default: a stored No or Yes is not default, unset is.
         let prevent = schema::find_global("PreventEscapeSequenceFromChangingProfile").unwrap();
         assert!(global_is_default(&g, prevent));
-        g.values.insert(prevent.key.clone(), Value::Boolean(true));
+        g.raw_insert(&prevent.key, Value::Boolean(true));
         assert!(!global_is_default(&g, prevent));
         // A missing value equals a zero, empty or false one (`it_hasZeroValue`).
         assert!(nullably_equal(None, Some(&Value::Integer(0))));

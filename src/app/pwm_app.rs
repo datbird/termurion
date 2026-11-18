@@ -1381,9 +1381,9 @@ impl App {
         let kind = self.pwm_kind();
         if let Some(id) = adapter_identifier(kind) {
             let prefix = format!("AdapterSetting_{id}_");
-            let keys: Vec<String> = self.globals.values.keys().filter(|k| k.starts_with(&prefix) || **k == format!("PathToDatabase_{id}") || **k == format!("PathToExecutable_{id}")).cloned().collect();
+            let keys: Vec<String> = self.globals.values().keys().filter(|k| k.starts_with(&prefix) || **k == format!("PathToDatabase_{id}") || **k == format!("PathToExecutable_{id}")).cloned().collect();
             for k in keys {
-                self.globals.values.remove(&k);
+                self.globals.unset(&k);
             }
             self.save_globals();
             self.pwm.secret_settings.retain(|k, _| !k.starts_with(&prefix));
@@ -1414,7 +1414,7 @@ impl App {
             if f.persist_in_keychain {
                 self.pwm.secret_settings.insert(key, Secret::new(value));
             } else if value.is_empty() {
-                self.globals.values.remove(&key);
+                self.globals.unset(&key);
             } else {
                 self.globals.set(&key, toml::Value::String(value));
             }
@@ -1442,7 +1442,7 @@ impl App {
             adapter.db = get(format!("PathToDatabase_{id}"));
             adapter.exe = get(format!("PathToExecutable_{id}"));
             let prefix = format!("AdapterSetting_{id}_");
-            let plain = self.globals.values.iter().filter_map(|(k, v)| Some((k.strip_prefix(&prefix)?.to_string(), v.as_str()?.to_string())));
+            let plain = self.globals.values().iter().filter_map(|(k, v)| Some((k.strip_prefix(&prefix)?.to_string(), v.as_str()?.to_string())));
             let secret = self.pwm.secret_settings.iter().filter_map(|(k, v)| Some((k.strip_prefix(&prefix)?.to_string(), v.expose().to_string())));
             adapter.settings = plain.chain(secret).collect();
             adapter.settings.sort();
@@ -1866,7 +1866,7 @@ impl App {
         };
         let path = self.globals.string(key);
         if !path.is_empty() && (kind == Kind::OnePassword || !crate::localfs::is_local_file(std::path::Path::new(&path))) {
-            self.globals.values.remove(key);
+            self.globals.unset(key);
             self.save_globals();
         }
     }

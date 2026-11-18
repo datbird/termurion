@@ -60,7 +60,7 @@ fn normalized(host: &str) -> String {
 
 /// The allowed hosts as stored: string entries only.
 fn hosts(g: &Globals) -> Vec<String> {
-    match g.values.get(CONSENT) {
+    match g.values().get(CONSENT) {
         Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_str().map(normalized)).collect(),
         _ => Vec::new(),
     }
@@ -273,13 +273,13 @@ mod tests {
         let cat = bundled();
         let mut g = open();
         grant(&mut g, "API.OpenAI.com.");
-        assert_eq!(g.values.get(CONSENT), Some(&Value::Array(vec![Value::String("api.openai.com".into())])));
+        assert_eq!(g.values().get(CONSENT), Some(&Value::Array(vec![Value::String("api.openai.com".into())])));
         grant(&mut g, "api.openai.com");
-        assert_eq!(g.values.get(CONSENT), Some(&Value::Array(vec![Value::String("api.openai.com".into())])), "granting again keeps one entry");
+        assert_eq!(g.values().get(CONSENT), Some(&Value::Array(vec![Value::String("api.openai.com".into())])), "granting again keeps one entry");
         assert!(consented(&g, "api.openai.com"));
         assert!(!consented(&g, "api.anthropic.com"));
         forget_all(&mut g);
-        assert_eq!(g.values.get(CONSENT), None);
+        assert_eq!(g.values().get(CONSENT), None);
         assert!(!consented(&g, "api.openai.com"));
 
         grant(&mut g, "api.anthropic.com");

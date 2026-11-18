@@ -41,7 +41,7 @@ pub mod keymaps {
 }
 
 pub struct Globals {
-    pub values: BTreeMap<String, Value>,
+    values: BTreeMap<String, Value>,
     path: PathBuf,
     /// "Custom Color Presets" as its write point read it (`color_presets::bound_custom`), shared
     /// by readers; replaced, never changed, so a reader can tell a new write by the pointer.
@@ -247,6 +247,27 @@ impl Globals {
         self.generation
     }
 
+    /// Every stored value, for reading. Writes go through `set`, `unset`, `raw_insert` and
+    /// `edit_raw`, which move the generation.
+    pub(crate) fn values(&self) -> &BTreeMap<String, Value> {
+        &self.values
+    }
+
+    /// Changes the stored values in bulk, unbounded (the caller bounds them, as `bound_values`
+    /// does), and moves the generation.
+    pub(crate) fn edit_raw(&mut self, f: impl FnOnce(&mut BTreeMap<String, Value>)) {
+        self.generation = next_generation();
+        f(&mut self.values);
+    }
+
+    /// Stores a value as given, with no bound and no default check (tests set up odd files).
+    #[cfg(test)]
+    pub(crate) fn raw_insert(&mut self, key: &str, value: Value) {
+        self.edit_raw(|v| {
+            v.insert(key.to_string(), value);
+        });
+    }
+
     /// The stored value, else iTerm2's default.
     pub fn get(&self, key: &str) -> Option<Value> {
         self.values.get(key).cloned().or_else(|| default_of(key))
@@ -342,9 +363,6 @@ mod tests {
     use std::path::PathBuf;
     use toml::Value;
 
-    /// 13y2 Task 9b: a settings.toml written before the Advanced rename sweep holds lower-case keys.
-    /// Each loads into its new name, the capitalized one wins when both exist, and the old entry is
-    /// gone after the next save; a key not renamed is untouched.
     #[test]
     fn generation_moves_on_every_write() {
         let mut g = Globals::empty(Path::new("never-written.toml"));
@@ -356,10 +374,18 @@ mod tests {
         let b = g.generation();
         assert_ne!(a, b);
         g.unset("MaximumFrameRate");
-        assert_ne!(b, g.generation());
+        let c = g.generation();
+        assert_ne!(b, c);
+        g.edit_raw(|v| {
+            v.clear();
+        });
+        assert_ne!(c, g.generation(), "a bulk edit moves it too");
         assert_ne!(Globals::empty(Path::new("never-written.toml")).generation(), g.generation(), "a new Globals never repeats");
     }
 
+    /// 13y2 Task 9b: a settings.toml written before the Advanced rename sweep holds lower-case keys.
+    /// Each loads into its new name, the capitalized one wins when both exist, and the old entry is
+    /// gone after the next save; a key not renamed is untouched.
     #[test]
     fn renamed_keys_migrate() {
         let (_td, path) = scratch("renamed");

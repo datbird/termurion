@@ -176,7 +176,6 @@ pub fn default_fits(s: &Setting) -> bool {
 mod tests {
     use super::*;
 
-    /// Invariant 6: no raw non-ASCII ellipsis in the schema (labels use escapes).
     #[test]
     fn find_global_finds_every_key_and_no_other() {
         for s in global() {
@@ -186,6 +185,7 @@ mod tests {
         assert!(find_global("NoSuchKey").is_none());
     }
 
+    /// Invariant 6: no raw non-ASCII ellipsis in the schema (labels use escapes).
     #[test]
     fn global_schema_has_no_raw_ellipsis() {
         assert!(!include_str!("../schema/global.toml").contains('\u{2026}'));

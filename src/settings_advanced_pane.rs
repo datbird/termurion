@@ -176,7 +176,7 @@ pub fn page(ui: &mut egui::Ui, g: &mut Globals, st: &mut AdvancedState) -> bool 
     });
     let rows = all_rows();
     let keep = st.editing.as_ref().map(|(k, _)| k.clone());
-    let items = advanced_pane::filtered(rows, &st.query, st.only_non_default, &|k| g.values.get(k).cloned(), keep.as_deref());
+    let items = advanced_pane::filtered(rows, &st.query, st.only_non_default, &|k| g.values().get(k).cloned(), keep.as_deref());
     let label_width = (ui.available_width() * 0.65).max(200.0);
     let setting_row = |ui: &mut egui::Ui, label: &mut dyn FnMut(&mut egui::Ui), value: &mut dyn FnMut(&mut egui::Ui)| {
         ui.horizontal(|ui| {
@@ -299,11 +299,11 @@ mod tests {
         let key = "PreventEscapeSequenceFromChangingProfile";
         let mut g = globals();
         tristate_write(&mut g, key, 2);
-        assert_eq!(g.values.get(key), Some(&Value::Boolean(true)));
+        assert_eq!(g.values().get(key), Some(&Value::Boolean(true)));
         tristate_write(&mut g, key, 1);
-        assert_eq!(g.values.get(key), Some(&Value::Boolean(false)));
+        assert_eq!(g.values().get(key), Some(&Value::Boolean(false)));
         tristate_write(&mut g, key, 0);
-        assert!(!g.values.contains_key(key));
+        assert!(!g.values().contains_key(key));
         assert_eq!(g.optional_bool(key), None);
         assert_eq!(bool_write(0), Value::Boolean(false));
         assert_eq!(bool_write(1), Value::Boolean(true));
@@ -314,17 +314,17 @@ mod tests {
         let mut g = globals();
         let height = row("StatusBarHeight");
         text_write(&mut g, &height, "22.5");
-        assert_eq!(g.values.get("StatusBarHeight"), Some(&Value::Float(22.5)));
+        assert_eq!(g.values().get("StatusBarHeight"), Some(&Value::Float(22.5)));
         text_write(&mut g, &height, "21");
-        assert!(!g.values.contains_key("StatusBarHeight"));
+        assert!(!g.values().contains_key("StatusBarHeight"));
         text_write(&mut g, &row("MaximumBytesToProvideToPythonAPI"), "12abc");
-        assert_eq!(g.values.get("MaximumBytesToProvideToPythonAPI"), Some(&Value::Integer(12)));
+        assert_eq!(g.values().get("MaximumBytesToProvideToPythonAPI"), Some(&Value::Integer(12)));
         let prefix = row("TmuxTitlePrefix");
         text_write(&mut g, &prefix, "> ");
-        assert_eq!(g.values.get("TmuxTitlePrefix"), Some(&Value::String("> ".into())));
+        assert_eq!(g.values().get("TmuxTitlePrefix"), Some(&Value::String("> ".into())));
         let default = prefix.default.as_ref().and_then(Value::as_str).unwrap().to_string();
         text_write(&mut g, &prefix, &default);
-        assert!(!g.values.contains_key("TmuxTitlePrefix"));
+        assert!(!g.values().contains_key("TmuxTitlePrefix"));
     }
 
     /// The pinned heading starts at the rows' left edge, not the clip rectangle's.
@@ -362,10 +362,10 @@ mod tests {
         let key = "AnonymousTmuxWindowsOpenInCurrentWindow";
         let tmux = row(key);
         enum_write(&mut g, &tmux, 0);
-        assert_eq!(g.values.get(key), Some(&Value::Integer(0)));
+        assert_eq!(g.values().get(key), Some(&Value::Integer(0)));
         let advanced_pane::RowKind::Enum(choices) = &tmux.kind else { panic!("{key}") };
         let default = choices.iter().position(|(v, _)| Some(v) == tmux.default.as_ref()).unwrap();
         enum_write(&mut g, &tmux, default);
-        assert!(!g.values.contains_key(key));
+        assert!(!g.values().contains_key(key));
     }
 }

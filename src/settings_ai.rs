@@ -703,7 +703,7 @@ fn general(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
         ui.vertical(|ui| {
             ui.label(requests_text(g, catalog, &st.found));
             ui.weak(REQUESTS_NOTE);
-            let any = matches!(g.values.get(ai::CONSENT), Some(Value::Array(a)) if !a.is_empty());
+            let any = matches!(g.values().get(ai::CONSENT), Some(Value::Array(a)) if !a.is_empty());
             if ui.add_enabled(any, egui::Button::new(FORGET_HOSTS)).clicked() {
                 ai_gate::forget_all(g);
                 changed = true;
@@ -1815,17 +1815,17 @@ mod tests {
         let mut g = with_models(&[manual("llama3", LLAMA3_URL, 5)]);
         g.set(USE_RECOMMENDED, Value::Boolean(false));
         g.set(MODEL, Value::String("gone".into()));
-        let before = g.values.clone();
+        let before = g.values().clone();
         assert_eq!(stored_identifier(&g), "manual:gone");
         assert_eq!(shown_identifier(&g, cat, &Discovered::default()), "provider:2");
-        assert_eq!(g.values, before);
+        assert_eq!(*g.values(), before);
 
         for vendor in [5, 9] {
             let mut g = with_models(&[]);
             g.set(VENDOR, Value::Integer(vendor));
-            let before = g.values.clone();
+            let before = g.values().clone();
             assert_eq!(shown_identifier(&g, cat, &Discovered::default()), "provider:2", "AIVendor {vendor}");
-            assert_eq!(g.values, before, "AIVendor {vendor}");
+            assert_eq!(*g.values(), before, "AIVendor {vendor}");
         }
 
         let mut g = with_models(&[manual("llama3", LLAMA3_URL, 5)]);

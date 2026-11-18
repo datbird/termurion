@@ -91,7 +91,7 @@ impl App {
         }
         let Some(values): Option<Vec<(String, toml::Value)>> = decoded.iter().map(|(k, j)| Some((k.clone(), prompted::valid(k, j)?))).collect() else { return };
         let keys: Vec<String> = values.iter().map(|(k, _)| k.clone()).collect();
-        let stored = |k: &str| self.globals.values.get(&format!("NoSyncSetProfileProperty_{k}")).and_then(|v| v.as_integer());
+        let stored = |k: &str| self.globals.values().get(&format!("NoSyncSetProfileProperty_{k}")).and_then(|v| v.as_integer());
         match prompted::property_decision(&keys, stored) {
             Decision::Deny => {}
             Decision::Apply => self.apply_properties(pane, values),

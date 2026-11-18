@@ -529,7 +529,7 @@ impl App {
         let app_support = settings.parent().unwrap_or(&settings).to_path_buf();
         let scripts = self.scripts_folder();
         let local = crate::scripts::ancestors_stay_local(&scripts, &crate::netpath::read_reparse) && !crate::remote_prefs::is_unc(&scripts.to_string_lossy());
-        let user_defaults = Snapshot::from_local(&self.globals.values, &self.store.saved_default_guid(), &self.store.file_profiles());
+        let user_defaults = Snapshot::from_local(self.globals.values(), &self.store.saved_default_guid(), &self.store.file_profiles());
         let entry_local = |p: &Path| crate::scripts::ancestors_stay_local(p, &crate::netpath::read_reparse);
         export_into(out, &Sources { app_support: &app_support, scripts: local.then_some(scripts.as_path()), user_defaults: &user_defaults, local: &entry_local })
     }
@@ -557,7 +557,7 @@ mod tests {
     /// The local settings as `run()` would load them from `settings.toml`.
     fn user_defaults(app_support: &Path) -> Snapshot {
         let g = crate::globals::Globals::load(&app_support.join("settings.toml")).unwrap();
-        Snapshot::from_local(&g.values, "", &[])
+        Snapshot::from_local(g.values(), "", &[])
     }
 
     #[test]
@@ -697,10 +697,10 @@ mod tests {
         assert_eq!(zips, [termurion.join(IMPORT_SCRIPTS_DIR).join("script U.zip")]);
         assert_eq!(std::fs::read_to_string(&zips[0]).unwrap(), "zip");
         let g = crate::globals::Globals::load(&termurion.join("settings.toml")).unwrap();
-        assert_eq!(g.values.get("FocusFollowsMouse"), Some(&toml::Value::Boolean(true)));
-        assert_eq!(g.values.get("NoSyncX"), Some(&toml::Value::Boolean(true)), "a key that does not sync stays");
+        assert_eq!(g.values().get("FocusFollowsMouse"), Some(&toml::Value::Boolean(true)));
+        assert_eq!(g.values().get("NoSyncX"), Some(&toml::Value::Boolean(true)), "a key that does not sync stays");
         assert!(!g.bool(crate::remote_prefs::LOAD_KEY), "loading from a custom folder is off");
-        assert!(!g.values.contains_key(crate::remote_prefs::FOLDER_KEY), "the custom folder is unset");
+        assert!(!g.values().contains_key(crate::remote_prefs::FOLDER_KEY), "the custom folder is unset");
         let store = crate::store::Store::load(&termurion.join("profiles.toml")).unwrap();
         let names: Vec<String> = store.profiles.iter().map(|p| p.name()).collect();
         assert_eq!(names, ["Imported"]);
@@ -770,13 +770,13 @@ mod tests {
         std::fs::write(termurion.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
         finish_import(&termurion);
         let g = crate::globals::Globals::load(&termurion.join("settings.toml")).unwrap();
-        assert_eq!(g.values.get("FocusFollowsMouse"), Some(&toml::Value::Boolean(true)), "the import applied");
+        assert_eq!(g.values().get("FocusFollowsMouse"), Some(&toml::Value::Boolean(true)), "the import applied");
         for key in [ai::ADMIN, ai::ENABLE_AI, ai::AI_COMPLETIONS] {
-            assert!(!g.values.contains_key(key), "{key} came from the import");
+            assert!(!g.values().contains_key(key), "{key} came from the import");
         }
         for (key, _) in ai::PERMISSIONS {
             let want = (key == kept).then_some(toml::Value::Integer(2));
-            assert_eq!(g.values.get(key), want.as_ref(), "{key}");
+            assert_eq!(g.values().get(key), want.as_ref(), "{key}");
         }
     }
 
@@ -1013,7 +1013,7 @@ mod tests {
         assert_eq!(zips.len(), 1, "{zips:?}");
         assert!(zips[0].file_name().unwrap().to_string_lossy().starts_with("autolaunch "), "{zips:?}");
         let g = Globals::load(&to.join("settings.toml")).unwrap();
-        assert_eq!(g.values.get("FocusFollowsMouse"), Some(&toml::Value::Boolean(true)));
+        assert_eq!(g.values().get("FocusFollowsMouse"), Some(&toml::Value::Boolean(true)));
         assert_eq!(std::fs::read_to_string(to.join("snippets.json")).unwrap(), "[1]");
         assert_eq!(std::fs::read_to_string(to.join(&long)).unwrap(), "[2]");
         assert!(entries(&temp_dir).is_empty(), "the staging folder is gone");

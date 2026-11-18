@@ -2691,7 +2691,7 @@ mod tests {
         assert!(matches!(apply_import(&mut store, &mut plain, list, read), Edit::Imported(1)));
         assert_eq!(store.profiles.len(), before + 1);
         assert!(store.profiles.iter().any(|p| p.name() == "P2 Mac"));
-        assert_eq!(plain.values.get("FocusFollowsMouse"), Some(&Value::Boolean(true)));
+        assert_eq!(plain.values().get("FocusFollowsMouse"), Some(&Value::Boolean(true)));
         // A manual model with no headers of its own, and legacy global headers to give it.
         let seeded = || {
             let mut g = Globals::empty(std::path::Path::new("import-picked-test.toml"));
