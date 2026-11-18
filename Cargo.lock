@@ -1708,6 +1708,7 @@ dependencies = [
  "cosmic-text",
  "etagere",
  "lru",
+ "pollster",
  "rustc-hash 2.1.3",
  "wgpu",
 ]

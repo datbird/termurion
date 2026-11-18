@@ -5,7 +5,10 @@ use crate::{
 use etagere::{size2, Allocation, BucketedAtlasAllocator};
 use lru::LruCache;
 use rustc_hash::FxHasher;
-use std::{collections::HashSet, hash::BuildHasherDefault};
+use std::{
+    collections::{HashMap, HashSet},
+    hash::BuildHasherDefault,
+};
 use wgpu::{
     BindGroup, DepthStencilState, Device, Extent3d, MultisampleState, Origin3d, Queue,
     RenderPipeline, TexelCopyBufferLayout, TexelCopyTextureInfo, Texture, TextureAspect,
@@ -24,6 +27,8 @@ pub(crate) struct InnerAtlas {
     pub size: u32,
     pub glyph_cache: LruCache<GlyphonCacheKey, GlyphDetails, Hasher>,
     pub glyphs_in_use: HashSet<GlyphonCacheKey, Hasher>,
+    /// Termurion patch 4: use counts of the held keys (every count is above 0).
+    pub held: HashMap<GlyphonCacheKey, u32, Hasher>,
     pub max_texture_dimension_2d: u32,
 }
 
@@ -65,6 +70,7 @@ impl InnerAtlas {
             size,
             glyph_cache,
             glyphs_in_use,
+            held: HashMap::with_hasher(Hasher::default()),
             max_texture_dimension_2d,
         }
     }
@@ -79,27 +85,21 @@ impl InnerAtlas {
                 return allocation;
             }
 
-            // Try to free least recently used allocation
-            let (mut key, mut value) = self.glyph_cache.peek_lru()?;
+            // Termurion patch 4: evict the oldest entry that holds atlas space and is neither in
+            // use nor held. A busy entry at the oldest end no longer stops the search; when none
+            // qualifies the caller grows the atlas.
+            let victim = self
+                .glyph_cache
+                .iter()
+                .rev()
+                .find(|(key, value)| {
+                    value.atlas_id.is_some()
+                        && !self.glyphs_in_use.contains(*key)
+                        && !self.held.contains_key(*key)
+                })
+                .map(|(key, _)| *key)?;
 
-            // Find a glyph with an actual size
-            while value.atlas_id.is_none() {
-                // All sized glyphs are in use, cache is full
-                if self.glyphs_in_use.contains(key) {
-                    return None;
-                }
-
-                let _ = self.glyph_cache.pop_lru();
-
-                (key, value) = self.glyph_cache.peek_lru()?;
-            }
-
-            // All sized glyphs are in use, cache is full
-            if self.glyphs_in_use.contains(key) {
-                return None;
-            }
-
-            let (_, value) = self.glyph_cache.pop_lru().unwrap();
+            let value = self.glyph_cache.pop(&victim).unwrap();
             self.packer.deallocate(value.atlas_id.unwrap());
         }
     }
@@ -229,6 +229,10 @@ impl InnerAtlas {
     }
 }
 
+/// Termurion patch 4: names a cached glyph for [`TextAtlas::hold`] and [`TextAtlas::release`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct GlyphKey(pub(crate) GlyphonCacheKey);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
     Mask,
@@ -295,6 +299,8 @@ pub struct TextAtlas {
     pub(crate) mask_atlas: InnerAtlas,
     pub(crate) format: TextureFormat,
     pub(crate) color_mode: ColorMode,
+    /// Termurion patch 4: raised by every successful grow.
+    generation: u64,
 }
 
 impl TextAtlas {
@@ -336,6 +342,46 @@ impl TextAtlas {
             mask_atlas,
             format,
             color_mode,
+            generation: 0,
+        }
+    }
+
+    /// Termurion patch 4: keeps a glyph in the atlas (a use count per key) until it is released
+    /// as often as it was held. The key may sit in either inner atlas, so both count it.
+    pub fn hold(&mut self, key: GlyphKey) {
+        for inner in [&mut self.mask_atlas, &mut self.color_atlas] {
+            *inner.held.entry(key.0).or_insert(0) += 1;
+        }
+    }
+
+    /// Termurion patch 4: undoes one `hold`; a key with no count is left alone.
+    pub fn release(&mut self, key: GlyphKey) {
+        for inner in [&mut self.mask_atlas, &mut self.color_atlas] {
+            if let Some(n) = inner.held.get_mut(&key.0) {
+                *n -= 1;
+                if *n == 0 {
+                    inner.held.remove(&key.0);
+                }
+            }
+        }
+    }
+
+    /// Termurion patch 4: how many keys are held (count above 0).
+    pub fn held(&self) -> usize {
+        self.mask_atlas.held.len()
+    }
+
+    /// Termurion patch 4: raised by every successful grow. Atlas positions change then, so a
+    /// caller that kept positions must prepare again.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Termurion patch 5: caps both atlases at `px` per side (tests only, to force eviction).
+    #[doc(hidden)]
+    pub fn set_max_size(&mut self, px: u32) {
+        for inner in [&mut self.mask_atlas, &mut self.color_atlas] {
+            inner.max_texture_dimension_2d = inner.max_texture_dimension_2d.min(px);
         }
     }
 
@@ -376,6 +422,7 @@ impl TextAtlas {
         };
 
         if did_grow {
+            self.generation += 1;
             self.rebind(state.device);
         }
 
@@ -405,5 +452,194 @@ impl TextAtlas {
             &self.color_atlas.texture_view,
             &self.mask_atlas.texture_view,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        custom_glyph::CustomGlyphCacheKey, Buffer, Cache, CustomGlyph, Metrics, PrepareError,
+        Resolution, SubpixelBin, TextArea, TextBounds, TextRenderer, Viewport,
+    };
+
+    const SIDE: u16 = 32;
+
+    struct Rig {
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        atlas: TextAtlas,
+        renderer: TextRenderer,
+        viewport: Viewport,
+        font_system: FontSystem,
+        swash: SwashCache,
+        buffer: Buffer,
+    }
+
+    impl Rig {
+        fn new() -> Self {
+            Self::with_cap(Some(256))
+        }
+
+        fn with_cap(cap: Option<u32>) -> Self {
+            let (device, queue) = crate::test_gpu::shared();
+            let cache = Cache::new(&device);
+            let mut atlas = TextAtlas::new(&device, &queue, &cache, TextureFormat::Rgba8Unorm);
+            if let Some(px) = cap {
+                atlas.set_max_size(px);
+            }
+            let renderer = TextRenderer::new(&mut atlas, &device, MultisampleState::default(), None);
+            let mut viewport = Viewport::new(&device, &cache);
+            viewport.update(&queue, Resolution { width: 1024, height: 1024 });
+            let mut font_system = FontSystem::new_with_fonts([]);
+            let buffer = Buffer::new(&mut font_system, Metrics::new(10.0, 12.0));
+            Self {
+                device,
+                queue,
+                atlas,
+                renderer,
+                viewport,
+                font_system,
+                swash: SwashCache::new(),
+                buffer,
+            }
+        }
+
+        /// Prepares one 32x32 solid mask glyph per id, after a trim (nothing is in use).
+        fn prepare(&mut self, ids: &[u16]) -> Result<(), PrepareError> {
+            self.atlas.trim();
+            let glyphs: Vec<CustomGlyph> = ids
+                .iter()
+                .map(|&id| CustomGlyph {
+                    id,
+                    left: 0.0,
+                    top: 0.0,
+                    width: SIDE as f32,
+                    height: SIDE as f32,
+                    snap_to_physical_pixel: true,
+                    ..Default::default()
+                })
+                .collect();
+            self.prepare_keep(&glyphs)
+        }
+
+        /// Like `prepare` without the trim: the glyphs stay in use.
+        fn prepare_keep(&mut self, glyphs: &[CustomGlyph]) -> Result<(), PrepareError> {
+            let area = TextArea {
+                buffer: &self.buffer,
+                left: 0.0,
+                top: 0.0,
+                scale: 1.0,
+                bounds: TextBounds { left: 0, top: 0, right: 1024, bottom: 1024 },
+                default_color: crate::Color::rgb(255, 255, 255),
+                custom_glyphs: glyphs,
+            };
+            self.renderer.prepare_with_custom(
+                &self.device,
+                &self.queue,
+                &mut self.font_system,
+                &mut self.atlas,
+                &self.viewport,
+                [area],
+                &mut self.swash,
+                |req| {
+                    Some(RasterizedCustomGlyph {
+                        data: vec![255; req.width as usize * req.height as usize],
+                        content_type: ContentType::Mask,
+                    })
+                },
+            )
+        }
+
+        fn flood(&mut self, from: u16, to: u16) {
+            for id in from..to {
+                self.prepare(&[id]).unwrap();
+            }
+        }
+
+        fn at(&self, id: u16) -> Option<(u16, u16)> {
+            match self.atlas.mask_atlas.glyph_cache.peek(&key(id).0)?.gpu_cache {
+                GpuCacheStatus::InAtlas { x, y, .. } => Some((x, y)),
+                GpuCacheStatus::SkipRasterization => None,
+            }
+        }
+    }
+
+    fn key(id: u16) -> GlyphKey {
+        GlyphKey(GlyphonCacheKey::Custom(CustomGlyphCacheKey {
+            glyph_id: id,
+            width: SIDE,
+            height: SIDE,
+            x_bin: SubpixelBin::Zero,
+            y_bin: SubpixelBin::Zero,
+        }))
+    }
+
+    #[test]
+    fn held_glyphs_are_never_evicted() {
+        let mut rig = Rig::new();
+        rig.prepare(&[0]).unwrap();
+        let before = rig.at(0).unwrap();
+        rig.atlas.hold(key(0));
+        assert_eq!(rig.atlas.held(), 1);
+        // 200 glyphs of 32x32 cannot fit in 256x256.
+        rig.flood(1, 201);
+        assert_eq!(rig.at(0), Some(before));
+        assert_eq!(rig.atlas.mask_size(), 256);
+    }
+
+    #[test]
+    fn released_glyphs_can_be_evicted() {
+        let mut rig = Rig::new();
+        rig.prepare(&[0]).unwrap();
+        rig.atlas.hold(key(0));
+        rig.atlas.hold(key(0));
+        rig.atlas.release(key(0));
+        assert_eq!(rig.atlas.held(), 1, "one hold is left");
+        rig.atlas.release(key(0));
+        rig.atlas.release(key(0));
+        assert_eq!(rig.atlas.held(), 0, "a release at 0 does nothing");
+        rig.flood(1, 201);
+        assert_eq!(rig.at(0), None);
+    }
+
+    #[test]
+    fn eviction_skips_held_entries_at_the_lru_end() {
+        let mut rig = Rig::new();
+        rig.prepare(&[0]).unwrap();
+        rig.atlas.hold(key(0));
+        // Fill until the first eviction; the oldest entry is held, so the next oldest goes.
+        let mut id = 1;
+        loop {
+            let len = rig.atlas.mask_atlas.glyph_cache.len();
+            rig.prepare(&[id]).expect("a held entry at the LRU end is not AtlasFull");
+            if rig.atlas.mask_atlas.glyph_cache.len() <= len {
+                break;
+            }
+            id += 1;
+            assert!(id < 200, "the atlas never filled");
+        }
+        assert!(rig.at(0).is_some(), "the held glyph stays");
+        assert!(rig.at(1).is_none(), "the next oldest was evicted");
+    }
+
+    #[test]
+    fn growth_bumps_the_generation() {
+        let mut rig = Rig::with_cap(None);
+        assert_eq!(rig.atlas.generation(), 0);
+        // Everything stays in use, so a full atlas can only grow.
+        let glyphs: Vec<CustomGlyph> = (0..100u16)
+            .map(|id| CustomGlyph {
+                id,
+                width: SIDE as f32,
+                height: SIDE as f32,
+                snap_to_physical_pixel: true,
+                ..Default::default()
+            })
+            .collect();
+        rig.atlas.trim();
+        rig.prepare_keep(&glyphs).unwrap();
+        assert!(rig.atlas.generation() >= 1);
+        assert!(rig.atlas.mask_size() > 256);
     }
 }

@@ -8,6 +8,8 @@ mod cache;
 mod custom_glyph;
 mod error;
 mod text_atlas;
+#[cfg(test)]
+mod test_gpu;
 mod text_render;
 mod viewport;
 
@@ -16,7 +18,7 @@ pub use custom_glyph::{
     ContentType, CustomGlyph, CustomGlyphId, RasterizeCustomGlyphRequest, RasterizedCustomGlyph,
 };
 pub use error::{PrepareError, RenderError};
-pub use text_atlas::{ColorMode, TextAtlas};
+pub use text_atlas::{ColorMode, GlyphKey, TextAtlas};
 pub use text_render::TextRenderer;
 pub use viewport::Viewport;
 
