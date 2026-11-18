@@ -152,21 +152,23 @@ impl App {
     }
 
     /// Reconfigures the current window's surface when the alpha mode it should have differs from the one
-    /// it has. An opaque window never asks for a premultiplied mode.
-    pub(super) fn sync_surface_alpha(&mut self, transparent: bool) {
+    /// it has. An opaque window never asks for a premultiplied mode. True when it reconfigured.
+    pub(super) fn sync_surface_alpha(&mut self, transparent: bool) -> bool {
         if self.win_alpha_surface != SurfaceKind::Alpha {
-            return;
+            return false;
         }
-        let Some(g) = self.gpu.as_mut() else { return };
+        let Some(g) = self.gpu.as_mut() else { return false };
         if (g.config.alpha_mode == wgpu::CompositeAlphaMode::PreMultiplied) == transparent {
-            return;
+            return false;
         }
         let caps = g.surface.get_capabilities(g.render_adapter());
         let mode = transparency::pick_alpha_mode(&caps.alpha_modes, transparent);
         if mode != g.config.alpha_mode {
             g.config.alpha_mode = mode;
             g.surface.configure(g.render_device(), &g.config);
+            return true;
         }
+        false
     }
 
     /// The second instance, made on first use against `window`'s surface (a window made with

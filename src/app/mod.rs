@@ -7319,18 +7319,20 @@ impl App {
         self.fx_sync();
         // A frame only the effects' animation wants draws the kept scene again (`scene_cache`).
         let size = self.gpu.as_ref().map_or((0, 0), |g| (g.config.width, g.config.height));
-        let kept = self.gpu.as_mut().and_then(|g| g.scene.take(size, now));
-        let same_scene = kept.is_some();
-        let (frame, built) = match kept {
-            Some(kept) => kept,
-            None => {
+        let taken = self.gpu.as_mut().map_or(scene_cache::Take::Build { last: None }, |g| g.scene.take(size, now));
+        let same_scene = matches!(taken, scene_cache::Take::Reuse(..));
+        let (frame, built, last) = match taken {
+            scene_cache::Take::Reuse(frame, built) => (frame, built, None),
+            scene_cache::Take::Build { last } => {
                 let frame = self.build_frame();
                 if let Some(t) = scene_start {
                     self.draw_timers.stats[1].add(t.elapsed().as_secs_f64(), 1);
                 }
-                (frame, now)
+                (frame, now, last)
             }
         };
+        // Nothing on screen changed: the window keeps what it shows (`skip_gpu`).
+        let same = worth_comparing(&frame) && last.as_ref() == Some(&frame);
         // The caption's hit tests answer from what this frame drew.
         self.publish_caption();
         let (title, menu_text) = self.caption_text();
@@ -7342,7 +7344,7 @@ impl App {
         let title = if self.leader_on { format!("[Leader] {title}") } else { title };
         // A mode change reconfigures the surface once; this frame draws with it.
         let transparent = self.frame_alpha;
-        self.sync_surface_alpha(transparent);
+        let alpha_changed = self.sync_surface_alpha(transparent);
         // Tab switches, focus, restore from minimized: the backdrop follows what this frame shows.
         self.sync_blur();
         // Window numbers show from 1 in the saved logs (P20).
@@ -7365,6 +7367,10 @@ impl App {
         let Some(gpu) = self.gpu.as_mut() else { return };
         // Only a changed title goes out: the compositor hears every set_title (H2).
         gpu.title_sent.send(&gpu.window, &crate::platform::window::os_title(&title));
+        if skip_gpu(same, gpu.fx.as_ref().is_some_and(|f| f.active()), bar_on || gpu.bar.busy(), alpha_changed, frame.fade) {
+            gpu.scene.keep(frame, built, size);
+            return;
+        }
         let wait_start = Instant::now();
         let acquired = gpu.surface.get_current_texture();
         // The renderer's timings for Copy Performance Stats: counters and milliseconds only.
@@ -7512,6 +7518,17 @@ fn launch_events(proxy: Arc<Mutex<EventLoopProxy<UserEvent>>>) -> Box<dyn Fn(cra
             })
         });
     })
+}
+
+/// A new frame equal to the one on screen needs no draw, when nothing else draws over or
+/// around it: no effect chain, no menu bar, no surface change, no fade.
+pub(super) fn skip_gpu(same: bool, fx_active: bool, bar_busy: bool, alpha_changed: bool, fade: f32) -> bool {
+    same && !fx_active && !bar_busy && !alpha_changed && fade >= 1.0
+}
+
+/// Images and backgrounds compare by pixel value, which would cost more than the draw.
+fn worth_comparing(frame: &Frame) -> bool {
+    frame.images.is_empty() && frame.backgrounds.is_empty()
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -9103,6 +9120,16 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skip_gpu_needs_every_condition() {
+        assert!(skip_gpu(true, false, false, false, 1.0));
+        assert!(!skip_gpu(false, false, false, false, 1.0));
+        assert!(!skip_gpu(true, true, false, false, 1.0));
+        assert!(!skip_gpu(true, false, true, false, 1.0));
+        assert!(!skip_gpu(true, false, false, true, 1.0));
+        assert!(!skip_gpu(true, false, false, false, 0.5));
+    }
 
     /// Round 4 (I2 on X11): with no hotkey set, an OS without system-wide hotkeys raises no banner
     /// at launch (the banner shrank the first pane after its shell started).

@@ -23,6 +23,15 @@ pub(super) struct SceneCache<F> {
     fx_asked: bool,
 }
 
+/// What `take` decides for a frame.
+#[derive(Debug, PartialEq)]
+pub(super) enum Take<F> {
+    /// Draw this frame again, built at this time.
+    Reuse(F, Instant),
+    /// Build a new frame. `last` is the frame on screen when it can be compared with the new one.
+    Build { last: Option<F> },
+}
+
 impl<F> Default for SceneCache<F> {
     fn default() -> Self {
         SceneCache { kept: None, changed: Cell::new(false), fx_asked: false }
@@ -40,17 +49,23 @@ impl<F> SceneCache<F> {
         self.fx_asked = true;
     }
 
-    /// The kept frame and when it was built, when only the animation asked for this frame, the
-    /// window has the same size and the frame is younger than `MAX_AGE`. Else None, and the
-    /// caller builds. Either way the kept frame and both requests are used up.
-    pub(super) fn take(&mut self, size: (u32, u32), now: Instant) -> Option<(F, Instant)> {
+    /// `Reuse` (the kept frame and when it was built) when only the animation asked for this
+    /// frame, the window has the same size and the frame is younger than `MAX_AGE`. Else `Build`,
+    /// carrying the kept frame only when an app request asked for this one at the same size: the
+    /// caller may find the new frame equal to it. Either way the kept frame and both requests are
+    /// used up.
+    pub(super) fn take(&mut self, size: (u32, u32), now: Instant) -> Take<F> {
         // Both are read every time: a short-circuit would leave a change standing after the
         // frame that showed it, and every later animation frame would build.
         let fx_asked = std::mem::take(&mut self.fx_asked);
         let changed = self.changed.replace(false);
         let fx_only = fx_asked && !changed;
-        let kept = self.kept.take()?;
-        (fx_only && kept.size == size && now.saturating_duration_since(kept.built) < MAX_AGE).then_some((kept.frame, kept.built))
+        let Some(kept) = self.kept.take() else { return Take::Build { last: None } };
+        if fx_only && kept.size == size && now.saturating_duration_since(kept.built) < MAX_AGE {
+            return Take::Reuse(kept.frame, kept.built);
+        }
+        // A redraw nobody asked for (the system's) may show what the screen lost: it never skips.
+        Take::Build { last: (changed && kept.size == size).then_some(kept.frame) }
     }
 
     /// Keeps the frame just drawn (`built` is when its scene was built, not when it was drawn).
@@ -74,7 +89,7 @@ mod tests {
         let t0 = Instant::now();
         let mut c = kept(t0);
         c.fx_asked();
-        assert_eq!(c.take((800, 600), t0 + Duration::from_millis(33)), Some((7, t0)));
+        assert_eq!(c.take((800, 600), t0 + Duration::from_millis(33)), Take::Reuse(7, t0));
     }
 
     #[test]
@@ -82,15 +97,38 @@ mod tests {
         let t0 = Instant::now();
         let mut c = kept(t0);
         c.changed();
-        assert_eq!(c.take((800, 600), t0), None);
+        assert_eq!(c.take((800, 600), t0), Take::Build { last: Some(7) });
         // Output and the animation in the same frame: the output wins.
         let mut c = kept(t0);
         c.fx_asked();
         c.changed();
-        assert_eq!(c.take((800, 600), t0), None);
+        assert_eq!(c.take((800, 600), t0), Take::Build { last: Some(7) });
         // A frame nobody asked for (the system redrew the window) builds too.
         let mut c = kept(t0);
-        assert_eq!(c.take((800, 600), t0), None);
+        assert_eq!(c.take((800, 600), t0), Take::Build { last: None });
+    }
+
+    #[test]
+    fn an_app_request_hands_back_the_last_frame() {
+        let t0 = Instant::now();
+        let mut c = kept(t0);
+        c.changed();
+        assert_eq!(c.take((800, 600), t0), Take::Build { last: Some(7) });
+    }
+
+    #[test]
+    fn a_system_redraw_never_hands_it_back() {
+        let t0 = Instant::now();
+        let mut c = kept(t0);
+        assert_eq!(c.take((800, 600), t0), Take::Build { last: None });
+    }
+
+    #[test]
+    fn a_new_size_hands_back_nothing() {
+        let t0 = Instant::now();
+        let mut c = kept(t0);
+        c.changed();
+        assert_eq!(c.take((801, 600), t0), Take::Build { last: None });
     }
 
     #[test]
@@ -98,10 +136,10 @@ mod tests {
         let t0 = Instant::now();
         let mut c = kept(t0);
         c.fx_asked();
-        assert_eq!(c.take((801, 600), t0), None);
+        assert_eq!(c.take((801, 600), t0), Take::Build { last: None });
         let mut c = kept(t0);
         c.fx_asked();
-        assert_eq!(c.take((800, 600), t0 + MAX_AGE), None);
+        assert_eq!(c.take((800, 600), t0 + MAX_AGE), Take::Build { last: None });
     }
 
     #[test]
@@ -109,14 +147,14 @@ mod tests {
         let t0 = Instant::now();
         let mut c = kept(t0);
         c.changed();
-        assert_eq!(c.take((800, 600), t0), None);
+        assert_eq!(c.take((800, 600), t0), Take::Build { last: Some(7) });
         // The change was used by that build: the next animation frame may reuse what it kept.
         c.keep(8, t0, (800, 600));
         c.fx_asked();
-        assert_eq!(c.take((800, 600), t0), Some((8, t0)));
+        assert_eq!(c.take((800, 600), t0), Take::Reuse(8, t0));
         // Taken: nothing is kept until the drawn frame is kept again.
         c.fx_asked();
-        assert_eq!(c.take((800, 600), t0), None);
+        assert_eq!(c.take((800, 600), t0), Take::Build { last: None });
     }
 
     /// Every request for a terminal window's frame goes through `Gpu::redraw` or
