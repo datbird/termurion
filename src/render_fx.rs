@@ -130,11 +130,15 @@ pub enum RegionTerm {
 }
 
 fn parse_region(v: &toml::Value) -> Result<Vec<RegionTerm>, String> {
+    // A region that cannot be read is an error: dropping a term would shade too little.
     let items: Vec<&str> = match v {
-        toml::Value::Array(a) => a.iter().filter_map(|x| x.as_str()).collect(),
+        toml::Value::Array(a) => a.iter().map(|x| x.as_str().ok_or("plugin.toml: region terms must be strings")).collect::<Result<_, _>>()?,
         toml::Value::String(one) => vec![one.as_str()],
         _ => return Err("plugin.toml: region must be a list of terms".into()),
     };
+    if items.is_empty() {
+        return Err("plugin.toml: region lists no term".into());
+    }
     items
         .into_iter()
         .map(|t| {
@@ -1082,6 +1086,56 @@ mod tests {
     fn a_bad_region_term_is_an_error() {
         assert_eq!(parse_manifest("shaders = \"a.glsl\"\nregion = [\"glow\"]").unwrap_err(), "plugin.toml: unknown region term \"glow\"");
         assert_eq!(parse_manifest("shaders = \"a.glsl\"\nregion = [\"full_after_change\"]").unwrap_err(), "plugin.toml: region term \"full_after_change\" needs a number");
+    }
+
+    #[test]
+    fn a_region_that_cannot_be_read_is_an_error_never_an_empty_one() {
+        let err = |r: &str| parse_manifest(&format!("shaders = \"a.glsl\"\nregion = {r}")).unwrap_err();
+        assert_eq!(err("[\"cursor\", 5]"), "plugin.toml: region terms must be strings");
+        assert_eq!(err("[5]"), "plugin.toml: region terms must be strings");
+        assert_eq!(err("[\"cursor\", \"glow\"]"), "plugin.toml: unknown region term \"glow\"");
+        assert_eq!(err("[]"), "plugin.toml: region lists no term");
+        assert_eq!(err("\"\""), "plugin.toml: unknown region term \"\"");
+        assert_eq!(err("7"), "plugin.toml: region must be a list of terms");
+    }
+
+    #[test]
+    fn every_shipped_plugin_region_parses() {
+        for (id, manifest, _) in crate::render_fx_builtin::BUILTIN {
+            let m = parse_manifest(manifest).unwrap_or_else(|e| panic!("{id}: {e}"));
+            assert!(m.region.as_ref().is_none_or(|r| !r.is_empty()), "{id}");
+        }
+    }
+
+    #[test]
+    fn prompt_mark_rects() {
+        let mut u = Uniforms::default();
+        let t = [RegionTerm::PromptMark(0.5)];
+        assert_eq!(region_rects(&t, &u, 20.0, (800, 600)), Some(vec![]));
+        u.prompt_mark = [40.0, 100.0, 1.0, 10.0];
+        assert_eq!(region_rects(&t, &u, 20.0, (800, 600)).unwrap(), [PxRect { x: 30, y: 90, w: 30, h: 40 }]);
+    }
+
+    #[test]
+    fn an_unset_region_is_the_full_pass() {
+        let m = parse_manifest("shaders = \"a.glsl\"").unwrap();
+        assert_eq!(chain_region(&[&m]), None);
+        assert_eq!(chain_region(&[]), Some(vec![]));
+    }
+
+    #[test]
+    fn the_pad_follows_the_cell_height_and_scale() {
+        let u = cursor_uniforms([100.0, 100.0, 10.0, 20.0]);
+        let t = [RegionTerm::Cursor(1.0)];
+        assert_eq!(region_rects(&t, &u, 30.0, (800, 600)).unwrap(), [PxRect { x: 70, y: 70, w: 70, h: 80 }]);
+        // Scale 2: the cursor and the cell are twice as big, so the rect is too.
+        let u = cursor_uniforms([200.0, 200.0, 20.0, 40.0]);
+        assert_eq!(region_rects(&t, &u, 40.0, (1600, 1200)).unwrap(), [PxRect { x: 160, y: 160, w: 100, h: 120 }]);
+    }
+
+    #[test]
+    fn fractions_round_outward() {
+        assert_eq!(round_and_merge(vec![[10.4, 20.6, 30.2, 40.1]], (800.0, 600.0)), [PxRect { x: 10, y: 20, w: 21, h: 21 }]);
     }
 
     #[test]
