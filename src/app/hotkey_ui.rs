@@ -188,8 +188,7 @@ impl App {
             if let (Some(hwnd), Some(g)) = (self.view(), &self.gpu) {
                 // The taskbar button comes back through `presence_tick`.
                 g.window.set_window_level(winit::window::WindowLevel::Normal);
-                g.scene.invalidate();
-                g.window.set_visible(true);
+                g.show_window(true);
                 crate::platform::hotkey::cloak(hwnd, false);
             }
         }
@@ -336,9 +335,8 @@ impl App {
         // macOS: it opens on the Space the person is on.
         crate::platform::hotkey::join_active_space(hwnd);
         let Some(g) = &self.gpu else { return };
-        g.scene.invalidate();
-        g.window.set_visible(true);
-        g.window.set_minimized(false);
+        g.show_window(true);
+        g.minimize_window(false);
         // A hotkey window shows on the desktop the person is on (iTerm2 opens it in the active
         // space; its Space only matters for All Desktops). It keeps following only while the
         // profile's Space is All Desktops; the saved state does not carry the flag.
@@ -518,8 +516,7 @@ impl App {
             }
             // Cloaking does not take focus away: hiding the window makes Windows activate the
             // next one, so typing never goes into an invisible shell.
-            g.scene.invalidate();
-            g.window.set_visible(false);
+            g.show_window(false);
         }
         let previous = self.hotkey.as_mut().and_then(|h| {
             h.shown = false;
@@ -678,7 +675,7 @@ impl App {
         }
         let token = self.activation.take();
         if let Some(g) = &self.gpu {
-            g.window.set_minimized(false);
+            g.minimize_window(false);
             match crate::platform::window::activate(&g.window, token.as_deref()) {
                 Ok(true) => {}
                 Ok(false) => g.window.focus_window(),
@@ -748,7 +745,7 @@ impl App {
                     self.enter(w);
                     if let Some(g) = &self.gpu
                         && !g.window.is_minimized().unwrap_or(false) {
-                            g.window.set_minimized(true);
+                            g.minimize_window(true);
                             self.app_hidden.push(w);
                         }
                 }
@@ -769,7 +766,7 @@ impl App {
                 for w in &back {
                     if self.enter(*w)
                         && let Some(g) = &self.gpu {
-                            g.window.set_minimized(false);
+                            g.minimize_window(false);
                         }
                 }
                 let Some(w) = self.last_window.filter(|w| regular.contains(w)).or_else(|| regular.last().copied()) else { return };

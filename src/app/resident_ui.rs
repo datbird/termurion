@@ -177,7 +177,7 @@ impl App {
             g.window.set_fullscreen(None);
             g.window.set_maximized(false);
             crate::platform::window_style::set_skip_taskbar(&g.window, true);
-            g.window.set_visible(false);
+            g.show_window(false);
         }
         // Wayland has no hide: the window goes, its device stays, and the next pass makes an
         // unmapped one in its place (`resident_upkeep`).
@@ -218,8 +218,8 @@ impl App {
     pub(super) fn show_awake_window(&mut self) {
         let token = self.activation.take();
         if let Some(g) = &self.gpu {
-            g.window.set_visible(true);
-            g.window.set_minimized(false);
+            g.show_window(true);
+            g.minimize_window(false);
             if !matches!(crate::platform::window::activate(&g.window, token.as_deref()), Ok(true)) {
                 g.window.focus_window();
             }
@@ -510,7 +510,7 @@ mod tests {
         assert!(after.contains("after_last_window_where(self.windowless_allowed(hotkeys), decision)"));
         let go = body(production(OWN), "go_resident");
         let away = go.find("resident::Away::Destroy").expect("the destroy is decided by the pure rule");
-        assert!(go.find("set_visible(false)").unwrap() < away && go[away..].contains("self.drop_resident_window()"), "after the hidden window's last steps");
+        assert!(go.find("show_window(false)").unwrap() < away && go[away..].contains("self.drop_resident_window()"), "after the hidden window's last steps");
         let w = production(WINDOWS);
         let drop_fn = body(w, "drop_resident_window");
         assert!(drop_fn.contains("self.prefs_gpu = Some(") && drop_fn.contains("menu::window_gone(&g.window)") && drop_fn.contains("self.resident_window_gone = Some("), "the device stays, the window is forgotten");
@@ -704,7 +704,7 @@ mod tests {
         for never in ["drop_current_window", "platform::keys::", "register_hotkeys", "unregister", "close_current", "install_menus"] {
             assert!(!production(OWN).contains(never), "the resident window keeps its hook and hotkeys: {never}");
         }
-        assert!(go.contains("set_visible(false)") && go.contains("set_skip_taskbar(&g.window, true)"));
+        assert!(go.contains("show_window(false)") && go.contains("set_skip_taskbar(&g.window, true)"));
     }
 
     /// Every `tabs[self.active]` of the app is proven unreachable with no tab: only `split_as` (which

@@ -211,7 +211,7 @@ impl App {
                 let click = caption::clicked(self.caption_pressed.take(), b);
                 if let (Some(b), Some(g)) = (click, self.gpu.as_ref()) {
                     match b {
-                        Button::Minimize => g.window.set_minimized(true),
+                        Button::Minimize => g.minimize_window(true),
                         Button::Maximize => g.window.set_maximized(!g.window.is_maximized()),
                         Button::Close => return self.close_window(id, event_loop),
                     }

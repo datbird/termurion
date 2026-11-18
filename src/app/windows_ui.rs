@@ -2075,7 +2075,7 @@ impl App {
         }
         self.apply_resizable();
         if let Some(g) = self.gpu.as_ref().filter(|_| p.bool("Hide After Opening")) {
-            g.window.set_minimized(true);
+            g.minimize_window(true);
         }
     }
 

@@ -462,6 +462,19 @@ impl Gpu {
         self.window.request_redraw();
     }
 
+    /// Shows or hides the window. The compositor may drop what it showed meanwhile, so the next
+    /// frame draws even when it equals the last. Every terminal window goes through here.
+    fn show_window(&self, shown: bool) {
+        self.scene.invalidate();
+        self.window.set_visible(shown);
+    }
+
+    /// Minimizes or restores the window (same reason as `show_window`).
+    fn minimize_window(&self, minimized: bool) {
+        self.scene.invalidate();
+        self.window.set_minimized(minimized);
+    }
+
     /// Configures the surface again. Its contents are undefined after that, so the next frame
     /// draws even when it equals the last.
     fn reconfigure(&self) {
@@ -9217,8 +9230,31 @@ mod tests {
         let sync = &fx[fx.find("fn fx_sync").unwrap()..];
         let after_check = sync.find("return;\n        }").unwrap();
         assert!(sync[after_check..after_check + 200].contains("gpu.scene.invalidate()"), "an effect change invalidates, turning off included");
-        let hot = include_str!("hotkey_ui.rs");
-        assert_eq!(hot.matches("set_visible(").count(), hot.matches("scene.invalidate()").count(), "every hide or show invalidates");
+    }
+
+    /// A terminal window shows, hides, minimizes and restores through `Gpu::show_window` and
+    /// `minimize_window`, which invalidate the kept frame. Not terminal windows: a window just
+    /// made (no kept frame), the egui windows, a browser view.
+    #[test]
+    fn every_terminal_window_show_or_hide_invalidates_the_kept_frame() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app");
+        let mut seen = 0;
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if !name.ends_with(".rs") || name.starts_with("browser") || ["presence_ui.rs", "transparency_ui.rs", "tool_web_ui.rs"].contains(&name.as_str()) {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).unwrap();
+            let live = src.split("#[cfg(test)]\nmod tests").next().unwrap();
+            for (i, line) in live.lines().enumerate() {
+                let raw = line.contains(".set_visible(") || line.contains(".set_minimized(");
+                let helper = name == "mod.rs" && (line.contains("self.window.set_visible(shown)") || line.contains("self.window.set_minimized(minimized)"));
+                assert!(!raw || helper, "{name}:{}: use Gpu::show_window or minimize_window", i + 1);
+                seen += usize::from(line.contains(".show_window(") || line.contains(".minimize_window("));
+            }
+        }
+        assert!(seen >= 8, "the callers were found: {seen}");
     }
 
     /// Round 4 (I2 on X11): with no hotkey set, an OS without system-wide hotkeys raises no banner

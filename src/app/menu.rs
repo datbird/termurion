@@ -1055,8 +1055,8 @@ impl App {
             "hide:" | "performMiniaturize:" => {
                 if item.selector == "hide:" && crate::platform::app_events::hide_app() {
                     // The whole app is hidden.
-                } else if let Some(w) = &window {
-                    w.set_minimized(true);
+                } else if let Some(g) = self.gpu.as_ref().filter(|_| window.is_some()) {
+                    g.minimize_window(true);
                 }
             }
             "performZoom:" => self.zoom_window(),
