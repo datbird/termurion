@@ -321,7 +321,7 @@ impl App {
         let s = self.scale();
         let (cw, ch) = cell;
         let span = |text: String, color: Rgb, icon: bool| Span { text, color, bold: false, italic: false, alt_font: false, icon, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
-        let row = |x: f32, y: f32, spans: Vec<Span>, clip: Rect, scale: f32| TextRow { x, y, spans, clip, scale, face: crate::render::DEFAULT_FACE };
+        let row = |x: f32, y: f32, spans: Vec<Span>, clip: Rect, scale: f32| TextRow { x, y, spans: spans.into(), clip, scale, face: crate::render::DEFAULT_FACE };
         for (pane, strip) in strips {
             let Some(p) = self.panes.get(&pane) else { continue };
             let (bg, fg) = (p.screen.palette.bg, p.screen.palette.fg);

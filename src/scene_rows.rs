@@ -260,7 +260,7 @@ mod tests {
     fn out() -> RowOut {
         RowOut {
             quads: vec![Quad { rect: rect(0.0), color: [1.0; 4] }],
-            rows: vec![TextRow { x: 1.0, y: 2.0, spans: vec![], clip: rect(0.0), scale: 1.0, face: 0 }],
+            rows: vec![TextRow { x: 1.0, y: 2.0, spans: Default::default(), clip: rect(0.0), scale: 1.0, face: 0 }],
             glyphs: vec![CellGlyph { c: '-', rect: rect(3.0), color: rgb(1, 2, 3), face: 0, clip: rect(0.0) }],
             hovered: vec![4],
             ..RowOut::default()
@@ -303,6 +303,15 @@ mod tests {
         assert!(cache.get_parts(5, &[], 0).is_some());
         cache.end_frame();
         assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn placing_a_row_shares_its_text() {
+        let mut row = out();
+        row.rows[0].spans = vec![crate::scene::Span { text: "hi".into(), color: rgb(1, 2, 3), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }].into();
+        let mut frame = Frame::default();
+        row.place(&mut frame, 0.0, rect(0.0), 0, &mut Vec::new());
+        assert!(crate::scene::Spans::ptr_eq(&frame.rows[0].spans, &row.rows[0].spans));
     }
 
     #[test]

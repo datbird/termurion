@@ -911,7 +911,7 @@ impl App {
         let (bg, fg) = (p.screen.palette.bg, p.screen.palette.fg);
         let (bar_bg, field_bg, dim, line) = (mix(bg, fg, 0.08), mix(bg, fg, 0.16), mix(bg, fg, 0.45), mix(bg, fg, 0.3));
         let span = |text: String, color: Rgb, icon: bool| Span { text, color, bold: false, italic: false, alt_font: false, icon, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
-        let row = |x: f32, y: f32, spans: Vec<Span>, clip: Rect| TextRow { x, y, spans, clip, scale: 1.0, face: crate::render::DEFAULT_FACE };
+        let row = |x: f32, y: f32, spans: Vec<Span>, clip: Rect| TextRow { x, y, spans: spans.into(), clip, scale: 1.0, face: crate::render::DEFAULT_FACE };
         let g = self.browser_geom(pane, bar, io.dev_null);
         frame.quads.push(Quad { rect: bar, color: scene::rgba(bar_bg, 1.0) });
         frame.quads.push(Quad { rect: Rect { y: bar.y + bar.h - 1.0, h: 1.0, ..bar }, color: scene::rgba(line, 1.0) });

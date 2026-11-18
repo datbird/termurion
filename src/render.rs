@@ -9,7 +9,7 @@ use wgpu::util::DeviceExt;
 use glyphon::cosmic_text::CacheKeyFlags;
 
 use crate::fonts;
-use crate::scene::{Frame, Quad, Span, TextRow};
+use crate::scene::{Frame, Quad, Span, Spans, TextRow};
 
 /// Rectangles: two triangles each, position and color per vertex.
 struct QuadPipeline {
@@ -553,7 +553,7 @@ pub struct Renderer {
     /// The last frame's text buffers, one per drawn row in frame order, each with what it shaped:
     /// spans, clip width, scale, face and the badge weight. A row finds its buffer by those, not by
     /// its slot, so a row that only moved is not shaped again.
-    buffers: Vec<(Buffer, Vec<Span>, f32, f32, u16, bool)>,
+    buffers: Vec<(Buffer, Spans, f32, f32, u16, bool)>,
     /// A porthole's prose font: Segoe UI Variable, else Segoe UI.
     prose_family: String,
     /// The badge font (bold): the default profile's Badge Font, Arial when not installed.
@@ -1563,10 +1563,10 @@ impl Renderer {
             let mut start = 0.0;
             let mut first = true;
             let mut put = |run: Vec<Span>, start: f32, first: &mut bool| {
-                let piece = TextRow { x: row.x + start, spans: run, ..row.clone() };
+                let piece = TextRow { x: row.x + start, spans: run.into(), ..row.clone() };
                 if std::mem::take(first) { out.push(piece) } else { later.push(piece) }
             };
-            for s in &row.spans {
+            for s in row.spans.iter() {
                 if run.last().is_some_and(|l| l.ligatures != s.ligatures) {
                     put(std::mem::take(&mut run), start, &mut first);
                     start = at;
@@ -1646,7 +1646,7 @@ impl Renderer {
                 used.push(found);
                 continue;
             }
-            used.push((Buffer::new(&mut self.font_system, metrics), Vec::new(), 0.0, 1.0, DEFAULT_FACE, bold_badge));
+            used.push((Buffer::new(&mut self.font_system, metrics), Spans::default(), 0.0, 1.0, DEFAULT_FACE, bold_badge));
             let slot = used.last_mut().unwrap();
             let (buffer, last, last_w, last_scale, last_face, _) = slot;
             // The row's own face: its fonts, pixel size and cell (a row of another face is never
@@ -2233,7 +2233,7 @@ mod tests {
                     .map(|i| TextRow {
                         x: 4.0,
                         y: i as f32 * 18.0,
-                        spans: vec![Span { text: format!("row {i} the quick brown fox jumps over the lazy dog 0123456789"), color: rgb(220, 220, 220), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }],
+                        spans: vec![Span { text: format!("row {i} the quick brown fox jumps over the lazy dog 0123456789"), color: rgb(220, 220, 220), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }].into(),
                         clip: Rect { x: 0.0, y: i as f32 * 18.0, w: 1200.0, h: 18.0 },
                         scale: 1.0,
                         face: crate::render::DEFAULT_FACE,
@@ -2328,7 +2328,7 @@ mod tests {
         let block = |x: f32, y: f32, face: u16| TextRow {
             x,
             y,
-            spans: vec![Span { text: "\u{2588}".repeat(4), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }],
+            spans: vec![Span { text: "\u{2588}".repeat(4), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }].into(),
             clip: Rect { x: 0.0, y, w: w as f32, h: if face == 1 { c1.1 } else { c2.1 } },
             scale: 1.0,
             face,
@@ -2471,7 +2471,7 @@ mod tests {
         let shot = |r: &mut Renderer, face: u16, bold: bool, italic: bool, mask: u8| -> Vec<u8> {
             let span = Span { text: "W".into(), color: rgb(255, 255, 255), bold, italic, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: bold, ligatures: 0, mask, font: 0 };
             let cell = r.face_cell(face);
-            let row = TextRow { x: 4.0, y: 4.0, spans: vec![span], clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 }, scale: 1.0, face };
+            let row = TextRow { x: 4.0, y: 4.0, spans: vec![span].into(), clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 }, scale: 1.0, face };
             let frame = Frame { clear: rgba(rgb(0, 0, 0), 1.0), rows: vec![row], ..Default::default() };
             r.draw(&frame, &view, w, h).unwrap();
             let _ = cell;
@@ -2597,7 +2597,7 @@ mod tests {
             r.draw(&frame, &view, w, h).unwrap();
             read(&device, &queue, &tex, w, h)
         };
-        let row = |x: f32, spans: Vec<Span>| TextRow { x, y: 4.0, spans, clip, scale: 1.0, face };
+        let row = |x: f32, spans: Vec<Span>| TextRow { x, y: 4.0, spans: spans.into(), clip, scale: 1.0, face };
         let flat = shot(vec![row(4.0, vec![sp("a->b", 0)])]);
         let joined = shot(vec![row(4.0, vec![sp("a->b", 2)])]);
         assert_ne!(flat, joined, "level 2 joins the arrow in Cascadia Code, level 0 does not");
@@ -2738,7 +2738,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 0.0,
                 y: 0.0,
-                spans: vec![Span { text: "\u{2588}".repeat(n), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }],
+                spans: vec![Span { text: "\u{2588}".repeat(n), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }].into(),
                 clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 },
                 scale: 1.0,
                 face: crate::render::DEFAULT_FACE,
@@ -2784,7 +2784,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 0.0,
                 y: 0.0,
-                spans: vec![Span { text: text.into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }],
+                spans: vec![Span { text: text.into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }].into(),
                 clip: Rect { x: 0.0, y: 0.0, w: 600.0, h: 32.0 },
                 scale: 1.0,
                 face: crate::render::DEFAULT_FACE,
@@ -2869,7 +2869,7 @@ mod tests {
         let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "DejaVu Sans Mono", 16.0);
         for (text, bold) in [("Allow? New Tab", false), ("iiil WWW mmm", true)] {
             let span = Span { text: text.into(), color: rgb(255, 255, 255), bold, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
-            let row = TextRow { x: 0.0, y: 0.0, spans: vec![span], clip: Rect { x: 0.0, y: 0.0, w: 600.0, h: 32.0 }, scale: 1.0, face: DEFAULT_FACE };
+            let row = TextRow { x: 0.0, y: 0.0, spans: vec![span].into(), clip: Rect { x: 0.0, y: 0.0, w: 600.0, h: 32.0 }, scale: 1.0, face: DEFAULT_FACE };
             let frame = Frame { rows: vec![row], ..Frame::default() };
             drawn_xs(&mut r, &frame, 600, 32);
             let end = r.buffers[0].0.layout_runs().flat_map(|run| run.glyphs.iter().map(|g| g.x + g.w).collect::<Vec<_>>()).fold(0.0, f32::max);
@@ -2976,7 +2976,7 @@ mod tests {
 
     /// Every glyph of a frame row drawn in the renderer's default face: (x, font size).
     fn row_glyphs(r: &mut Renderer, spans: Vec<Span>) -> Vec<(f32, f32)> {
-        let row = TextRow { x: 0.0, y: 0.0, spans, clip: Rect { x: 0.0, y: 0.0, w: 600.0, h: 32.0 }, scale: 1.0, face: DEFAULT_FACE };
+        let row = TextRow { x: 0.0, y: 0.0, spans: spans.into(), clip: Rect { x: 0.0, y: 0.0, w: 600.0, h: 32.0 }, scale: 1.0, face: DEFAULT_FACE };
         let frame = Frame { rows: vec![row], ..Frame::default() };
         drawn_xs(r, &frame, 600, 32);
         r.buffers[0].0.layout_runs().flat_map(|run| run.glyphs.iter().map(|g| (g.x, g.font_size)).collect::<Vec<_>>()).collect()
@@ -3083,7 +3083,7 @@ mod tests {
             for h in [1.0f32, 1.25] {
                 r.set_fonts(family, None, px, h, 1.0);
                 let span = Span { ligatures: 1, ..terminal_span(text, false, false) };
-                let row = TextRow { x: 0.0, y: 0.0, spans: vec![span], clip: Rect { x: 0.0, y: 0.0, w: 600.0, h: 32.0 }, scale: 1.0, face: DEFAULT_FACE };
+                let row = TextRow { x: 0.0, y: 0.0, spans: vec![span].into(), clip: Rect { x: 0.0, y: 0.0, w: 600.0, h: 32.0 }, scale: 1.0, face: DEFAULT_FACE };
                 drawn_xs(&mut r, &Frame { rows: vec![row], ..Frame::default() }, 600, 32);
                 let glyphs: Vec<(usize, f32)> = r.buffers[0].0.layout_runs().flat_map(|run| run.glyphs.iter().map(|g| (g.start, g.x)).collect::<Vec<_>>()).collect();
                 assert_eq!(glyphs.iter().map(|g| g.0).collect::<Vec<_>>(), vec![0, 1, 3, 4, 7, 8, 9, 10], "the two arrows are ligatures");
@@ -4297,7 +4297,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 36.0,
                 y: 0.0,
-                spans: vec![Span { text: "\u{2588}".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }],
+                spans: vec![Span { text: "\u{2588}".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }].into(),
                 clip: Rect { x: 32.0, y: 0.0, w: 32.0, h: 32.0 },
                 scale: 1.0,
                 face: crate::render::DEFAULT_FACE,
@@ -4337,7 +4337,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 0.0,
                 y: 0.0,
-                spans: vec![Span { text: " \u{2588} ".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }],
+                spans: vec![Span { text: " \u{2588} ".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }].into(),
                 clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 },
                 scale: 1.0,
                 face: crate::render::DEFAULT_FACE,
@@ -4379,7 +4379,7 @@ mod tests {
         let red = rgba(rgb(255, 0, 0), 1.0);
         let clip = Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
         let span = |text: &str, badge: bool| Span { text: text.into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
-        let row = |x: f32, text: &str, badge: bool| TextRow { x, y: 0.0, spans: vec![span(text, badge)], clip, scale: 1.0, face: crate::render::DEFAULT_FACE };
+        let row = |x: f32, text: &str, badge: bool| TextRow { x, y: 0.0, spans: vec![span(text, badge)].into(), clip, scale: 1.0, face: crate::render::DEFAULT_FACE };
         let frame = |rows: Vec<TextRow>| Frame {
             clear: rgba(rgb(0, 0, 0), 1.0),
             rows,
@@ -4411,7 +4411,7 @@ mod tests {
     fn shoot(r: &mut Renderer, device: &wgpu::Device, queue: &wgpu::Queue, face: u16, spans: Vec<Span>, (w, h): (u32, u32)) -> Vec<u8> {
         let tex = target(device, w, h);
         let view = tex.create_view(&Default::default());
-        let row = TextRow { x: 4.0, y: 4.0, spans, clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 }, scale: 1.0, face };
+        let row = TextRow { x: 4.0, y: 4.0, spans: spans.into(), clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 }, scale: 1.0, face };
         let frame = Frame { clear: rgba(rgb(0, 0, 0), 1.0), rows: vec![row], ..Default::default() };
         r.draw(&frame, &view, w, h).unwrap();
         read(device, queue, &tex, w, h)
@@ -4487,7 +4487,7 @@ mod tests {
             .map(|i| TextRow {
                 x: 0.0,
                 y: (i * 64) as f32,
-                spans: vec![masked(&(0..48u32).filter_map(|j| char::from_u32(0x4e00 + i * 56 + j)).collect::<String>(), false, 0)],
+                spans: vec![masked(&(0..48u32).filter_map(|j| char::from_u32(0x4e00 + i * 56 + j)).collect::<String>(), false, 0)].into(),
                 clip,
                 scale: 1.0,
                 face: big,
@@ -4495,7 +4495,7 @@ mod tests {
             .collect();
         // The same rows `shoot` draws, moved 3456 right so their 64 by 40 crops are comparable, and
         // first in the frame: they are prepared (in use) before the ideographs make the atlas grow.
-        let mut rows: Vec<TextRow> = [(100.0, 1u8), (300.0, 2u8)].into_iter().map(|(y, mask)| TextRow { x: 3460.0, y, spans: vec![masked("W", false, mask)], clip, scale: 1.0, face }).collect();
+        let mut rows: Vec<TextRow> = [(100.0, 1u8), (300.0, 2u8)].into_iter().map(|(y, mask)| TextRow { x: 3460.0, y, spans: vec![masked("W", false, mask)].into(), clip, scale: 1.0, face }).collect();
         rows.extend(ideographs);
         let tex = target(&device, bw, bh);
         let view = tex.create_view(&Default::default());
@@ -4616,7 +4616,7 @@ mod tests {
             .map(|i| TextRow {
                 x: 0.0,
                 y: (i * 64) as f32,
-                spans: vec![masked(&(0..56u32).filter_map(|j| char::from_u32(0x4e00 + i * 56 + j)).collect::<String>(), false, 0)],
+                spans: vec![masked(&(0..56u32).filter_map(|j| char::from_u32(0x4e00 + i * 56 + j)).collect::<String>(), false, 0)].into(),
                 clip: Rect { x: 0.0, y: 0.0, w: bw as f32, h: bh as f32 },
                 scale: 1.0,
                 face: big,
@@ -4641,7 +4641,7 @@ mod tests {
         };
         let plain = r.face(&key(&family, 20.0, 1.0, 1.0));
         assert_eq!(r.face_bold(plain), None);
-        let row = |mask: u8| TextRow { x: 10.0, y: 0.0, spans: vec![masked("W", true, mask)], clip: Rect { x: 0.0, y: 0.0, w: 100.0, h: 40.0 }, scale: 1.0, face: plain };
+        let row = |mask: u8| TextRow { x: 10.0, y: 0.0, spans: vec![masked("W", true, mask)].into(), clip: Rect { x: 0.0, y: 0.0, w: 100.0, h: 40.0 }, scale: 1.0, face: plain };
         let shift = |r: &Renderer, mask: u8| r.double_strikes(&[row(mask)]).iter().map(|d| d.x - 10.0).collect::<Vec<f32>>();
         assert_eq!(shift(&r, 1), vec![1.0], "aliased: one pixel");
         assert_eq!(shift(&r, 0), vec![0.0], "anti-aliased at 1x: the copy lands in place");
@@ -4651,7 +4651,7 @@ mod tests {
         assert_eq!(shift(&r, 1), vec![1.0]);
         // A row that mixes an aliased and an anti-aliased bold span strikes each at its own shift.
         r.scale = 1.0;
-        let mixed = TextRow { spans: vec![masked("W", true, 0), masked("W", true, 1)], ..row(0) };
+        let mixed = TextRow { spans: vec![masked("W", true, 0), masked("W", true, 1)].into(), ..row(0) };
         let copies = r.double_strikes(&[mixed]);
         assert_eq!(copies.iter().map(|d| d.x - 10.0).collect::<Vec<f32>>(), vec![0.0, 1.0]);
         // Each copy carries only its own spans; the other is blank advance.
@@ -4697,7 +4697,7 @@ mod tests {
         let frame_of = |from: usize| {
             let mut f = Frame::default();
             for (slot, text) in lines[from..from + 20].iter().enumerate() {
-                f.rows.push(TextRow { x: 10.0, y: slot as f32 * 20.0, spans: vec![masked(text, false, 0)], clip: Rect { x: 0.0, y: 0.0, w: 400.0, h: 400.0 }, scale: 1.0, face: DEFAULT_FACE });
+                f.rows.push(TextRow { x: 10.0, y: slot as f32 * 20.0, spans: vec![masked(text, false, 0)].into(), clip: Rect { x: 0.0, y: 0.0, w: 400.0, h: 400.0 }, scale: 1.0, face: DEFAULT_FACE });
             }
             f
         };
@@ -4715,7 +4715,7 @@ mod tests {
         let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         let mut f = Frame::default();
         for y in [0.0, 30.0] {
-            f.rows.push(TextRow { x: 10.0, y, spans: vec![masked("same", false, 0)], clip: Rect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 }, scale: 1.0, face: DEFAULT_FACE });
+            f.rows.push(TextRow { x: 10.0, y, spans: vec![masked("same", false, 0)].into(), clip: Rect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 }, scale: 1.0, face: DEFAULT_FACE });
         }
         r.draw_offscreen(&f, 200, 100).unwrap();
         r.draw_offscreen(&f, 200, 100).unwrap();
@@ -4732,7 +4732,7 @@ mod tests {
         let (device, queue) = device();
         let r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         let level = |text: &str, ligatures: u8| Span { ligatures, ..masked(text, false, 0) };
-        let row = |y: f32, spans: Vec<Span>| TextRow { x: 10.0, y, spans, clip: Rect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 }, scale: 1.0, face: DEFAULT_FACE };
+        let row = |y: f32, spans: Vec<Span>| TextRow { x: 10.0, y, spans: spans.into(), clip: Rect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 }, scale: 1.0, face: DEFAULT_FACE };
         let rows = vec![row(0.0, vec![level("ab", 0), level("->", 2)]), row(20.0, vec![level("cd", 0)]), row(40.0, vec![level("e", 0), level("=>", 2), level("f", 0)])];
         let out = r.split_levels(&rows);
         assert_eq!(out.len(), 6, "three rows and three extra runs");

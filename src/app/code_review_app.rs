@@ -188,7 +188,7 @@ impl App {
             let m = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round().clamp(0.0, 255.0) as u8;
             crate::palette::Rgb { r: m(a.r, b.r), g: m(a.g, b.g), b: m(a.b, b.b) }
         };
-        let row = |x: f32, y: f32, spans: Vec<Span>, clip: Rect| TextRow { x, y, spans, clip, scale: 1.0, face: crate::render::DEFAULT_FACE };
+        let row = |x: f32, y: f32, spans: Vec<Span>, clip: Rect| TextRow { x, y, spans: spans.into(), clip, scale: 1.0, face: crate::render::DEFAULT_FACE };
         for (pane, panel) in panels {
             let Some(p) = self.panes.get(&pane) else { continue };
             let (bg, fg, selected) = (p.screen.palette.bg, p.screen.palette.fg, p.screen.palette.selection);

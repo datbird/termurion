@@ -640,7 +640,7 @@ impl App {
             let g = overlay_geom(panel, cell, s, queued);
             scene::cut_out(frame, panel, cell.1);
             frame.popups.push(Quad { rect: panel, color: scene::rgba(back, 1.0) });
-            let row = |x: f32, y: f32, spans: Vec<Span>, clip: Rect| TextRow { x, y, spans, clip, scale: 1.0, face: crate::render::DEFAULT_FACE };
+            let row = |x: f32, y: f32, spans: Vec<Span>, clip: Rect| TextRow { x, y, spans: spans.into(), clip, scale: 1.0, face: crate::render::DEFAULT_FACE };
             let (title, body) = if queued { (wgit::RELOAD_TITLE, wgit::RELOAD_BODY) } else { (wgit::WAITING_TITLE, wgit::WAITING_BODY) };
             frame.rows.push(row(g.title.x, g.title.y, vec![span(title.to_string(), fg, true)], g.title));
             for (i, l) in wrap_words(body, g.body.w, cell.0).into_iter().enumerate() {
