@@ -4350,7 +4350,7 @@ section = "Drawing"
 label = "Redraw only the rows that changed"
 type = "bool"
 default = true
-help = "Termurion rebuilds only the rows whose text, colors or highlights changed, as other fast terminals do. Turn this off if text is drawn wrongly (leftover or stale characters) and report it."
+help = "Redraw only the rows that changed\nTermurion rebuilds only the rows whose text, colors or highlights changed, as other fast terminals do. Turn this off if text is drawn wrongly (leftover or stale characters) and report it."
 
 [[setting]]
 key = "UseMultiPassUnderlineRenderer"
