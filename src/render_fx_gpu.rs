@@ -126,6 +126,10 @@ pub struct Chain {
     /// `kept` holds this chain's last window frame at `size`.
     kept_ok: bool,
     kept_made: u64,
+    /// The next frame may shade only a region (`keep_output`).
+    keep_next: bool,
+    /// The last run shaded only rects (tests).
+    shaded_region: bool,
 }
 
 /// The chain's kept output (raw format, window size) and the copy that puts it in the window.
@@ -211,7 +215,7 @@ impl Chain {
             passes.push(Pass { pipeline, uniforms, layout });
         }
         let last_packed = vec![Vec::new(); passes.len()];
-        Ok(Chain { passes, bind_layout, sampler, format, size: (0, 0), targets: Vec::new(), blits: None, plain: None, keep_alpha, frame_drawn: false, binds: Vec::new(), copy_binds: Vec::new(), last_packed, binds_made: 0, uniform_writes: 0, region_terms: None, kept: None, kept_ok: false, kept_made: 0 })
+        Ok(Chain { passes, bind_layout, sampler, format, size: (0, 0), targets: Vec::new(), blits: None, plain: None, keep_alpha, frame_drawn: false, binds: Vec::new(), copy_binds: Vec::new(), last_packed, binds_made: 0, uniform_writes: 0, region_terms: None, kept: None, kept_ok: false, kept_made: 0, keep_next: true, shaded_region: false })
     }
 
     /// For a card that cannot view a texture in a second format (`view_formats_supported` false):
@@ -275,6 +279,18 @@ impl Chain {
 
     pub fn region_terms(&self) -> Option<&[RegionTerm]> {
         self.region_terms.as_deref()
+    }
+
+    /// Whether the next frame may shade only a region: false when this frame's own region is full
+    /// (`render_fx::own_region`), so the next one is full too. With view formats such a frame then
+    /// writes the window directly and skips the kept output and its copy.
+    pub fn keep_output(&mut self, keep: bool) {
+        self.keep_next = keep;
+    }
+
+    /// Whether the last run shaded only rects.
+    pub fn shaded_region(&self) -> bool {
+        self.shaded_region
     }
 
     /// How many times the kept output was made (it follows the size, not the frames).
@@ -506,7 +522,10 @@ impl Chain {
         if let (Some((b, p)), None) = (plain, rects) {
             Self::blit(&mut encoder, &self.copy_binds[0], &b.decode, &p.raw[0]);
         }
-        let kept = self.kept.as_ref().map(|k| &k.view);
+        // A full frame no next frame builds on writes the window directly (the copy passes
+        // without view formats run anyway, so there the kept output stays).
+        let skip_kept = rects.is_none() && !self.keep_next && plain.is_none();
+        let kept = self.kept.as_ref().map(|k| &k.view).filter(|_| !skip_kept);
         // A region frame keeps every pixel outside its rects from the last frame.
         let load = if rects.is_some() { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(wgpu::Color::BLACK) };
         for (i, pass) in self.passes.iter().enumerate() {
@@ -546,11 +565,12 @@ impl Chain {
         }
         match (plain, &self.kept) {
             (Some((b, _)), _) => Self::blit(&mut encoder, &self.copy_binds[1], &b.encode, out),
-            (None, Some(Kept { copy: Some((_, pipeline, bind)), .. })) => Self::blit(&mut encoder, bind, pipeline, out),
+            (None, Some(Kept { copy: Some((_, pipeline, bind)), .. })) if !skip_kept => Self::blit(&mut encoder, bind, pipeline, out),
             (None, _) => {}
         }
         queue.submit([encoder.finish()]);
-        self.kept_ok = self.kept.is_some();
+        self.kept_ok = self.kept.is_some() && !skip_kept;
+        self.shaded_region = rects.is_some();
     }
 }
 

@@ -22,6 +22,8 @@ pub(super) struct FxRuntime {
     uniforms: Uniforms,
     /// Last frame's uniforms: an animation frame also shades where last frame's effect drew.
     last_uniforms: Uniforms,
+    /// Built with Live Lines on (the shaders animate any box lines they find themselves).
+    live_lines: bool,
     animation: Animation,
     /// The first plugin's preset cursor color (cursor-fx effects are made for one).
     preset: Option<[f32; 3]>,
@@ -116,6 +118,7 @@ impl App {
         let mut preset = None;
         let mut manifests = Vec::new();
         let switches: Vec<(&str, bool)> = render_fx::SWITCHES.iter().zip(&wanted.1).filter_map(|((_, c, ..), on)| c.map(|c| (c, *on))).collect();
+        let live_lines = render_fx::SWITCHES.iter().zip(&wanted.1).any(|((_, c, ..), on)| *c == Some("LINE_EFFECT") && *on);
         let signals = render_fx::SWITCHES.iter().zip(&wanted.1).find(|((_, c, ..), _)| c.is_none()).is_none_or(|(_, on)| *on);
         for id in &wanted.0 {
             let Some(p) = plugins.iter().find(|p| &p.id == id) else {
@@ -157,7 +160,7 @@ impl App {
                 }
             }
         };
-        gpu.fx = Some(FxRuntime { ids: wanted, chain, clock: Clock::default(), uniforms: Uniforms::default(), last_uniforms: Uniforms::default(), animation: strongest(&animations), preset, keep_alpha, signals, due: None });
+        gpu.fx = Some(FxRuntime { ids: wanted, chain, clock: Clock::default(), uniforms: Uniforms::default(), last_uniforms: Uniforms::default(), live_lines, animation: strongest(&animations), preset, keep_alpha, signals, due: None });
         if errors.is_empty() {
             self.banners.clear(BANNER);
         } else {
@@ -230,11 +233,13 @@ impl FxRuntime {
         }
     }
 
-    /// Where this frame's effects can draw, with last frame's (`render_fx::frame_region`); None
-    /// runs the full pass. `cell_h` is the focused pane's cell height.
-    pub(super) fn region(&self, cell_h: f32, size: (u32, u32)) -> Option<Vec<render_fx::PxRect>> {
-        let terms = self.chain.as_ref()?.region_terms()?;
-        render_fx::frame_region(terms, &self.uniforms, &self.last_uniforms, cell_h, size)
+    /// Where this frame's effects can draw, with last frame's (`render_fx::frame_region`; None
+    /// runs the full pass), and whether this frame's own region is bounded, so the next frame
+    /// may shade only a region. `cell` is the focused pane's cell.
+    pub(super) fn region(&self, cell: (f32, f32), size: (u32, u32)) -> (Option<Vec<render_fx::PxRect>>, bool) {
+        let Some(terms) = self.chain.as_ref().and_then(|c| c.region_terms()) else { return (None, false) };
+        let own = render_fx::own_region(terms, &self.uniforms, cell, self.live_lines, size).is_some();
+        (render_fx::frame_region(terms, &self.uniforms, &self.last_uniforms, cell, self.live_lines, size), own)
     }
 
     pub(super) fn chain_mut(&mut self) -> Option<(&mut Chain, &Uniforms)> {

@@ -190,7 +190,7 @@ pub fn chain_region(manifests: &[&Manifest]) -> Option<Vec<RegionTerm>> {
 }
 
 /// The pixels an effect can change this frame, or None for the whole screen. `cell_h` is the
-/// focused pane's cell height (the pads are in its cells). The caller unites this with last frame's rects.
+/// unit the pads are in (`pad_unit`). The caller unites this with last frame's rects.
 pub fn region_rects(terms: &[RegionTerm], u: &Uniforms, cell_h: f32, size: (u32, u32)) -> Option<Vec<PxRect>> {
     let (sw, sh) = (size.0 as f32, size.1 as f32);
     // (left, top, right, bottom) in float pixels, grown by pad cells
@@ -237,12 +237,29 @@ pub fn region_rects(terms: &[RegionTerm], u: &Uniforms, cell_h: f32, size: (u32,
     Some(round_and_merge(boxes, (sw, sh)))
 }
 
+/// The unit region pads are in, from the cell (width, height): the built-ins size their looks in
+/// `cellH = max(cursor height, 2 * cell width)`, so plain cell heights fall short in a wide cell
+/// (Horizontal Spacing) or under a thin cursor.
+pub fn pad_unit((cw, ch): (f32, f32)) -> f32 {
+    ch.max(2.0 * cw)
+}
+
+/// One frame's own region (`region_rects` with pads in `pad_unit(cell)`), or None for the full
+/// pass. With Live Lines on and no input box found by Termurion the shaders look for box lines
+/// themselves, anywhere around the cursor, and animate them: that frame is full.
+pub fn own_region(terms: &[RegionTerm], u: &Uniforms, cell: (f32, f32), live_lines: bool, size: (u32, u32)) -> Option<Vec<PxRect>> {
+    if live_lines && u.input_box[2] < 0.5 {
+        return None;
+    }
+    region_rects(terms, u, pad_unit(cell), size)
+}
+
 /// The rects an animation frame shades: this frame's region united with last frame's, whose
 /// light outside this frame's must go back to the plain picture. None (the full pass) when
 /// either frame is full; an empty list when neither can draw anything.
-pub fn frame_region(terms: &[RegionTerm], now: &Uniforms, last: &Uniforms, cell_h: f32, size: (u32, u32)) -> Option<Vec<PxRect>> {
-    let a = region_rects(terms, now, cell_h, size)?;
-    let b = region_rects(terms, last, cell_h, size)?;
+pub fn frame_region(terms: &[RegionTerm], now: &Uniforms, last: &Uniforms, cell: (f32, f32), live_lines: bool, size: (u32, u32)) -> Option<Vec<PxRect>> {
+    let a = own_region(terms, now, cell, live_lines, size)?;
+    let b = own_region(terms, last, cell, live_lines, size)?;
     let boxes = a.iter().chain(&b).map(|r| [r.x as f32, r.y as f32, (r.x + r.w) as f32, (r.y + r.h) as f32]).collect();
     Some(round_and_merge(boxes, (size.0 as f32, size.1 as f32)))
 }
@@ -1204,15 +1221,38 @@ mod tests {
         // Long after the cursor changed.
         now.time = 10.0;
         let t = [RegionTerm::Cursor(0.0)];
-        assert_eq!(frame_region(&t, &now, &last, 20.0, (800, 600)).unwrap(), [PxRect { x: 100, y: 400, w: 10, h: 20 }, PxRect { x: 100, y: 40, w: 10, h: 20 }]);
+        assert_eq!(frame_region(&t, &now, &last, (8.0, 20.0), false, (800, 600)).unwrap(), [PxRect { x: 100, y: 400, w: 10, h: 20 }, PxRect { x: 100, y: 40, w: 10, h: 20 }]);
         // Either frame full: the full pass.
         let mut playing = now.clone();
         playing.time_cursor_change = playing.time;
         let f = [RegionTerm::Cursor(0.0), RegionTerm::FullAfterChange(Duration::from_millis(600))];
-        assert_eq!(frame_region(&f, &now, &playing, 20.0, (800, 600)), None);
-        assert_eq!(frame_region(&f, &playing, &now, 20.0, (800, 600)), None);
+        assert_eq!(frame_region(&f, &now, &playing, (8.0, 20.0), false, (800, 600)), None);
+        assert_eq!(frame_region(&f, &playing, &now, (8.0, 20.0), false, (800, 600)), None);
         // Nothing to draw in either: nothing shaded, never the full pass.
-        assert_eq!(frame_region(&[RegionTerm::InputBox(1.0)], &now, &last, 20.0, (800, 600)), Some(vec![]));
+        assert_eq!(frame_region(&[RegionTerm::InputBox(1.0)], &now, &last, (8.0, 20.0), false, (800, 600)), Some(vec![]));
+    }
+
+    #[test]
+    fn pads_are_in_the_shaders_cell_unit() {
+        assert_eq!(pad_unit((8.0, 20.0)), 20.0);
+        // Horizontal Spacing 200%: the shaders' cellH is twice the cell width.
+        assert_eq!(pad_unit((16.0, 20.0)), 32.0);
+        let u = cursor_uniforms([100.0, 100.0, 16.0, 2.0]);
+        assert_eq!(own_region(&[RegionTerm::Cursor(1.0)], &u, (16.0, 20.0), false, (800, 600)).unwrap(), [PxRect { x: 68, y: 68, w: 80, h: 66 }]);
+    }
+
+    #[test]
+    fn live_lines_with_no_box_found_is_the_full_pass() {
+        let mut u = cursor_uniforms([100.0, 100.0, 10.0, 20.0]);
+        u.time = 10.0;
+        let t = [RegionTerm::Cursor(1.0), RegionTerm::InputBox(1.0)];
+        assert_eq!(own_region(&t, &u, (8.0, 20.0), true, (800, 600)), None);
+        assert!(own_region(&t, &u, (8.0, 20.0), false, (800, 600)).is_some());
+        u.input_box = [60.0, 200.0, 1.0, 0.0];
+        assert!(own_region(&t, &u, (8.0, 20.0), true, (800, 600)).is_some());
+        let last = u.clone();
+        u.input_box = [0.0; 4];
+        assert_eq!(frame_region(&t, &last, &u, (8.0, 20.0), true, (800, 600)), None, "last frame had no box");
     }
 
     #[test]

@@ -7406,7 +7406,7 @@ impl App {
         let focused_window = self.focused;
         let fx_pacing = self.fs().effects_pacing;
         // The effects' region pads are in the focused pane's cells.
-        let fx_cell_h = self.focused_id().map_or_else(|| self.cell(), |id| self.pane_cell(id)).1;
+        let fx_cell = self.focused_id().map_or_else(|| self.cell(), |id| self.pane_cell(id));
         // Render plugins: the focused pane's Enter and done signals (done fires on quiet here).
         let signals_on = self.gpu.as_ref().and_then(|g| g.fx.as_ref()).is_some_and(|f| f.signals);
         let fx_signals = self.tabs.get(self.active).map(|t| t.focused).and_then(|id| self.panes.get_mut(&id)).filter(|_| signals_on).map(|p| {
@@ -7482,9 +7482,11 @@ impl App {
             Some(fx) => {
                 // The passes write the window through its non-sRGB view (fx_sync made sure it has one).
                 fx.prepare(frame.fx.as_ref(), fx_signals.as_ref(), (w, h), focused_window, fx_now);
-                // Only an animation frame uses it (`draw_fx_for`); the full pass needs none.
-                let region = if same_scene { fx.region(fx_cell_h, (w, h)) } else { None };
+                // Only an animation frame shades the region (`draw_fx_for`); a frame whose own
+                // region is full tells the chain no next frame can, so it skips the kept output.
+                let (region, bounded) = fx.region(fx_cell, (w, h));
                 let (chain, uniforms) = fx.chain_mut().expect("active");
+                chain.keep_output(bounded);
                 // Without view formats (OpenGL) the chain's last copy writes the window's own view.
                 let out = if chain.wants_raw_out() { texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(crate::render_fx_gpu::raw_format(gpu.config.format)), ..Default::default() }) } else { view.clone() };
                 gpu.renderer.draw_fx_for(&frame, chain, uniforms, &out, w, h, same_scene, region.as_deref())
