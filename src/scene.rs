@@ -10516,7 +10516,7 @@ mod painted_cursor_tests {
 }
 
 #[cfg(test)]
-mod agent_box_tests {
+pub(crate) mod agent_box_tests {
     use super::*;
     use crate::test_tmp::TempDir;
 
@@ -10575,11 +10575,9 @@ mod agent_box_tests {
         assert_eq!(out, std::fs::read_to_string(&file).unwrap());
     }
 
-    /// What `pane_with` draws for a set of screens, pinned before rows were built one by one:
-    /// the whole `Frame` for each small case, a stable hash of it for the big ones.
-    /// `TERMURION_BLESS=1` rewrites the fixtures.
-    #[test]
-    fn pane_frames_match_the_recorded_baseline() {
+    /// The screens the baseline pins, as the frames `pane_with` draws for them (also the pixel
+    /// harness's cases). `big` ones keep a hash only.
+    pub(crate) fn baseline_cases() -> Vec<(String, Frame, bool)> {
         use alacritty_terminal::index::{Column, Line, Point, Side};
         use alacritty_terminal::selection::{Selection, SelectionType};
         let rect = crate::layout::Rect { x: 4.0, y: 6.0, w: 800.0, h: 480.0 };
@@ -10589,12 +10587,11 @@ mod agent_box_tests {
         let draw_of = |s: &crate::screen::Screen, focused: bool, look: &CursorLook, draw: &DrawPrefs, h: Option<&Highlights>| {
             let mut f = Frame::default();
             pane_with(&mut f, s, rect, cell, focused, look, draw, h, face, None);
-            format!("{f:#?}")
+            f
         };
         let plain = |s: &crate::screen::Screen| draw_of(s, true, &CursorLook::shown(true), &DrawPrefs::default(), None);
         let p = |row: i32, col: usize| Point::new(Line(row), Column(col));
-        // (name, full text); `big` cases keep a hash only.
-        let mut cases: Vec<(String, String, bool)> = Vec::new();
+        let mut cases: Vec<(String, Frame, bool)> = Vec::new();
 
         let mut s = crate::screen::Screen::new(80, 24);
         for n in 0..200 {
@@ -10640,15 +10637,7 @@ mod agent_box_tests {
         let img = crate::images::Image { width_px: 20, height_px: 20, cols: 3, rows: 2, frames: vec![crate::images::Frame { rgba: std::sync::Arc::new(vec![9; 20 * 20 * 4]), delay_ms: 0 }], broken: false, keep_aspect: false, uid: 0, filename: None, paused: None };
         s.place_image(img, true);
         s.feed(b"text below the picture\r\nmore");
-        // The picture's id comes from a counter every test shares: zero it.
-        let shot = plain(&s);
-        let mut lines: Vec<String> = shot.lines().map(String::from).collect();
-        for i in 1..lines.len() {
-            if lines[i - 1].trim() == "key: (" {
-                lines[i] = "0,".to_string();
-            }
-        }
-        cases.push(("image-with-text-below".into(), lines.join("\n"), true));
+        cases.push(("image-with-text-below".into(), plain(&s), true));
 
         let mut s = crate::screen::Screen::new(30, 4);
         s.feed(b"\x1b[31mdefault red\x1b[0m\r\n\x1b]4;1;rgb:00/ff/00\x07\x1b[31mnow green\x1b[0m\r\n\x1b[48;5;1mbg one\x1b[0m");
@@ -10664,7 +10653,7 @@ mod agent_box_tests {
         s.feed(b"\x1b[4munder\x1b[0m line\r\n\x1b[9mstruck\x1b[0m line\r\n\x1b[4;9mboth\x1b[0m\r\n\x1b[4:3mcurly\x1b[0m");
         let mut f = Frame::default();
         pane_with(&mut f, &s, crate::layout::Rect { y: 6.5, ..rect }, cell, true, &CursorLook::shown(true), &DrawPrefs::default(), None, face, None);
-        cases.push(("fractional-top".into(), format!("{f:#?}"), false));
+        cases.push(("fractional-top".into(), f, false));
 
         let mut s = crate::screen::Screen::new(30, 6);
         s.feed("\u{250c}\u{2500}\u{2500}\u{252c}\u{2500}\u{2510}\r\n\u{2502}ab\u{2502}cd\u{2502}\r\n\u{2514}\u{2500}\u{2500}\u{2534}\u{2500}\u{2518}\r\n\u{e0b0}\u{e0b2}\u{e0b4} \u{2588}\u{2591}\u{2592}".as_bytes());
@@ -10687,7 +10676,30 @@ mod agent_box_tests {
             s.feed(&std::fs::read(format!("{dir}{name}.raw")).unwrap());
             cases.push((format!("tmux-{name}"), plain(&s), true));
         }
+        cases
+    }
 
+    /// What `baseline_cases` draw: the whole `Frame` for each small case, a stable hash of it for
+    /// the big ones. `TERMURION_BLESS=1` rewrites the fixtures.
+    #[test]
+    fn pane_frames_match_the_recorded_baseline() {
+        // Text of each frame; the picture's id comes from a counter every test shares: zero it.
+        let cases: Vec<(String, String, bool)> = baseline_cases()
+            .into_iter()
+            .map(|(name, f, big)| {
+                let shot = format!("{f:#?}");
+                if name != "image-with-text-below" {
+                    return (name, shot, big);
+                }
+                let mut lines: Vec<String> = shot.lines().map(String::from).collect();
+                for i in 1..lines.len() {
+                    if lines[i - 1].trim() == "key: (" {
+                        lines[i] = "0,".to_string();
+                    }
+                }
+                (name, lines.join("\n"), big)
+            })
+            .collect();
         // A hash that never changes between Rust versions (FNV-1a).
         let fnv = |t: &str| t.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
         let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/pane-frames/");

@@ -1978,6 +1978,16 @@ pub(crate) mod test_gpu {
             // FXC, as the app uses (make_handles): a dxcompiler.dll on PATH must not change what passes.
             let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
             desc.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
+            // TERMURION_TEST_BACKEND (gl, vulkan, metal, dx12) picks the backend; unset keeps the default.
+            if let Ok(name) = std::env::var("TERMURION_TEST_BACKEND") {
+                desc.backends = match name.as_str() {
+                    "gl" => wgpu::Backends::GL,
+                    "vulkan" => wgpu::Backends::VULKAN,
+                    "metal" => wgpu::Backends::METAL,
+                    "dx12" => wgpu::Backends::DX12,
+                    other => panic!("TERMURION_TEST_BACKEND={other}: use gl, vulkan, metal or dx12"),
+                };
+            }
             let instance = wgpu::Instance::new(desc);
             let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
             let made = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
@@ -1990,7 +2000,7 @@ pub(crate) mod test_gpu {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use crate::test_tmp::TempDir;
     use super::*;
     use crate::layout::Rect;
@@ -3793,7 +3803,7 @@ mod tests {
     /// A recorded agent screen (tests/fixtures/agents) at 100 by 30 cells, the cursor where
     /// `cursors.txt` says, drawn with the effect cursor in `preset`. Returns the frame, its size
     /// and the screen's background.
-    fn agent_frame(r: &Renderer, name: &str, preset: [u8; 3]) -> (Frame, (u32, u32), crate::palette::Rgb) {
+    pub(crate) fn agent_frame(r: &Renderer, name: &str, preset: [u8; 3]) -> (Frame, (u32, u32), crate::palette::Rgb) {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/agents/");
         let mut s = crate::screen::Screen::new(100, 30);
         if let Ok(raw) = std::fs::read(format!("{dir}{name}.raw")) {
