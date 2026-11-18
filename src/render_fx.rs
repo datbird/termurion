@@ -296,9 +296,14 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
     let v: toml::Table = text.parse().map_err(|e| format!("plugin.toml: {e}"))?;
     let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
     let shaders: Vec<String> = match v.get("shaders") {
-        Some(toml::Value::Array(a)) => a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+        // A shader name that cannot be read is an error: dropping it would load a plugin missing a pass.
+        Some(toml::Value::Array(a)) => a
+            .iter()
+            .map(|x| x.as_str().map(str::to_string).ok_or("plugin.toml: `shaders` entries must be file names"))
+            .collect::<Result<_, _>>()?,
         Some(toml::Value::String(one)) => vec![one.clone()],
-        _ => vec![],
+        Some(_) => return Err("plugin.toml: `shaders` must be a list of file names".into()),
+        None => vec![],
     };
     if shaders.is_empty() {
         return Err("plugin.toml: `shaders` lists no shader file".into());
@@ -1114,6 +1119,15 @@ mod tests {
         assert_eq!(err("[]"), "plugin.toml: region lists no term");
         assert_eq!(err("\"\""), "plugin.toml: unknown region term \"\"");
         assert_eq!(err("7"), "plugin.toml: region must be a list of terms");
+    }
+
+    #[test]
+    fn a_shader_name_that_cannot_be_read_is_an_error() {
+        let err = |v: &str| parse_manifest(&format!("shaders = {v}")).unwrap_err();
+        assert_eq!(err("[\"a.glsl\", 5]"), "plugin.toml: `shaders` entries must be file names");
+        assert_eq!(err("7"), "plugin.toml: `shaders` must be a list of file names");
+        assert_eq!(err("[]"), "plugin.toml: `shaders` lists no shader file");
+        assert_eq!(parse_manifest("shaders = [\"a.glsl\", \"b.glsl\"]").unwrap().shaders, ["a.glsl", "b.glsl"]);
     }
 
     #[test]
