@@ -32,10 +32,13 @@ through `[patch.crates-io]` in Termurion's Cargo.toml. The `examples/`, `benches
 6. Row renderer (`row_render.rs`, `row_shader.wgsl`, `cache.rs`, `text_render.rs`). `RowRenderer`
    keeps each `RowArea`'s prepared glyph instances on the GPU, so a row that did not change runs no
    `prepare_glyph`. A row is made as `TextRenderer` makes a text area at scale 1, but with no bounds
-   clipping and no run culling; it holds its glyph keys (patch 4) while kept. It is reused under
+   clipping; it holds its glyph keys (patch 4) while kept. Each frame it culls layout runs with
+   `TextRenderer`'s own test (line box against the unclamped bounds) and draws the instances of the
+   runs left, so a glyph overhanging into bounds its line misses never draws. It is reused under
    `(serial, left, default_color)` plus `top`, or at any `top` when every glyph's y term is whole,
-   both tops are at least 0 and each term's truncation moves by the same `dy`. Rows not drawn in a
-   frame are dropped and release their keys; a new atlas generation drops every row, and a
+   both tops are at least 0 and each term's truncation moves by the same `dy`. Rows not in a frame
+   are dropped and release their keys before any new row is prepared, and an `AtlasFull` drops every
+   kept row the pass did not reach and tries once more, so the last frame never pins the atlas full; a new atlas generation drops every row, and a
    `prepare` that grows the atlas runs again. Instances live in power-of-two slots of one vertex
    buffer; a row table (a uniform buffer with dynamic offsets) gives each draw its `dy` and clip
    rectangle, and `vs_row` clips in the same integer steps as `prepare_glyph`, so the pixels match

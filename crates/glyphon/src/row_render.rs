@@ -12,7 +12,10 @@ use crate::{
     Buffer, Color, FontSystem, GlyphKey, GlyphToRender, PrepareError, RasterizeCustomGlyphRequest,
     RasterizedCustomGlyph, RenderError, State, SwashCache, TextAtlas, TextBounds, Viewport,
 };
-use std::{collections::HashMap, mem, slice};
+use std::{
+    collections::{HashMap, HashSet},
+    mem, slice,
+};
 use wgpu::{
     BindGroup, Buffer as GpuBuffer, BufferDescriptor, BufferUsages, Device, MultisampleState,
     Queue, RenderPass, RenderPipeline,
@@ -74,6 +77,8 @@ struct Entry {
     /// The distinct y terms of the glyphs when every one is whole, else `None`.
     y_terms: Option<Vec<f32>>,
     instances: Vec<GlyphToRender>,
+    /// Where each layout run's instances end, so a run TextRenderer would cull is left out.
+    run_ends: Vec<u32>,
     keys: Vec<GlyphKey>,
     slot: Option<Slot>,
     frame: u64,
@@ -94,6 +99,21 @@ impl Entry {
         let dy = top.trunc() as i32 - self.top.trunc() as i32;
         let moves = |gy: f32| gy.mul_add(1.0, top).trunc() as i32 - gy.mul_add(1.0, self.top).trunc() as i32;
         terms.iter().all(|&gy| moves(gy) == dy).then_some(dy)
+    }
+
+    /// The slot range holding the instances of `runs`.
+    fn drawn(&self, slot: Slot, runs: std::ops::Range<usize>) -> (u32, u32) {
+        let from = if runs.start == 0 { 0 } else { self.run_ends[runs.start - 1] };
+        let to = self.run_ends[runs.end - 1];
+        (slot.start + from, to - from)
+    }
+}
+
+fn row_key(row: &RowArea) -> RowKey {
+    RowKey {
+        serial: row.serial,
+        left: row.left.to_bits(),
+        color: row.default_color.0,
     }
 }
 
@@ -190,11 +210,17 @@ impl RowRenderer {
             atlas.release(key);
         }
 
+        // Rows not in this frame let go of their glyphs first, so they never take atlas space the
+        // new rows need (the atlas never has to hold two screens at once).
+        let wanted: HashSet<RowKey> = rows.iter().map(row_key).collect();
+        self.drop_entries(atlas, |key, _| !wanted.contains(key));
+
         let mut uniforms = Vec::with_capacity(rows.len());
+        let mut retried = false;
         loop {
             // A grown atlas may have moved what the kept instances point at.
             if atlas.generation() != self.generation {
-                self.drop_entries(atlas, |_| true);
+                self.drop_entries(atlas, |_, _| true);
                 self.generation = atlas.generation();
             }
             self.frame += 1;
@@ -212,6 +238,13 @@ impl RowRenderer {
             );
             if let Err(e) = prepared {
                 self.draws.clear();
+                // A full atlas: let go of every kept row this pass did not reach and try once more.
+                if !retried {
+                    retried = true;
+                    let frame = self.frame;
+                    self.drop_entries(atlas, |_, e| e.frame != frame);
+                    continue;
+                }
                 return Err(e);
             }
             if atlas.generation() == self.generation {
@@ -220,7 +253,7 @@ impl RowRenderer {
         }
 
         let frame = self.frame;
-        self.drop_entries(atlas, |e| e.frame != frame);
+        self.drop_entries(atlas, |_, e| e.frame != frame);
         self.write_table(device, queue, atlas, uniforms);
         Ok(())
     }
@@ -241,13 +274,23 @@ impl RowRenderer {
         let resolution = viewport.resolution();
 
         for row in rows {
+            // The layout runs TextRenderer would draw: it skips runs whose line box misses the
+            // unclamped bounds, then draws while they meet them.
+            let visible = |run: &cosmic_text::LayoutRun| {
+                let start = (row.top + run.line_top) as i32;
+                let end = start + run.line_height as i32;
+                start <= row.bounds.bottom && row.bounds.top <= end
+            };
+            let first = row.buffer.layout_runs().take_while(|r| !visible(r)).count();
+            let shown = row.buffer.layout_runs().skip(first).take_while(visible).count();
+            if shown == 0 {
+                continue;
+            }
+            let runs = first..first + shown;
+
             let bounds = GlyphBounds::clamped(row.bounds, resolution);
             let clip = [bounds.x.min, bounds.y.min, bounds.x.max, bounds.y.max];
-            let key = RowKey {
-                serial: row.serial,
-                left: row.left.to_bits(),
-                color: row.default_color.0,
-            };
+            let key = row_key(row);
 
             let frame = self.frame;
             let found = self.entries.get_mut(&key).and_then(|list| {
@@ -256,7 +299,7 @@ impl RowRenderer {
                 let entry = &mut list[i];
                 entry.frame = frame;
                 let dy = entry.shift_to(row.top)?;
-                Some((dy, entry.slot.map(|s| (s.start, entry.instances.len() as u32))))
+                Some((dy, entry.slot.map(|s| entry.drawn(s, runs.clone()))))
             });
 
             let (dy, drawn) = match found {
@@ -282,13 +325,13 @@ impl RowRenderer {
                         );
                         entry.slot = Some(slot);
                     }
-                    let drawn = entry.slot.map(|s| (s.start, entry.instances.len() as u32));
+                    let drawn = entry.slot.map(|s| entry.drawn(s, runs.clone()));
                     self.entries.entry(key).or_default().push(entry);
                     (0, drawn)
                 }
             };
 
-            if let Some((start, len)) = drawn {
+            if let Some((start, len)) = drawn.filter(|&(_, len)| len > 0) {
                 self.draws.push(Draw { start, len });
                 uniforms.push(RowUniform {
                     offset: [0, dy],
@@ -332,11 +375,11 @@ impl RowRenderer {
     }
 
     /// Drops the entries `drop` picks, releasing their glyphs and freeing their slots.
-    fn drop_entries(&mut self, atlas: &mut TextAtlas, drop: impl Fn(&Entry) -> bool) {
+    fn drop_entries(&mut self, atlas: &mut TextAtlas, drop: impl Fn(&RowKey, &Entry) -> bool) {
         let free = &mut self.free;
-        self.entries.retain(|_, list| {
+        self.entries.retain(|key, list| {
             list.retain_mut(|entry| {
-                if !drop(entry) {
+                if !drop(key, entry) {
                     return true;
                 }
                 for &k in &entry.keys {
@@ -406,6 +449,11 @@ impl RowRenderer {
         if self.draws.is_empty() {
             return Ok(());
         }
+        debug_assert_eq!(
+            atlas.generation(),
+            self.generation,
+            "the atlas grew after the rows were prepared"
+        );
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &atlas.bind_group, &[]);
         pass.set_bind_group(1, &viewport.bind_group, &[]);
@@ -427,6 +475,7 @@ fn prepare_row(
     row: &RowArea,
 ) -> Result<Entry, PrepareError> {
     let mut instances = Vec::new();
+    let mut run_ends = Vec::new();
     let mut keys = Vec::new();
     let mut y_terms: Option<Vec<f32>> = Some(Vec::new());
 
@@ -467,12 +516,14 @@ fn prepare_row(
                 keys.push(GlyphKey(cache_key));
             }
         }
+        run_ends.push(instances.len() as u32);
     }
 
     Ok(Entry {
         top: row.top,
         y_terms,
         instances,
+        run_ends,
         keys,
         slot: None,
         frame: 0,
@@ -812,5 +863,100 @@ mod tests {
         assert_eq!(rig.rows.prepared_rows(), 1 + 1 + 2);
         let text = rig.draw_text(areas());
         assert_same(&rows, &text, "after growth");
+    }
+
+    #[test]
+    fn many_rows_grow_the_buffers_and_scroll_from_kept_instances() {
+        let mut rig = Rig::new();
+        let buffers: Vec<Buffer> = (0..100)
+            .map(|n| rig.shape(&format!("{n:03} the row text that fills forty-four cells"), MONO))
+            .collect();
+        let areas = |up: usize| {
+            buffers.iter().enumerate().skip(up).map(move |(n, buf)| {
+                row(n as u64 % 10, buf, 1.0, (n - up) as f32 * 2.4 + 0.25, whole())
+            })
+        };
+        // Distinct serials, but the same colors as `row` makes them.
+        let areas = |up: usize| {
+            areas(up).enumerate().map(move |(i, mut r)| {
+                r.serial = (i + up) as u64 + 100;
+                r
+            })
+        };
+        let rows = rig.draw_rows(areas(0));
+        assert!(rig.rows.capacity > FIRST_CAPACITY, "the instance buffer did not double");
+        assert!(rig.rows.table_rows > FIRST_TABLE_ROWS, "the row table did not grow");
+        let text = rig.draw_text(areas(0));
+        assert_same(&rows, &text, "100 rows");
+        let rows = rig.draw_rows(areas(3));
+        assert_eq!(rig.rows.prepared_rows(), 100, "scrolled rows were prepared again");
+        let text = rig.draw_text(areas(3));
+        assert_same(&rows, &text, "scrolled 3 up");
+    }
+
+    #[test]
+    fn a_released_slot_is_used_again() {
+        let mut rig = Rig::new();
+        let a = rig.shape("First row of text", MONO);
+        let c = rig.shape("Second row of text", MONO);
+        let d = rig.shape("Third row of text", MONO);
+        rig.prepare_rows([row(1, &a, 0.0, 0.0, whole()), row(2, &c, 0.0, 20.0, whole())]);
+        let end = rig.rows.end;
+        rig.prepare_rows([row(2, &c, 0.0, 20.0, whole())]);
+        rig.prepare_rows([row(2, &c, 0.0, 20.0, whole()), row(3, &d, 0.0, 40.0, whole())]);
+        assert_eq!(rig.rows.end, end, "the new row took a fresh slot instead of the freed one");
+        let rows = rig.draw_rows([row(2, &c, 0.0, 20.0, whole()), row(3, &d, 0.0, 40.0, whole())]);
+        let text = rig.draw_text([row(2, &c, 0.0, 20.0, whole()), row(3, &d, 0.0, 40.0, whole())]);
+        assert_same(&rows, &text, "reused slot");
+    }
+
+    /// The last frame's rows must not pin a full atlas: TextRenderer draws each of these frames,
+    /// so the row renderer must too.
+    #[test]
+    fn rows_from_last_frame_never_pin_a_full_atlas() {
+        let mut rig = Rig::new();
+        rig.atlas.set_max_size(256);
+        let big = |rig: &mut Rig, text: &str| {
+            let mut buf = Buffer::new(&mut rig.font_system, Metrics::new(100.0, 110.0));
+            buf.set_text(text, &Attrs::new().family(Family::Name(MONO)), Shaping::Advanced, None);
+            buf.shape_until_scroll(&mut rig.font_system, false);
+            buf
+        };
+        let first = big(&mut rig, "abcdefghi");
+        let second = big(&mut rig, "nopqrsuvx");
+        rig.draw_rows([row(1, &first, 0.0, 0.0, whole())]);
+        rig.atlas.trim();
+        let held = rig.atlas.held();
+        for frame in 1..4 {
+            let rows = rig.draw_rows([row(2, &second, 0.0, 0.0, whole())]);
+            rig.atlas.trim();
+            assert_eq!(rig.atlas.held(), held, "frame {frame}: holds piled up");
+            let text = rig.draw_text([row(2, &second, 0.0, 0.0, whole())]);
+            assert_same(&rows, &text, "after the swap");
+        }
+        assert_eq!(rig.atlas.generation(), 0, "the atlas grew past its cap");
+    }
+
+    /// A row whose line box misses its bounds is skipped, like TextRenderer skips the run, even
+    /// where its glyphs reach into the bounds.
+    #[test]
+    fn a_line_outside_its_bounds_is_culled() {
+        let mut rig = Rig::new();
+        // Glyphs twice the line height overhang the line box above and below.
+        let mut tall = Buffer::new(&mut rig.font_system, Metrics::new(32.0, 10.0));
+        tall.set_text("Tall gjy glyphs", &Attrs::new().family(Family::Name(MONO)), Shaping::Advanced, None);
+        tall.shape_until_scroll(&mut rig.font_system, false);
+        let shown = rig.shape("A row inside its bounds", MONO);
+        let pane = b(0, 60, W as i32, 120);
+        let areas = |bounds| [row(1, &shown, 4.0, 80.0, whole()), row(2, &tall, 4.0, 48.5, bounds), row(3, &tall, 4.0, 121.5, bounds)];
+        // The overhang reaches into the pane when nothing clips it.
+        let unclipped = rig.draw_text(areas(whole()));
+        let control = rig.draw_text([row(1, &shown, 4.0, 80.0, whole())]);
+        let px = |y: i32| (y * W as i32 * 4) as usize..((y + 1) * W as i32 * 4) as usize;
+        assert!((60..120).any(|y| unclipped[px(y)] != control[px(y)]), "no overhang reaches the pane");
+        let rows = rig.draw_rows(areas(pane));
+        let text = rig.draw_text(areas(pane));
+        assert_same(&rows, &text, "culled lines");
+        assert_eq!(rig.rows.prepared_rows(), 1, "a culled row was prepared");
     }
 }
