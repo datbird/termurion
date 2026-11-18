@@ -1932,8 +1932,9 @@ const NO_HIGHLIGHTS: u64 = 0x6e6f_2d68_6967_686c;
 /// The highlight data that reaches one viewport row (`RowKey::extra`): the matches, hover, label,
 /// extra selection runs and live selection cells on it. A row with none of them hashes to
 /// `NO_HIGHLIGHTS`, so a plain row that scrolled keeps its key; a row with some includes its
-/// buffer row number. Notes, the command region and the hover underline are drawn after the
-/// rows from the buffer, so they are not part of a row.
+/// buffer row number. A row with blinking text also hashes the blink phase, so only that row
+/// is built again when the text blinks. Notes, the command region and the hover underline are
+/// drawn after the rows from the buffer, so they are not part of a row.
 fn row_extra(cx: &RowCtx, row: usize, frac: f32) -> u64 {
     use alacritty_terminal::index::{Column, Line, Point};
     use std::hash::Hash;
