@@ -6952,6 +6952,8 @@ impl App {
                 // The badge sizes itself in pixels against the default font and keeps the default
                 // face; the rows from here on are laid out in the pane's cell and take its face.
                 let rows_from = frame.rows.len();
+                // The pane's row cache is taken out for the draw (the pane is borrowed for reading) and put back after.
+                let mut row_cache = self.panes.get_mut(&id).map(|p| std::mem::take(&mut p.rows));
                 if let Some(p) = self.panes.get(&id) {
                     let shortcuts = self.shortcuts.as_ref().filter(|s| s.pane == id);
                     let labeled: Vec<crate::find::Match> = shortcuts.map(|s| s.items.iter().map(|(_, m, _)| *m).collect()).unwrap_or_default();
@@ -7010,7 +7012,14 @@ impl App {
                         }
                         None => {
                             draw.fx_rules = Some(p.fx_rules.clone());
-                            scene::pane_with(&mut frame, &p.screen, self.text_rect(id, rect), cell, self.focused && id == tab.focused, &self.cursor_look_for(id, self.focused && id == tab.focused, cover.is_none()), &draw, Some(&hl), face, None);
+                            // A full rebuild every half second, and every frame while the setting is off.
+                            if let Some(c) = row_cache.as_mut().filter(|c| c.due(Instant::now()) || !draw.reuse_rows) {
+                                c.clear();
+                            }
+                            scene::pane_with(&mut frame, &p.screen, self.text_rect(id, rect), cell, self.focused && id == tab.focused, &self.cursor_look_for(id, self.focused && id == tab.focused, cover.is_none()), &draw, Some(&hl), face, row_cache.as_mut().filter(|_| draw.reuse_rows));
+                            if let Some(c) = row_cache.as_mut() {
+                                c.end_frame();
+                            }
                             if let Some(c) = cover {
                                 composer_ui::skip_covered(&mut frame.overlay, overlay_from, &mut frame.underlines, underline_from, &mut frame.strikes, strike_from, &mut frame.glyphs, glyph_from, c);
                             }
@@ -7032,6 +7041,9 @@ impl App {
                     // The offscreen command line is drawn last, below (`band_jobs`).
                     band_jobs.push((id, rect, cell));
                     porthole_hits.extend(self.draw_portholes(&mut frame, id, rect, cell));
+                }
+                if let (Some(rc), Some(p)) = (row_cache, self.panes.get_mut(&id)) {
+                    p.rows = rc;
                 }
                 self.draw_view_extras(&mut frame, id, rect, cell);
                 self.draw_scrollbar(&mut frame, id, rect, cell);
@@ -9772,6 +9784,20 @@ mod banner_tests {
         b.set("font", "Font not installed: Monaco");
         let t = b.text().unwrap();
         assert!(t.contains("Settings not loaded") && t.contains("Monaco"), "{t}");
+    }
+
+    /// The frame loop hands each pane its own row cache, clears it on the half-second rebuild or
+    /// when the setting is off, and ends the frame on it.
+    #[test]
+    fn build_frame_passes_the_pane_row_cache() {
+        let own = include_str!("mod.rs");
+        let own = &own[..own.find("\n#[cfg(test)]").unwrap()];
+        let bf = &own[own.find("    fn build_frame(&mut self) -> Frame {").unwrap()..];
+        assert!(bf.contains("std::mem::take(&mut p.rows)"), "the pane's cache is taken for the draw");
+        assert!(bf.contains("row_cache.as_mut().filter(|_| draw.reuse_rows)"), "passed only when the setting is on");
+        assert!(bf.contains("c.due(Instant::now()) || !draw.reuse_rows"), "cleared when due or off");
+        assert!(bf.contains("c.end_frame()"), "the frame ends on the cache");
+        assert!(bf.contains("p.rows = rc;"), "and it goes back to the pane");
     }
 
     #[test]
