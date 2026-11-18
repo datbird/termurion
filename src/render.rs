@@ -4289,8 +4289,10 @@ mod tests {
         hold: u64,
         /// Region terms in place of the plugin's.
         terms: Option<Vec<crate::render_fx::RegionTerm>>,
-        /// An underline cursor (the shaders' cellH is then twice the cell width).
+        /// An underline cursor (the shaders' cellH is then twice the cursor width).
         underline: bool,
+        /// The cursor on a wide character (two cells wide).
+        wide: bool,
         /// Region frames are compared every this many ms (and always the first after a full one).
         every: u64,
     }
@@ -4333,6 +4335,9 @@ mod tests {
         let cell = r.cell;
         let (cw, ch) = cell;
         let mut base = fx.cursor.expect("a cursor");
+        if plan.wide {
+            base.rect[2] *= 2.0;
+        }
         if plan.underline {
             base.rect = [base.rect[0], base.rect[1] + base.rect[3] - 2.0, base.rect[2], 2.0];
             base.style = 3;
@@ -4510,6 +4515,43 @@ mod tests {
         let shots = region_shots(&mut r, &p, &frame, size, bg, preset, CHAIN_KINDS[0], &plan);
         let regions = check_shots(&shots, CHAIN_KINDS[0], size, "shockwave wide", &mut bad);
         assert!(regions > 0, "no frame shaded only its region");
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
+
+    /// The shaders' cellH follows the cursor, not the cell: an underline cursor on a wide
+    /// character (two cells) gives cellH = 4 cell widths, about twice the cell height at the
+    /// default spacing. Shockwave's sonar ping must stay inside its pads.
+    #[test]
+    fn pads_hold_the_looks_of_a_wide_underline_cursor() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let p = region_plugins().into_iter().find(|p| p.id == "shockwave").expect("shockwave");
+        let preset = preset_of(&p);
+        let (frame, size, bg) = agent_frame(&r, "hermes", preset);
+        let plan = Plan { hold: 6000, every: 50, underline: true, wide: true, ..Default::default() };
+        let mut bad = Vec::new();
+        let shots = region_shots(&mut r, &p, &frame, size, bg, preset, CHAIN_KINDS[0], &plan);
+        assert!(check_shots(&shots, CHAIN_KINDS[0], size, "shockwave wide underline", &mut bad) > 0, "no frame shaded only its region");
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
+
+    /// A block cursor on a wide character with tall rows (Vertical Spacing, the cell 2.9 times as
+    /// tall as wide): the block is at least 1.4 times as tall as wide, so the shaders do not halve
+    /// it and cellH = 4 cell widths, above the cell's own bound. Shockwave's ping with a 2.75 pad
+    /// (tighter than its shipped 4, so the unit decides) stays inside.
+    #[test]
+    fn pads_hold_the_looks_of_a_wide_block_in_tall_rows() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        r.cell.1 = r.cell.0 * 2.9;
+        let p = region_plugins().into_iter().find(|p| p.id == "shockwave").expect("shockwave");
+        let preset = preset_of(&p);
+        let (frame, size, bg) = agent_frame(&r, "hermes", preset);
+        let terms = vec![crate::render_fx::RegionTerm::FullAfterChange(std::time::Duration::from_millis(1300)), crate::render_fx::RegionTerm::Cursor(2.75)];
+        let plan = Plan { hold: 6000, every: 50, wide: true, terms: Some(terms), ..Default::default() };
+        let mut bad = Vec::new();
+        let shots = region_shots(&mut r, &p, &frame, size, bg, preset, CHAIN_KINDS[0], &plan);
+        assert!(check_shots(&shots, CHAIN_KINDS[0], size, "shockwave wide block", &mut bad) > 0, "no frame shaded only its region");
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 

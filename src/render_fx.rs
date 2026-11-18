@@ -237,21 +237,28 @@ pub fn region_rects(terms: &[RegionTerm], u: &Uniforms, cell_h: f32, size: (u32,
     Some(round_and_merge(boxes, (sw, sh)))
 }
 
-/// The unit region pads are in, from the cell (width, height): the built-ins size their looks in
-/// `cellH = max(cursor height, 2 * cell width)`, so plain cell heights fall short in a wide cell
-/// (Horizontal Spacing) or under a thin cursor.
-pub fn pad_unit((cw, ch): (f32, f32)) -> f32 {
-    ch.max(2.0 * cw)
+/// The unit region pads are in: the built-ins size their looks in the cursor's
+/// `cellH = max(cursor height, 2 * cellWOf(cursor))`, where `cellWOf` halves a block cursor only
+/// when it is less than 1.4 times as tall as wide (a wide character). Taken for the current and
+/// the previous cursor (both with the current style, as the shaders do), and never below the
+/// cell's own bound `max(cell height, 2 * cell width)` (a hidden or unset cursor).
+pub fn pad_unit((cw, ch): (f32, f32), u: &Uniforms) -> f32 {
+    let cell_h = |c: [f32; 4]| {
+        let (w, h) = (c[2], c[3]);
+        let one = if u.current_cursor_style == 0 && h < 1.4 * w { 0.5 * w } else { w };
+        h.max(2.0 * one)
+    };
+    ch.max(2.0 * cw).max(cell_h(u.current_cursor)).max(cell_h(u.previous_cursor))
 }
 
-/// One frame's own region (`region_rects` with pads in `pad_unit(cell)`), or None for the full
+/// One frame's own region (`region_rects` with pads in `pad_unit`), or None for the full
 /// pass. With Live Lines on and no input box found by Termurion the shaders look for box lines
 /// themselves, anywhere around the cursor, and animate them: that frame is full.
 pub fn own_region(terms: &[RegionTerm], u: &Uniforms, cell: (f32, f32), live_lines: bool, size: (u32, u32)) -> Option<Vec<PxRect>> {
     if live_lines && u.input_box[2] < 0.5 {
         return None;
     }
-    region_rects(terms, u, pad_unit(cell), size)
+    region_rects(terms, u, pad_unit(cell, u), size)
 }
 
 /// The rects an animation frame shades: this frame's region united with last frame's, whose
@@ -1248,9 +1255,28 @@ mod tests {
 
     #[test]
     fn pads_are_in_the_shaders_cell_unit() {
-        assert_eq!(pad_unit((8.0, 20.0)), 20.0);
+        let none = Uniforms::default();
+        assert_eq!(pad_unit((8.0, 20.0), &none), 20.0);
         // Horizontal Spacing 200%: the shaders' cellH is twice the cell width.
-        assert_eq!(pad_unit((16.0, 20.0)), 32.0);
+        assert_eq!(pad_unit((16.0, 20.0), &none), 32.0);
+        // A block cursor on a wide character (two cells): halved, so the cell's own bound.
+        let mut u = Uniforms { current_cursor: [0.0, 20.0, 16.0, 20.0], ..Default::default() };
+        assert_eq!(pad_unit((8.0, 20.0), &u), 20.0);
+        // An underline on a wide character is not halved: 2 x 16.
+        u.current_cursor = [0.0, 20.0, 16.0, 2.0];
+        u.current_cursor_style = 3;
+        assert_eq!(pad_unit((8.0, 20.0), &u), 32.0);
+        // A tall block (Vertical Spacing) on a wide character: 40 >= 1.4 x 16, not halved.
+        u.current_cursor = [0.0, 40.0, 16.0, 40.0];
+        u.current_cursor_style = 0;
+        assert_eq!(pad_unit((8.0, 40.0), &u), 40.0);
+        u.current_cursor = [0.0, 30.0, 24.0, 34.0];
+        assert_eq!(pad_unit((12.0, 34.0), &u), 48.0);
+        // The previous cursor counts too.
+        u.current_cursor = [0.0, 20.0, 8.0, 20.0];
+        u.previous_cursor = [0.0, 20.0, 16.0, 2.0];
+        u.current_cursor_style = 3;
+        assert_eq!(pad_unit((8.0, 20.0), &u), 32.0);
         let u = cursor_uniforms([100.0, 100.0, 16.0, 2.0]);
         assert_eq!(own_region(&[RegionTerm::Cursor(1.0)], &u, (16.0, 20.0), false, (800, 600)).unwrap(), [PxRect { x: 68, y: 68, w: 80, h: 66 }]);
     }
