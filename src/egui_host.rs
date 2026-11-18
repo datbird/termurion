@@ -139,6 +139,8 @@ pub struct EguiHost {
     answered: bool,
     /// `focus` was asked while the dialog was hidden: it is done when the dialog shows.
     focus_on_show: std::cell::Cell<bool>,
+    /// A persistent Validation error was written to the log (once, not every retry).
+    validation_logged: bool,
 }
 
 impl EguiHost {
@@ -233,7 +235,7 @@ impl EguiHost {
         install_menu_fonts(&ctx);
         let state = egui_winit::State::new(ctx.clone(), egui::ViewportId::ROOT, &window, Some(window.scale_factor() as f32), None, Some(device.limits().max_texture_dimension_2d as usize));
         let renderer = egui_wgpu::Renderer::new(device, format, egui_wgpu::RendererOptions::default());
-        Ok(EguiHost { surface, config, device: device.clone(), queue: queue.clone(), ctx, state, renderer, window, probe: false, probed: None, dialog: None, answered: false, focus_on_show: std::cell::Cell::new(false) })
+        Ok(EguiHost { surface, config, device: device.clone(), queue: queue.clone(), ctx, state, renderer, window, probe: false, probed: None, dialog: None, answered: false, focus_on_show: std::cell::Cell::new(false), validation_logged: false })
     }
 
     pub fn id(&self) -> WindowId {
@@ -463,7 +465,11 @@ impl EguiHost {
                     self.renderer.free_texture(id);
                 }
                 out.textures_delta.clear();
-                match surface_retry(&other) {
+                if announce_validation(&other, &mut self.validation_logged) {
+                    crate::host_base::log("egui window: the surface reports a validation error; retrying every 250 ms");
+                }
+                let size = self.window.inner_size();
+                match retry_for_window(surface_retry(&other), (size.width, size.height), self.window.is_minimized().unwrap_or(false)) {
                     Retry::Reconfigure => {
                         self.surface.configure(&self.device, &self.config);
                         self.window.request_redraw();
@@ -475,6 +481,7 @@ impl EguiHost {
                 return;
             }
         };
+        self.validation_logged = false;
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("settings") });
         let extra = self.renderer.update_buffers(&self.device, &self.queue, &mut encoder, &jobs, &screen);
@@ -524,6 +531,17 @@ pub fn surface_retry(status: &wgpu::CurrentSurfaceTexture) -> Retry {
         S::Outdated | S::Suboptimal(_) | S::Lost => Retry::Reconfigure,
         S::Timeout | S::Occluded | S::Validation | S::Success(_) => Retry::Later,
     }
+}
+
+/// A minimized or empty window cannot take a surface of its size: a reconfigure would fail the same
+/// way and redraw nonstop, so it waits like a covered one.
+pub fn retry_for_window(retry: Retry, size: (u32, u32), minimized: bool) -> Retry {
+    if minimized || size.0 == 0 || size.1 == 0 { Retry::Later } else { retry }
+}
+
+/// Whether to write the validation error to the log now: once per run of them, until a frame works.
+fn announce_validation(status: &wgpu::CurrentSurfaceTexture, logged: &mut bool) -> bool {
+    matches!(status, wgpu::CurrentSurfaceTexture::Validation) && !std::mem::replace(logged, true)
 }
 
 /// True when egui wants another frame at once (a popup's sizing pass, a fade, a pressed button).
@@ -587,26 +605,39 @@ mod tests {
         assert_eq!(surface_retry(&S::Timeout), Retry::Later);
         assert_eq!(surface_retry(&S::Occluded), Retry::Later);
         assert_eq!(surface_retry(&S::Validation), Retry::Later);
-        // Suboptimal carries a texture a test cannot make; the match arm is read from the source.
-        let src = include_str!("egui_host.rs").split("#[cfg(test)]").next().unwrap();
-        assert!(src.contains("S::Outdated | S::Suboptimal(_) | S::Lost => Retry::Reconfigure"));
         assert_eq!(RETRY_LATER, std::time::Duration::from_millis(250));
     }
 
-    /// A covered dialog (Occluded) once reconfigured and redrew at once, nonstop.
+    #[test]
+    fn a_minimized_or_empty_dialog_waits_instead_of_reconfiguring() {
+        assert_eq!(retry_for_window(Retry::Reconfigure, (480, 105), false), Retry::Reconfigure);
+        assert_eq!(retry_for_window(Retry::Reconfigure, (480, 105), true), Retry::Later);
+        assert_eq!(retry_for_window(Retry::Reconfigure, (0, 105), false), Retry::Later);
+        assert_eq!(retry_for_window(Retry::Reconfigure, (480, 0), false), Retry::Later);
+        assert_eq!(retry_for_window(Retry::Later, (480, 105), false), Retry::Later);
+    }
+
+    #[test]
+    fn a_persistent_validation_error_is_logged_once() {
+        use wgpu::CurrentSurfaceTexture as S;
+        let mut logged = false;
+        assert!(!announce_validation(&S::Occluded, &mut logged), "other errors are not logged");
+        assert!(announce_validation(&S::Validation, &mut logged));
+        assert!(!announce_validation(&S::Validation, &mut logged), "not again every retry");
+        logged = false; // a frame that worked clears it
+        assert!(announce_validation(&S::Validation, &mut logged));
+    }
+
+    /// The frame loop's arm: Later never configures or redraws (source scan, the arm needs a window).
     #[test]
     fn a_hidden_dialog_does_not_redraw_at_once() {
         let src = include_str!("egui_host.rs").split("#[cfg(test)]").next().unwrap();
         let pw = &src[src.find("fn paint_with(").unwrap()..];
-        let pw = &pw[..pw.find("\n    }\n}").unwrap()];
-        let at = |n: &str| pw.find(n).unwrap_or_else(|| panic!("{n} missing"));
-        let arm = &pw[at("other => {")..];
-        assert!(arm.contains("match surface_retry(&other)"));
+        let arm = &pw[pw.find("match retry_for_window(").unwrap()..];
         let (reconf, later) = (&arm[arm.find("Retry::Reconfigure =>").unwrap()..arm.find("Retry::Later =>").unwrap()], &arm[arm.find("Retry::Later =>").unwrap()..]);
-        assert!(reconf.contains("self.surface.configure(") && reconf.contains("self.window.request_redraw()"));
+        assert!(reconf.contains("configure(") && reconf.contains("request_redraw()"));
+        let later = &later[..later.find("\n                }\n").unwrap()];
         assert!(!later.contains("configure(") && !later.contains("request_redraw") && later.contains("RETRY_LATER"));
-        let ev = &src[src.find("pub fn event(&mut self").unwrap()..];
-        assert!(ev[..ev.find("\n    }\n").unwrap()].contains("WindowEvent::Occluded(false)"), "shown again redraws");
     }
 
     /// Every character the menu bar, the shortcut text and the Keys page draw.

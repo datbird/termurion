@@ -571,16 +571,16 @@ impl App {
         if self.scripts_alert.is_some() || self.scripts_alerts.is_empty() {
             return;
         }
-        // The questions raised at launch open in front of the terminal window, after its first frame.
-        if self.scripts_alerts.front().is_some_and(|a| super::update_app::launch_ask(&a.then)) && !super::update_app::ask_may_show(self.terminal_presented) {
-            return;
-        }
+        // The questions raised at launch wait for the first terminal frame (or the hold's end);
+        // every other question passes them.
+        let may = super::update_app::ask_may_show(self.terminal_presented, self.launched_at.elapsed());
+        let Some(at) = super::update_app::next_ask(&self.scripts_alerts, may) else { return };
         // A page's question whose pane was hidden meanwhile does not open: it parks and is asked
         // again when the pane is shown (final review M4).
-        if let Some(Then::BrowserPermission(id)) = self.scripts_alerts.front().map(|a| &a.then) {
+        if let Some(Then::BrowserPermission(id)) = self.scripts_alerts.get(at).map(|a| &a.then) {
             let id = *id;
             if !self.browser_permission_may_open(id) {
-                self.scripts_alerts.pop_front();
+                self.scripts_alerts.remove(at);
                 return;
             }
         }
@@ -588,7 +588,7 @@ impl App {
         // GPU that window used.
         let gpu = self.gpu.as_ref().map(|g| (&g.instance, &g.adapter, &g.device, &g.queue)).or(self.prefs_gpu.as_ref().map(|(i, a, d, q)| (i, a, d, q)));
         let Some((instance, adapter, device, queue)) = gpu else { return };
-        let Some(ask) = self.scripts_alerts.pop_front() else { return };
+        let Some(ask) = self.scripts_alerts.remove(at) else { return };
         let underline = self.globals.bool("AlertsIndicateShortcuts");
         match super::warnings_app::open_warning(event_loop, (instance, adapter, device, queue), &ask.spec, ask.remembered.as_deref(), underline) {
             Ok(mut w) => {

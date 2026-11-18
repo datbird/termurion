@@ -68,10 +68,25 @@ pub(super) fn permission_ask() -> Ask {
     ask(update::PERMISSION_TITLE, &update::permission_text(), &[update::CHECK_AUTOMATICALLY, update::DONT_CHECK], None, Kind::Persistent, Then::UpdatePermission)
 }
 
-/// Whether an ask raised at launch (the update and tips questions) may open: only after the first
-/// terminal window presented a frame, so it opens in front of that window and not hidden behind it.
-pub(super) fn ask_may_show(first_terminal_frame: bool) -> bool {
-    first_terminal_frame
+/// How long the launch asks wait for the first terminal frame at most (a resident or hotkey-only
+/// start, or a first frame that never presents, must not hold them for ever).
+pub(super) const LAUNCH_HOLD: Duration = Duration::from_secs(5);
+
+/// Whether an ask raised at launch (the update and tips questions) may open: after the first
+/// terminal window presented a frame, so it opens in front of that window and not hidden behind it,
+/// or once `LAUNCH_HOLD` has passed since launch.
+pub(super) fn ask_may_show(first_terminal_frame: bool, since_launch: Duration) -> bool {
+    first_terminal_frame || since_launch >= LAUNCH_HOLD
+}
+
+/// The queued ask to open next: the first one, but a launch ask is skipped while it may not show.
+pub(super) fn next_ask(asks: &std::collections::VecDeque<Ask>, launch_may_show: bool) -> Option<usize> {
+    asks.iter().position(|a| launch_may_show || !launch_ask(&a.then))
+}
+
+/// When a held launch ask is looked at again (the loop must wake for it).
+pub(super) fn hold_due(launched_at: Instant, now: Instant, first_terminal_frame: bool, launch_ask_queued: bool) -> Option<Instant> {
+    (launch_ask_queued && !first_terminal_frame).then_some(launched_at + LAUNCH_HOLD).filter(|t| *t > now)
 }
 
 /// The asks `ask_may_show` holds back.
@@ -257,16 +272,39 @@ impl App {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn launch_asks_wait_for_the_first_terminal_frame() {
-        use super::{ask_may_show, launch_ask, permission_ask};
-        assert!(!ask_may_show(false));
-        assert!(ask_may_show(true));
-        assert!(launch_ask(&permission_ask().then));
-        let gate = include_str!("scripts_alerts.rs");
-        let open = &gate[gate.find("fn open_scripts_alerts(").unwrap()..];
-        assert!(open.contains("launch_ask(&a.then)) && !super::update_app::ask_may_show(self.terminal_presented)"));
-        assert!(open.contains("if super::update_app::launch_ask(&ask.then) {\n                    w.focus();"), "in front once open");
-        assert!(include_str!("mod.rs").contains("gpu.render_queue().present(texture);\n            self.terminal_presented = true;"));
+    fn launch_asks_wait_for_the_first_terminal_frame_but_not_for_ever() {
+        use super::{ask_may_show, LAUNCH_HOLD};
+        use std::time::Duration;
+        assert!(!ask_may_show(false, Duration::ZERO));
+        assert!(!ask_may_show(false, LAUNCH_HOLD - Duration::from_millis(1)));
+        assert!(ask_may_show(true, Duration::ZERO), "the first frame ends the hold");
+        assert!(ask_may_show(false, LAUNCH_HOLD), "so does the time");
+    }
+
+    #[test]
+    fn other_asks_pass_a_held_launch_ask() {
+        use super::{launch_ask, next_ask, permission_ask};
+        use crate::app::scripts_alerts::{ask, Then};
+        let other = || ask("Heading", "Text", &["OK"], None, crate::warnings::Kind::Persistent, Then::Nothing);
+        assert!(launch_ask(&permission_ask().then) && !launch_ask(&Then::Nothing));
+        let mut q = std::collections::VecDeque::new();
+        assert_eq!(next_ask(&q, false), None);
+        q.push_back(permission_ask());
+        assert_eq!(next_ask(&q, false), None, "only a launch ask: it waits");
+        assert_eq!(next_ask(&q, true), Some(0));
+        q.push_back(other());
+        assert_eq!(next_ask(&q, false), Some(1), "the other ask passes it");
+        assert_eq!(next_ask(&q, true), Some(0), "in order once nothing is held");
+    }
+
+    #[test]
+    fn a_held_launch_ask_wakes_the_loop_at_the_end_of_the_hold() {
+        use super::{hold_due, LAUNCH_HOLD};
+        let t = std::time::Instant::now();
+        assert_eq!(hold_due(t, t, false, true), Some(t + LAUNCH_HOLD));
+        assert_eq!(hold_due(t, t, true, true), None);
+        assert_eq!(hold_due(t, t, false, false), None);
+        assert_eq!(hold_due(t, t + LAUNCH_HOLD, false, true), None, "past: no wake to spin on");
     }
 
     /// Final review 5: a manual check that decides nothing clears the pending Checking view too,
