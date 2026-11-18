@@ -281,6 +281,23 @@ mod tests {
         assert_eq!(cache.hits(), 2);
     }
 
+    /// The setting turned off clears the cache every frame, so turning it on again starts empty
+    /// and nothing from before is served.
+    #[test]
+    fn a_cleared_cache_serves_nothing_and_fills_again() {
+        let mut cache = RowCache::new();
+        cache.put(key(), out());
+        assert!(cache.get(&key()).is_some());
+        cache.clear();
+        cache.end_frame();
+        assert_eq!(cache.len(), 0);
+        let hits = cache.hits();
+        assert!(cache.get(&key()).is_none(), "nothing survives the clear");
+        assert_eq!(cache.hits(), hits);
+        cache.put(key(), out());
+        assert!(cache.get(&key()).is_some(), "it fills again after");
+    }
+
     #[test]
     fn clear_and_age() {
         let mut cache = RowCache::new();

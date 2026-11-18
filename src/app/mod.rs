@@ -9793,11 +9793,18 @@ mod banner_tests {
         let own = include_str!("mod.rs");
         let own = &own[..own.find("\n#[cfg(test)]").unwrap()];
         let bf = &own[own.find("    fn build_frame(&mut self) -> Frame {").unwrap()..];
-        assert!(bf.contains("std::mem::take(&mut p.rows)"), "the pane's cache is taken for the draw");
-        assert!(bf.contains("row_cache.as_mut().filter(|_| draw.reuse_rows)"), "passed only when the setting is on");
-        assert!(bf.contains("c.due(Instant::now()) || !draw.reuse_rows"), "cleared when due or off");
-        assert!(bf.contains("c.end_frame()"), "the frame ends on the cache");
-        assert!(bf.contains("p.rows = rc;"), "and it goes back to the pane");
+        let at = |s: &str| bf.find(s).unwrap_or_else(|| panic!("build_frame lost `{s}`"));
+        assert!(at("std::mem::take(&mut p.rows)") < at("p.rows = rc;"), "taken, then put back");
+        // The live arm: clear when due or off, then draw with the cache only when on, then end the frame.
+        let hold = at("h.replay(&mut frame);");
+        let live = hold + bf[hold..].find("None => {").expect("the live arm follows the replay arm");
+        let clear = at("c.due(Instant::now()) || !draw.reuse_rows");
+        let draw = at("row_cache.as_mut().filter(|_| draw.reuse_rows)");
+        let end = at("c.end_frame()");
+        assert!(live < clear && clear < draw && draw < end, "clear, then pane_with with the cache, then end_frame, all in the live arm");
+        assert_eq!(bf.matches("c.end_frame()").count(), 1, "one end_frame per drawn pane");
+        assert_eq!(bf.matches("c.due(Instant::now())").count(), 1);
+        assert!(bf[hold..live].find("end_frame").is_none() && bf[hold..live].find("row_cache").is_none(), "the replay arm leaves the cache alone");
     }
 
     #[test]
