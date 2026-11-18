@@ -6809,6 +6809,11 @@ impl App {
     /// How underlines and strikethrough draw, for the live frame and a screenshot alike: the
     /// Advanced switches, the renderer's face metrics and the window's scale.
     pub(super) fn draw_prefs(&mut self) -> scene::DrawPrefs {
+        // The same switch keeps the renderer's prepared rows (a drawing bug can be turned off here).
+        let reuse_rows = self.globals.bool("RedrawOnlyChangedRows");
+        if let Some(g) = self.gpu.as_mut() {
+            g.renderer.set_row_instances(reuse_rows);
+        }
         let metrics = self.gpu.as_mut().map(|g| g.renderer.underline_metrics()).unwrap_or(scene::DrawPrefs::default().metrics);
         let fx_cursor = self.gpu.as_ref().and_then(|g| g.fx.as_ref()).and_then(|f| f.cursor_color());
         scene::DrawPrefs { fx_cursor, ..scene::DrawPrefs::from_globals(&self.globals, metrics, self.scale()) }

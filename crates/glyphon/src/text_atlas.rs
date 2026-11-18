@@ -30,6 +30,8 @@ pub(crate) struct InnerAtlas {
     /// Termurion patch 4: use counts of the held keys (every count is above 0).
     pub held: HashMap<GlyphonCacheKey, u32, Hasher>,
     pub max_texture_dimension_2d: u32,
+    /// Termurion patch 5: entries evicted so far (tests check a flood really evicted).
+    pub evicted: u64,
 }
 
 impl InnerAtlas {
@@ -72,6 +74,7 @@ impl InnerAtlas {
             glyphs_in_use,
             held: HashMap::with_hasher(Hasher::default()),
             max_texture_dimension_2d,
+            evicted: 0,
         }
     }
 
@@ -96,6 +99,7 @@ impl InnerAtlas {
                 .map(|(key, _)| *key)?;
 
             let value = self.glyph_cache.pop(&victim).unwrap();
+            self.evicted += 1;
             if let Some(id) = value.atlas_id {
                 self.packer.deallocate(id);
             }
@@ -381,6 +385,12 @@ impl TextAtlas {
         for inner in [&mut self.mask_atlas, &mut self.color_atlas] {
             inner.max_texture_dimension_2d = inner.max_texture_dimension_2d.min(px);
         }
+    }
+
+    /// Termurion patch 5: how many entries both atlases have evicted (tests only).
+    #[doc(hidden)]
+    pub fn evictions(&self) -> u64 {
+        self.mask_atlas.evicted + self.color_atlas.evicted
     }
 
     /// Termurion patch 3: the side of the mask atlas texture in pixels (it doubles when it grows).

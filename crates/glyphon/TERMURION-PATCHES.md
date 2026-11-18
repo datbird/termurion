@@ -25,7 +25,8 @@ through `[patch.crates-io]` in Termurion's Cargo.toml. The `examples/`, `benches
    longer ends the search (the caller grows when none qualifies). Both inner atlases keep the counts,
    since a key may sit in either.
 5. `text_atlas.rs`: `set_max_size(px)` (doc hidden) caps both atlases' `max_texture_dimension_2d`
-   so tests can force eviction at a small size. Tests: `text_atlas::tests` on a headless GPU
+   so tests can force eviction at a small size, and `evictions()` (doc hidden) counts the entries
+   evicted so a test can prove it did. Tests: `text_atlas::tests` on a headless GPU
    (`test_gpu.rs`, one process-wide device). The root `Cargo.toml` lists glyphon as a workspace member
    so `cargo test -p glyphon --lib` runs, and glyphon has `pollster` and `wgpu` (default backends) as
    dev-dependencies.

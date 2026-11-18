@@ -12,6 +12,13 @@ pub(crate) struct PixelCase {
     pub size: (u32, u32),
 }
 
+/// The font each system draws the cases in. The harness fails if it is missing rather than
+/// falling back to another face.
+#[cfg(target_os = "linux")]
+const FACE: &str = "DejaVu Sans Mono";
+#[cfg(target_os = "macos")]
+const FACE: &str = "Menlo";
+#[cfg(windows)]
 const FACE: &str = "Cascadia Mono";
 const PX: f32 = 14.0;
 const FLOOD_FRAMES: usize = 300;
@@ -20,6 +27,7 @@ const FLOOD_FRAMES: usize = 300;
 fn fresh(view_formats: bool) -> Renderer {
     let (device, queue) = test_gpu::shared();
     let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, FACE, PX);
+    assert!(r.has_family(FACE), "the pixel harness draws in {FACE}, which is not installed here");
     r.set_view_formats(view_formats);
     r
 }
@@ -81,7 +89,7 @@ pub(crate) fn pixel_cases(r: &Renderer) -> Vec<PixelCase> {
 }
 
 pub(crate) fn pixels(r: &mut Renderer, c: &PixelCase) -> Vec<u8> {
-    r.draw_offscreen(&c.frame, c.size.0, c.size.1).unwrap()
+    r.draw_offscreen(&c.frame, c.size.0, c.size.1).unwrap_or_else(|e| panic!("{}: the draw failed: {e}", c.name))
 }
 
 /// Panics on the first difference, naming its pixel and how many differ.
@@ -169,4 +177,223 @@ fn assert_same_names_the_first_difference() {
     let err = std::panic::catch_unwind(|| assert_same("x", &a, &b, 3)).unwrap_err();
     let msg = err.downcast_ref::<String>().unwrap();
     assert!(msg.contains("2 pixels differ") && msg.contains("x 1 y 1") && msg.contains("[0, 9, 0, 0]"), "{msg}");
+}
+
+// The row path (Task 13): rows drawn through glyphon's `RowRenderer` must match the full path,
+// which prepares every row through `TextRenderer` each frame.
+
+/// A renderer on the row path (`on`) or the full path.
+fn rows(view_formats: bool, on: bool) -> Renderer {
+    let mut r = fresh(view_formats);
+    r.set_row_instances(on);
+    r
+}
+
+/// Draws `c` on both renderers and asserts the pictures are the same.
+fn same(on: &mut Renderer, off: &mut Renderer, c: &PixelCase, view_formats: bool) {
+    let name = format!("{} (view formats {view_formats})", c.name);
+    assert_same(&name, &pixels(on, c), &pixels(off, c), c.size.0);
+}
+
+fn span(text: &str) -> crate::scene::Span {
+    crate::scene::Span { text: text.into(), color: crate::palette::rgb(230, 230, 230), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }
+}
+
+fn row(text: &str, x: f32, y: f32, clip: crate::layout::Rect, scale: f32) -> crate::scene::TextRow {
+    crate::scene::TextRow { x, y, spans: vec![span(text)].into(), clip, scale, face: crate::render::DEFAULT_FACE }
+}
+
+fn text_frame(rows: Vec<crate::scene::TextRow>) -> Frame {
+    Frame { clear: [0.0, 0.0, 0.0, 1.0], fade: 1.0, rows, ..Default::default() }
+}
+
+/// A pane of `s` filling a window of `size`, drawn with `r`'s cell.
+fn screen_case(name: &str, r: &Renderer, s: &crate::screen::Screen, size: (u32, u32), cursor: bool) -> PixelCase {
+    let rect = crate::layout::Rect { x: 0.0, y: 0.0, w: size.0 as f32, h: size.1 as f32 };
+    let mut frame = Frame { clear: crate::scene::rgba(s.palette.bg, 1.0), fade: 1.0, ..Default::default() };
+    let look = crate::cursor_look::CursorLook::shown(cursor);
+    crate::scene::pane_with(&mut frame, s, rect, r.cell, true, &look, &Default::default(), None, crate::render::DEFAULT_FACE, None);
+    PixelCase { name: name.into(), frame, size }
+}
+
+fn grid_size(r: &Renderer, cols: f32, lines: f32) -> (u32, u32) {
+    ((cols * r.cell.0).ceil() as u32, (lines * r.cell.1).ceil() as u32)
+}
+
+#[test]
+fn row_instances_match_the_full_path_on_every_case() {
+    for vf in [true, false] {
+        if !can_run(vf) {
+            continue;
+        }
+        let (mut on, mut off) = (rows(vf, true), rows(vf, false));
+        for c in pixel_cases(&on) {
+            same(&mut on, &mut off, &c, vf);
+        }
+        assert!(on.row_prepares() > 0, "the row path drew no rows");
+        assert_eq!(off.row_prepares(), 0);
+    }
+}
+
+#[test]
+fn scrolled_rows_reuse_their_instances() {
+    let mut r = rows(false, true);
+    let size = grid_size(&r, 80.0, 20.0);
+    let mut s = crate::screen::Screen::new(80, 20);
+    for n in 0..20 {
+        let end = if n < 19 { "\r\n" } else { "" };
+        s.feed(format!("line {n:02} of the scroll test{end}").as_bytes());
+    }
+    let c = screen_case("twenty rows", &r, &s, size, true);
+    pixels(&mut r, &c);
+    let before = r.row_prepares();
+    assert!(before >= 20, "the first frame prepared {before} rows");
+    s.feed(b"\r\nline 20 of the scroll test");
+    let c = screen_case("one slot up", &r, &s, size, true);
+    pixels(&mut r, &c);
+    let grown = r.row_prepares() - before;
+    assert!(grown <= 2, "scrolling one line prepared {grown} rows");
+}
+
+#[test]
+fn fractional_tops_match_the_full_path() {
+    use crate::layout::Rect;
+    for vf in [true, false] {
+        if !can_run(vf) {
+            continue;
+        }
+        let (mut on, mut off) = (rows(vf, true), rows(vf, false));
+        let size = (420, 320);
+        let window = Rect { x: 0.0, y: 0.0, w: size.0 as f32, h: size.1 as f32 };
+        for k in 0..8 {
+            // A fractional step each frame, some frames back to a whole one.
+            let dy = [0.0, 0.37, 0.5, 1.0, 1.63, 2.25, 0.0, 20.5][k];
+            let mut list = Vec::new();
+            for n in 0..12 {
+                let y = n as f32 * 20.0 + 0.5 + dy;
+                // Half the rows clip to their own line, the others to the window.
+                let clip = if n % 2 == 0 { Rect { x: 0.0, y, w: window.w, h: 20.0 } } else { window };
+                list.push(row(&format!("row {n} gy{} \u{e9}\u{e8} {k}", n * 3), 4.25, y, clip, 1.0));
+            }
+            // A porthole heading.
+            list.push(row("Heading at scale 1.25", 8.0, 262.5 + dy, window, 1.25));
+            let c = PixelCase { name: format!("fractional-{k}"), frame: text_frame(list), size };
+            same(&mut on, &mut off, &c, vf);
+        }
+        assert!(on.row_prepares() > 0);
+    }
+}
+
+#[test]
+fn atlas_growth_and_eviction_mid_run_match() {
+    for vf in [true, false] {
+        if !can_run(vf) {
+            continue;
+        }
+        let (mut on, mut off) = (rows(vf, true), rows(vf, false));
+        // At 256 px a full screen of CJK does not fit even on the full path (AtlasFull at frame
+        // 14), so the cap is 512: the atlas grows from 256 once, then evicts.
+        on.atlas.set_max_size(512);
+        off.atlas.set_max_size(512);
+        let (grown, evicted) = (on.atlas.generation(), on.atlas.evictions());
+        for c in pixel_cases(&on).iter().filter(|c| is_flood(c)) {
+            same(&mut on, &mut off, c, vf);
+        }
+        assert!(on.atlas.generation() != grown, "the capped flood never grew the atlas");
+        assert!(on.atlas.evictions() > evicted, "the capped flood never evicted");
+    }
+}
+
+#[test]
+fn the_switch_turns_the_row_path_off() {
+    let mut r = rows(false, false);
+    let probe = pixel_cases(&r).into_iter().next().unwrap();
+    pixels(&mut r, &probe);
+    assert_eq!(r.row_prepares(), 0);
+    // Turned on, rows hold their glyphs; turned off again, every hold is let go.
+    r.set_row_instances(true);
+    pixels(&mut r, &probe);
+    assert!(r.row_prepares() > 0 && r.atlas.held() > 0);
+    r.set_row_instances(false);
+    assert_eq!(r.atlas.held(), 0, "turning rows off released their glyphs");
+    let prepared = r.row_prepares();
+    pixels(&mut r, &probe);
+    assert_eq!(r.row_prepares(), prepared);
+    assert_eq!(r.atlas.held(), 0);
+}
+
+/// TextRenderer skips a row whose line box misses its bounds, even where a glyph overhangs into
+/// them; the row path must skip it too.
+#[test]
+fn rows_whose_line_misses_their_bounds_draw_nothing() {
+    use crate::layout::Rect;
+    for vf in [true, false] {
+        if !can_run(vf) {
+            continue;
+        }
+        let (mut on, mut off) = (rows(vf, true), rows(vf, false));
+        let size = (240, 140);
+        let ch = on.cell.1;
+        let pane = Rect { x: 0.0, y: 50.0, w: 240.0, h: 40.0 };
+        let window = Rect { x: 0.0, y: 0.0, w: 240.0, h: 140.0 };
+        // Marks stacked below a row ending just above the pane, and above a row starting just
+        // below it.
+        let below = format!("g{}", "\u{0323}\u{0329}".repeat(6));
+        let above = format!("A{}", "\u{0301}\u{0308}".repeat(6));
+        let above_y = pane.y - ch - 1.5;
+        let below_y = pane.y + pane.h + 1.5;
+        let at = |clip: Rect| text_frame(vec![row(&below, 10.0, above_y, clip, 1.0), row(&above, 10.0, below_y, clip, 1.0)]);
+        // The case only means something if the overhang reaches into the pane.
+        let unclipped = pixels(&mut off, &PixelCase { name: "unclipped".into(), frame: at(window), size });
+        let ink = (pane.y as usize..(pane.y + pane.h) as usize).any(|y| (0..size.0 as usize).any(|x| unclipped[(y * size.0 as usize + x) * 4] > 0));
+        assert!(ink, "no glyph overhangs into the pane");
+        same(&mut on, &mut off, &PixelCase { name: "outside rows".into(), frame: at(pane), size }, vf);
+    }
+}
+
+/// Frame to frame changes a pane goes through, each on the row path against the full path.
+#[test]
+fn row_instances_follow_every_kind_of_change() {
+    use alacritty_terminal::index::{Column, Line, Point, Side};
+    use alacritty_terminal::selection::{Selection, SelectionType};
+    for vf in [true, false] {
+        if !can_run(vf) {
+            continue;
+        }
+        let (mut on, mut off) = (rows(vf, true), rows(vf, false));
+        let mut s = crate::screen::Screen::new(60, 16);
+        for n in 0..50 {
+            s.feed(format!("{n:02} the quick brown fox \x1b[1mjumps\x1b[0m over \u{4e2d}\u{6587}\r\n").as_bytes());
+        }
+        let mut size = grid_size(&on, 60.0, 16.0);
+        let step = |name: &str, on: &mut Renderer, off: &mut Renderer, s: &crate::screen::Screen, size: (u32, u32), cursor: bool| {
+            let c = screen_case(name, on, s, size, cursor);
+            same(on, off, &c, vf);
+        };
+        step("start", &mut on, &mut off, &s, size, true);
+        s.feed(b"\x1b[4;5Hchanged in place");
+        step("one row changed", &mut on, &mut off, &s, size, true);
+        s.term_mut().scroll_display(alacritty_terminal::grid::Scroll::Delta(3));
+        step("scrolled back 3", &mut on, &mut off, &s, size, true);
+        s.term_mut().scroll_display(alacritty_terminal::grid::Scroll::Delta(-1));
+        step("scrolled back 2", &mut on, &mut off, &s, size, true);
+        s.term_mut().scroll_display(alacritty_terminal::grid::Scroll::Bottom);
+        step("back at the bottom", &mut on, &mut off, &s, size, true);
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(2), Column(3)), Side::Left);
+        sel.update(Point::new(Line(5), Column(20)), Side::Right);
+        s.term_mut().selection = Some(sel);
+        step("a selection", &mut on, &mut off, &s, size, true);
+        s.term_mut().selection = None;
+        step("no selection", &mut on, &mut off, &s, size, true);
+        s.feed(b"\x1b[10;30H");
+        step("the cursor moved", &mut on, &mut off, &s, size, true);
+        step("the cursor blinked off", &mut on, &mut off, &s, size, false);
+        size = (size.0 + 37, size.1 + 23);
+        step("a bigger window", &mut on, &mut off, &s, size, true);
+        for r in [&mut on, &mut off] {
+            r.set_font_px(PX + 3.0);
+        }
+        size = grid_size(&on, 60.0, 16.0);
+        step("a bigger font", &mut on, &mut off, &s, size, true);
+    }
 }

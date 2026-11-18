@@ -2,7 +2,7 @@
 
 use glyphon::{
     Attrs, Buffer, Cache, Color, ContentType, CustomGlyph, Family, FontSystem, Metrics, RasterizeCustomGlyphRequest, RasterizedCustomGlyph,
-    Resolution, Shaping, Style, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight, Wrap,
+    Resolution, RowArea, RowRenderer, Shaping, Style, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight, Wrap,
 };
 use wgpu::util::DeviceExt;
 
@@ -547,13 +547,21 @@ pub struct Renderer {
     /// Each glyph's ink placement (left, top, width, height) from the swash image, keyed by the
     /// glyph; `None` for a glyph with no ink. Cleared past `INK_CACHE_MAX`.
     ink_cache: std::collections::HashMap<glyphon::cosmic_text::CacheKey, Option<(i32, i32, u32, u32)>>,
-    atlas: TextAtlas,
+    pub(crate) atlas: TextAtlas,
     viewport: Viewport,
     text: TextRenderer,
+    /// Draws the text rows, keeping each row's prepared glyphs on the GPU between frames.
+    rows: RowRenderer,
+    /// Whether text rows draw through `rows` (`RedrawOnlyChangedRows`); off, every row goes through
+    /// `text` each frame.
+    row_instances: bool,
+    /// The last serial given to a shaped buffer.
+    serial: u64,
     /// The last frame's text buffers, one per drawn row in frame order, each with what it shaped:
-    /// spans, clip width, scale, face and the badge weight. A row finds its buffer by those, not by
-    /// its slot, so a row that only moved is not shaped again.
-    buffers: Vec<(Buffer, Spans, f32, f32, u16, bool)>,
+    /// spans, clip width, scale, face and the badge weight, then its serial (new each time it is
+    /// shaped). A row finds its buffer by those, not by its slot, so a row that only moved is not
+    /// shaped again.
+    buffers: Vec<(Buffer, Spans, f32, f32, u16, bool, u64)>,
     /// A porthole's prose font: Segoe UI Variable, else Segoe UI.
     prose_family: String,
     /// The badge font (bold): the default profile's Badge Font, Arial when not installed.
@@ -634,6 +642,7 @@ impl Renderer {
         let viewport = Viewport::new(device, &cache);
         let mut atlas = TextAtlas::new(device, queue, &cache, format);
         let text = TextRenderer::new(&mut atlas, device, wgpu::MultisampleState::default(), None);
+        let rows = RowRenderer::new(&mut atlas, device, wgpu::MultisampleState::default());
         let quads = QuadPipeline::new(device, format);
         let images = ImagePipeline::new(device, format, &quads.uniform);
         let mut font_system = FontSystem::new();
@@ -649,6 +658,9 @@ impl Renderer {
             atlas,
             viewport,
             text,
+            rows,
+            row_instances: true,
+            serial: 0,
             buffers: Vec::new(),
             family: family.to_string(),
             format,
@@ -712,6 +724,7 @@ impl Renderer {
         self.viewport = Viewport::new(device, &cache);
         self.atlas = TextAtlas::new(device, queue, &cache, format);
         self.text = TextRenderer::new(&mut self.atlas, device, wgpu::MultisampleState::default(), None);
+        self.rows = RowRenderer::new(&mut self.atlas, device, wgpu::MultisampleState::default());
         self.quads = QuadPipeline::new(device, format);
         self.images = ImagePipeline::new(device, format, &self.quads.uniform);
         self.device = device.clone();
@@ -1393,6 +1406,26 @@ impl Renderer {
         self.view_formats = ok;
     }
 
+    /// Draws text rows through the row renderer (on by default) or prepares every row each frame.
+    /// The pixels are the same either way.
+    pub fn set_row_instances(&mut self, on: bool) {
+        if on == self.row_instances {
+            return;
+        }
+        self.row_instances = on;
+        if !on {
+            // Let go of every glyph the kept rows hold. With no rows nothing is allocated, so this
+            // cannot fail.
+            self.rows.clear();
+            let _ = self.rows.prepare(&self.device, &self.queue, &mut self.font_system, &mut self.atlas, &self.viewport, [], &mut self.swash);
+        }
+    }
+
+    /// How many rows the row renderer prepared since it was made (it is made again on a new device).
+    pub fn row_prepares(&self) -> u64 {
+        self.rows.prepared_rows()
+    }
+
     /// The device and queue this renderer draws with.
     pub fn gpu(&self) -> (&wgpu::Device, &wgpu::Queue) {
         (&self.device, &self.queue)
@@ -1630,7 +1663,7 @@ impl Renderer {
         let mut old: Vec<Option<_>> = std::mem::take(&mut self.buffers).into_iter().map(Some).collect();
         let mut by_hash: rustc_hash::FxHashMap<u64, Vec<usize>> = Default::default();
         for (i, o) in old.iter().enumerate() {
-            if let Some((_, spans, w, scale, face, bold)) = o {
+            if let Some((_, spans, w, scale, face, bold, _)) = o {
                 by_hash.entry(shape_hash(spans, *w, *scale, *face, *bold)).or_default().push(i);
             }
         }
@@ -1641,16 +1674,17 @@ impl Renderer {
         for row in all_rows.iter().copied() {
             // Two rows with the same text each take their own buffer, so both draw.
             let hit = by_hash.get_mut(&shape_hash(&row.spans, row.clip.w, row.scale, row.face, bold_badge)).and_then(|list| {
-                let at = list.iter().position(|&i| matches!(&old[i], Some((_, s, w, sc, f, b)) if *s == row.spans && *w == row.clip.w && *sc == row.scale && *f == row.face && *b == bold_badge))?;
+                let at = list.iter().position(|&i| matches!(&old[i], Some((_, s, w, sc, f, b, _)) if *s == row.spans && *w == row.clip.w && *sc == row.scale && *f == row.face && *b == bold_badge))?;
                 old[list.swap_remove(at)].take()
             });
             if let Some(found) = hit {
                 used.push(found);
                 continue;
             }
-            used.push((Buffer::new(&mut self.font_system, metrics), Spans::default(), 0.0, 1.0, DEFAULT_FACE, bold_badge));
+            self.serial += 1;
+            used.push((Buffer::new(&mut self.font_system, metrics), Spans::default(), 0.0, 1.0, DEFAULT_FACE, bold_badge, self.serial));
             let slot = used.last_mut().unwrap();
-            let (buffer, last, last_w, last_scale, last_face, _) = slot;
+            let (buffer, last, last_w, last_scale, last_face, ..) = slot;
             // The row's own face: its fonts, pixel size and cell (a row of another face is never
             // shaped with these).
             let face = self.faces.get(row.face as usize).unwrap_or(&self.faces[0]);
@@ -1766,20 +1800,32 @@ impl Renderer {
 
         self.viewport.update(&self.queue, Resolution { width, height });
         let groups = self.glyph_groups(&frame.glyphs);
+        let bounds = |row: &TextRow| TextBounds {
+            left: row.clip.x as i32,
+            top: row.clip.y as i32,
+            right: (row.clip.x + row.clip.w) as i32,
+            bottom: (row.clip.y + row.clip.h) as i32,
+        };
         let areas = self.buffers.iter().zip(all_rows.iter().copied()).map(|((buffer, ..), row)| TextArea {
             buffer,
             left: row.x,
             top: row.y,
             scale: 1.0,
-            bounds: TextBounds {
-                left: row.clip.x as i32,
-                top: row.clip.y as i32,
-                right: (row.clip.x + row.clip.w) as i32,
-                bottom: (row.clip.y + row.clip.h) as i32,
-            },
+            bounds: bounds(row),
             default_color: Color::rgb(255, 255, 255),
             custom_glyphs: &[],
         });
+        // A row's scale is already in its buffer's metrics, so every area draws at scale 1.
+        let row_areas = || {
+            self.buffers.iter().zip(all_rows.iter().copied()).map(|((buffer, .., serial), row)| RowArea {
+                serial: *serial,
+                buffer,
+                left: row.x,
+                top: row.y,
+                bounds: bounds(row),
+                default_color: Color::rgb(255, 255, 255),
+            })
+        };
         // Box and block glyphs: one more `TextArea` per clip rectangle, an empty buffer carrying the
         // glyphs as custom glyphs (rasterized by `boxdraw` on request, cached by id and size).
         let glyph_areas = groups.iter().map(|(clip, glyphs)| TextArea {
@@ -1792,13 +1838,25 @@ impl Renderer {
             custom_glyphs: glyphs,
         });
         let custom = &self.custom;
-        self.text
-            .prepare_with_custom(&self.device, &self.queue, &mut self.font_system, &mut self.atlas, &self.viewport, areas.chain(glyph_areas), &mut self.swash, |request: RasterizeCustomGlyphRequest| {
-                // Total for every interned id: the same mask each time, never `None` once it was `Some`.
-                let (c, scale) = custom.get(request.id)?;
-                Some(RasterizedCustomGlyph { data: crate::boxdraw::rasterize(c, request.width, request.height, scale), content_type: ContentType::Mask })
-            })
-            .map_err(|e| format!("text prepare: {e:?}"))?;
+        let rasterize = |request: RasterizeCustomGlyphRequest| {
+            // Total for every interned id: the same mask each time, never `None` once it was `Some`.
+            let (c, scale) = custom.get(request.id)?;
+            Some(RasterizedCustomGlyph { data: crate::boxdraw::rasterize(c, request.width, request.height, scale), content_type: ContentType::Mask })
+        };
+        if self.row_instances {
+            // The rows, then the box and block glyphs, both on one atlas: when either grows it, the
+            // rows prepare again, until neither moves it.
+            loop {
+                self.rows.prepare(&self.device, &self.queue, &mut self.font_system, &mut self.atlas, &self.viewport, row_areas(), &mut self.swash).map_err(|e| format!("text prepare: {e:?}"))?;
+                let seen = self.atlas.generation();
+                self.text.prepare_with_custom(&self.device, &self.queue, &mut self.font_system, &mut self.atlas, &self.viewport, glyph_areas.clone(), &mut self.swash, rasterize).map_err(|e| format!("text prepare: {e:?}"))?;
+                if self.atlas.generation() == seen {
+                    break;
+                }
+            }
+        } else {
+            self.text.prepare_with_custom(&self.device, &self.queue, &mut self.font_system, &mut self.atlas, &self.viewport, areas.chain(glyph_areas), &mut self.swash, rasterize).map_err(|e| format!("text prepare: {e:?}"))?;
+        }
 
         self.queue.write_buffer(&self.quads.uniform, 0, bytemuck::cast_slice(&[width as f32, height as f32, 0.0, 0.0]));
         let under = QuadPipeline::vertices(&frame.quads);
@@ -1876,6 +1934,9 @@ impl Renderer {
                 pass.set_bind_group(0, &self.quads.bind_group, &[]);
                 pass.set_vertex_buffer(0, pops_buf.slice(..));
                 pass.draw(0..(pops.len() / 6) as u32, 0..1);
+            }
+            if self.row_instances {
+                self.rows.render(&self.atlas, &self.viewport, &mut pass).map_err(|e| format!("text render: {e:?}"))?;
             }
             self.text.render(&self.atlas, &self.viewport, &mut pass).map_err(|e| format!("text render: {e:?}"))?;
             if !over.is_empty() {
