@@ -3853,9 +3853,17 @@ pub fn background(frame: &mut Frame, pane: Rect, pieces: &[crate::bgimage::Piece
 /// Draws the bar and returns the box it drew (its hit rectangle).
 pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar::Layout, cell: (f32, f32)) -> Rect {
     let r = l.bar;
+    let bottom = r.y + r.h;
     for row in frame.rows.iter_mut() {
-        if row.y < r.y + r.h && row.y + cell.1 > r.y && row.clip.x < r.x + r.w && row.clip.x + row.clip.w > r.x {
-            row.clip.w = 0.0;
+        if row.y < bottom && row.y + cell.1 > r.y && row.clip.x < r.x + r.w && row.clip.x + row.clip.w > r.x {
+            // A row that reaches below the bar keeps that part; one wholly under it goes.
+            let end = row.clip.y + row.clip.h;
+            if row.y + cell.1 > bottom && end > bottom {
+                let top = row.clip.y.max(bottom);
+                row.clip = Rect { y: top, h: end - top, ..row.clip };
+            } else {
+                row.clip.w = 0.0;
+            }
         }
     }
     cut_quads(frame, r);
@@ -7279,6 +7287,25 @@ mod tests {
         f.glyphs = vec![box_glyph(l.bar.x + 20.0, l.bar.y, 10.0), box_glyph(l.bar.x + 20.0, l.bar.y + l.bar.h + 40.0, 10.0)];
         info_bar(&mut f, &bar, &l, CELL);
         assert_eq!(shown(&f), vec![(l.bar.x + 20.0, l.bar.y + l.bar.h + 40.0, 10.0, 20.0)], "the glyph under the bar is gone, the one below stays");
+    }
+
+    /// `clear` then output and a zsh prompt with the CSI 3 J bar up: the bar is a cell plus 8 px
+    /// tall and the text starts 2 px down, so it covers the top 6 px of the prompt row. The rest of
+    /// that row still shows (it hid the whole prompt while its cursor stayed).
+    #[test]
+    fn info_bar_keeps_the_row_it_only_partly_covers() {
+        let s = screen(b"old\r\n\x1b[H\x1b[2J\x1b[4mUNDER\x1b[0m \x1b[9mSTRIKE\x1b[0m done\r\nadmin@vm ~ % ");
+        let bar = crate::infobar::Bar { id: "x".into(), text: "hi".into(), buttons: vec!["_Yes".into()], important: false };
+        let l = crate::infobar::layout(&bar, RECT, CELL);
+        let text = Rect { y: RECT.y + 2.0, h: RECT.h - 4.0, ..RECT };
+        let mut f = Frame::default();
+        pane(&mut f, &s, text, CELL, true, &CursorLook::shown(false));
+        info_bar(&mut f, &bar, &l, CELL);
+        let shown = |needle: &str| f.rows.iter().filter(|r| r.spans.iter().any(|s| s.text.contains(needle))).map(|r| r.clip).find(|c| c.w > 0.0 && c.h > 0.0);
+        let bottom = l.bar.y + l.bar.h;
+        let prompt = shown("admin@vm").expect("the prompt row shows below the bar");
+        assert!(prompt.y >= bottom, "its text is cut at the bar's bottom, not drawn under it: {prompt:?}");
+        assert!(shown("UNDER").is_none(), "the row wholly under the bar stays hidden");
     }
 
     #[test]
@@ -11461,6 +11488,31 @@ mod row_reuse_tests {
         both_ways(30, 5, &[cjk.as_bytes(), b"\r\nmore"], |_, _, _| {});
         let boxes = "\u{250c}\u{2500}\u{2500}\u{252c}\u{2500}\u{2510}\r\n\u{2502}ab\u{2502}cd\u{2502}\r\n\u{2514}\u{2500}\u{2500}\u{2534}\u{2500}\u{2518}\r\n\u{e0b0}\u{e0b2}\u{e0b4} \u{2588}\u{2591}\u{2592}";
         both_ways(30, 6, &[boxes.as_bytes(), b"\r\nx"], |_, cfg, i| cfg.draw.powerline = i == 1);
+    }
+
+    /// `clear` (ESC[H ESC[2J ESC[3J) on a full screen, then styled output and a zsh prompt: every
+    /// step through the cache must equal a full build.
+    #[test]
+    fn clear_then_output_matches_with_reuse() {
+        let fill: String = (0..60).map(|n| format!("old line {n} with text\r\n")).collect();
+        let prompt = "admin@Manageds-Virtual-Machine ~ % ";
+        let sp = format!("\x1b[7m%\x1b[27m{}\r \r\x1b[K", " ".repeat(79));
+        let script: Vec<&[u8]> = vec![
+            fill.as_bytes(),
+            prompt.as_bytes(),
+            b"clear\r\n",
+            b"\x1b[H\x1b[2J",
+            b"\x1b[3J",
+            b"\x1b[4mUNDER\x1b[0m \x1b[9mSTRIKE\x1b[0m done\r\n",
+            sp.as_bytes(),
+            prompt.as_bytes(),
+            b"",
+            b"x",
+        ];
+        both_ways(80, 40, &script, |_, _, _| {});
+        // The same, all in one chunk after the fill (one frame sees the whole change).
+        let all = format!("\x1b[H\x1b[2J\x1b[3J\x1b[4mUNDER\x1b[0m \x1b[9mSTRIKE\x1b[0m done\r\n{sp}{prompt}");
+        both_ways(80, 40, &[fill.as_bytes(), prompt.as_bytes(), all.as_bytes(), b""], |_, _, _| {});
     }
 
     #[test]
