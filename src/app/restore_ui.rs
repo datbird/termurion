@@ -257,7 +257,7 @@ impl App {
         // The grid is less the pane's room (scrollbar strip, timestamps), as every new pane's is.
         let id = self.next_id;
         let (cols, rows) = self.grid_size_in(rect, cell, self.pane_room_for(id, &p));
-        let (pty, _from, dropped) = host.attach(host_id, pid, since, self.notify.clone())?;
+        let (pty, _from, dropped) = host.attach(host_id, pid, since, self.pty_notify.clone())?;
         self.next_id += 1;
         let mut pane = Pane::attached(id, pty, cols, rows);
         if let Some(c) = &cookie {

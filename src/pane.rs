@@ -485,6 +485,9 @@ pub struct Pane {
     pub survivors: Vec<(u32, u64)>,
     /// When the exit was first seen: the end is handled once the output has drained.
     exit_seen: Option<Instant>,
+    /// When the shell's exit was first noticed while its output was still unread: a writer that
+    /// outlives the shell cannot hold the end back longer than `END_DRAIN_CAP`.
+    exit_unread: Option<Instant>,
     /// The shell's pid at its exit, for the survivor survey only (`shell_pid` is None then).
     exit_pid: Option<u32>,
     /// The local folder the shell started in (it passed 13p's start-folder rules and network
@@ -773,17 +776,21 @@ impl Pane {
     fn with(id: PaneId, pty: Option<Io>, cols: u16, rows: u16) -> Pane {
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = pty.is_some();
-        Pane { id, needs_forced_layout: true, activity: 0, locked: false, selected_command: None, pinned_width: None, session_guid: new_session_guid(), stable_id: crate::stable_id::generate(), screen, encoding: 0, decoder: None, pty, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, initial_text_due: false, initial_text_sent: false, idle_time: crate::activity::DEFAULT_IDLE, progress_anim: Default::default(), #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, secure_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default(), ended: false, exec_failed: false, created: std::time::SystemTime::now(), created_at: Instant::now(), auto_log_id: new_auto_log_id(), hold_open: false, survivors: Vec::new(), exit_seen: None, exit_pid: None, start_dir: None, log: None, log_started: None, log_compact: (false, false), archived: false, held_idle: false, shell_gen: 0, workgroup: None, auto_send_clippings: false, auto_request_review: false, fx_signal: Default::default(), fx_memory: Default::default(), fx_rules: Default::default(), fx_pick: None, fx_dirty: false, fx_checked: None, rows: Default::default() }
+        Pane { id, needs_forced_layout: true, activity: 0, locked: false, selected_command: None, pinned_width: None, session_guid: new_session_guid(), stable_id: crate::stable_id::generate(), screen, encoding: 0, decoder: None, pty, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, initial_text_due: false, initial_text_sent: false, idle_time: crate::activity::DEFAULT_IDLE, progress_anim: Default::default(), #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, secure_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default(), ended: false, exec_failed: false, created: std::time::SystemTime::now(), created_at: Instant::now(), auto_log_id: new_auto_log_id(), hold_open: false, survivors: Vec::new(), exit_seen: None, exit_unread: None, exit_pid: None, start_dir: None, log: None, log_started: None, log_compact: (false, false), archived: false, held_idle: false, shell_gen: 0, workgroup: None, auto_send_clippings: false, auto_request_review: false, fx_signal: Default::default(), fx_memory: Default::default(), fx_rules: Default::default(), fx_pick: None, fx_dirty: false, fx_checked: None, rows: Default::default() }
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
+    #[cfg(test)]
     pub fn pump(&mut self) -> bool {
         self.pump_until(Instant::now() + Duration::from_secs(3600)).changed
     }
 
     /// Parses waiting output one chunk at a time and stops once `deadline` has passed, leaving
     /// the rest in the channel (`more`). A chunk is never split, so the bytes stay in order.
-    /// The coprocess and the exit check wait until nothing is left unread.
+    /// The coprocess and the exit check wait until nothing is left unread (an auto-responder
+    /// coprocess cannot answer inside a flood), but an exit is recorded once `END_DRAIN_CAP`
+    /// has passed since it was noticed, so a writer that outlives the shell cannot hold the end.
+    /// `more` can be true when the last chunk emptied the channel: one extra turn, no harm.
     pub fn pump_until(&mut self, deadline: Instant) -> Pump {
         if self.pty.is_none() {
             return Pump::default();
@@ -804,7 +811,7 @@ impl Pane {
                 break;
             }
         }
-        if more {
+        if more && !self.exit_cap_passed() {
             return Pump { changed, more };
         }
         if self.coprocess.is_some() {
@@ -851,6 +858,15 @@ impl Pane {
             self.stop_coprocess();
         }
         Pump { changed, more }
+    }
+
+    /// The shell is gone but its output is still arriving: true once that has lasted
+    /// `END_DRAIN_CAP`.
+    fn exit_cap_passed(&mut self) -> bool {
+        if self.exited.is_some() || !self.pty.as_ref().is_some_and(|p| p.exit_code().is_some()) {
+            return false;
+        }
+        Instant::now() >= *self.exit_unread.get_or_insert_with(Instant::now) + END_DRAIN_CAP
     }
 
     /// One read through the hooks. The SSH hook sees it first, unless tmux control mode is on:
@@ -1122,7 +1138,7 @@ impl Pane {
             io.answers_osc4.set(answers_osc4);
             io.push_output(data);
         }
-        self.pump();
+        self.pump_until(Instant::now() + PARSE_SLICE);
         self.has_ssh() || self.ssh_effects_pending()
     }
 
@@ -2180,9 +2196,11 @@ impl Pane {
         if now < due {
             return false;
         }
-        // One more read: output still arriving holds the end back, up to the cap.
-        let more = self.pump();
-        !more || now >= due + END_DRAIN_CAP
+        // One more bounded read: output still arriving holds the end back, up to the cap. The
+        // read never runs past the cap, so a flood during the wait cannot freeze the loop.
+        let cap = due + END_DRAIN_CAP;
+        let r = self.pump_until((Instant::now() + PARSE_SLICE).min(cap));
+        !(r.changed || r.more) || now >= cap
     }
 
     /// What the terminal answers the program (reports), and Termurion's own writes that iTerm2
@@ -2613,6 +2631,31 @@ mod tests {
         }
         assert!(slices >= 3, "{slices}");
         assert_eq!(p.exited, Some(0), "the exit shows once everything was parsed");
+    }
+
+    #[test]
+    fn a_writer_that_outlives_the_shell_cannot_hold_the_exit() {
+        // `yes & exit`: the shell is gone, the output never stops.
+        let mut p = chunked((0..50).map(|_| vec![b'y'; 64 * 1024]).collect());
+        let past = Instant::now() - Duration::from_millis(1);
+        assert!(p.pump_until(past).more);
+        assert!(p.exited.is_none(), "inside the cap the exit waits for the output");
+        p.exit_unread = Some(Instant::now() - END_DRAIN_CAP - Duration::from_millis(1));
+        let r = p.pump_until(past);
+        assert!(r.more, "the flood goes on");
+        assert_eq!(p.exited, Some(0), "after the cap the exit is recorded at the slice boundary");
+    }
+
+    #[test]
+    fn a_flood_during_the_drain_wait_does_not_block_past_the_cap() {
+        let mut p = chunked((0..400).map(|_| vec![b'z'; 64 * 1024]).collect());
+        p.exited = Some(0);
+        p.exit_seen = Some(Instant::now() - END_DRAIN - Duration::from_millis(5));
+        let t = Instant::now();
+        assert!(!p.end_ready(t), "output still arriving holds the end back");
+        assert!(waiting(&p) > 300, "one bounded slice, not a drain: {} chunks left", waiting(&p));
+        let due = p.end_due_at().unwrap();
+        assert!(p.end_ready(due + END_DRAIN_CAP), "past the cap the end goes ahead");
     }
 
     #[test]
@@ -3906,7 +3949,7 @@ mod tests {
 
     #[test]
     fn gateway_panes_take_no_input() {
-        let mut p = Pane { id: 1, needs_forced_layout: true, activity: 0, locked: false, selected_command: None, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: Screen::new(10, 4), encoding: 0, decoder: None, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, initial_text_due: false, initial_text_sent: false, idle_time: crate::activity::DEFAULT_IDLE, progress_anim: Default::default(), #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, secure_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default(), ended: false, exec_failed: false, created: std::time::SystemTime::UNIX_EPOCH, created_at: Instant::now(), auto_log_id: 0, hold_open: false, survivors: Vec::new(), exit_seen: None, exit_pid: None, start_dir: None, log: None, log_started: None, log_compact: (false, false), archived: false, held_idle: false, shell_gen: 0, workgroup: None, auto_send_clippings: false, auto_request_review: false, fx_signal: Default::default(), fx_memory: Default::default(), fx_rules: Default::default(), fx_pick: None, fx_dirty: false, fx_checked: None, rows: Default::default() };
+        let mut p = Pane { id: 1, needs_forced_layout: true, activity: 0, locked: false, selected_command: None, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: Screen::new(10, 4), encoding: 0, decoder: None, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, initial_text_due: false, initial_text_sent: false, idle_time: crate::activity::DEFAULT_IDLE, progress_anim: Default::default(), #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, secure_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default(), ended: false, exec_failed: false, created: std::time::SystemTime::UNIX_EPOCH, created_at: Instant::now(), auto_log_id: 0, hold_open: false, survivors: Vec::new(), exit_seen: None, exit_unread: None, exit_pid: None, start_dir: None, log: None, log_started: None, log_compact: (false, false), archived: false, held_idle: false, shell_gen: 0, workgroup: None, auto_send_clippings: false, auto_request_review: false, fx_signal: Default::default(), fx_memory: Default::default(), fx_rules: Default::default(), fx_pick: None, fx_dirty: false, fx_checked: None, rows: Default::default() };
         p.buffer.on = true;
         p.input(b"a");
         p.gateway = true;
@@ -3919,7 +3962,7 @@ mod tests {
         // During a replay iTerm2's tab shows the task-less synthetic session, so nothing
         // the user sends reaches the live shell; the live session's own writes (a
         // trigger's Send Text) still do.
-        let mut p = Pane { id: 1, needs_forced_layout: true, activity: 0, locked: false, selected_command: None, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: Screen::new(10, 4), encoding: 0, decoder: None, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, initial_text_due: false, initial_text_sent: false, idle_time: crate::activity::DEFAULT_IDLE, progress_anim: Default::default(), #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, secure_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default(), ended: false, exec_failed: false, created: std::time::SystemTime::UNIX_EPOCH, created_at: Instant::now(), auto_log_id: 0, hold_open: false, survivors: Vec::new(), exit_seen: None, exit_pid: None, start_dir: None, log: None, log_started: None, log_compact: (false, false), archived: false, held_idle: false, shell_gen: 0, workgroup: None, auto_send_clippings: false, auto_request_review: false, fx_signal: Default::default(), fx_memory: Default::default(), fx_rules: Default::default(), fx_pick: None, fx_dirty: false, fx_checked: None, rows: Default::default() };
+        let mut p = Pane { id: 1, needs_forced_layout: true, activity: 0, locked: false, selected_command: None, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: Screen::new(10, 4), encoding: 0, decoder: None, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, initial_text_due: false, initial_text_sent: false, idle_time: crate::activity::DEFAULT_IDLE, progress_anim: Default::default(), #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, secure_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default(), ended: false, exec_failed: false, created: std::time::SystemTime::UNIX_EPOCH, created_at: Instant::now(), auto_log_id: 0, hold_open: false, survivors: Vec::new(), exit_seen: None, exit_unread: None, exit_pid: None, start_dir: None, log: None, log_started: None, log_compact: (false, false), archived: false, held_idle: false, shell_gen: 0, workgroup: None, auto_send_clippings: false, auto_request_review: false, fx_signal: Default::default(), fx_memory: Default::default(), fx_rules: Default::default(), fx_pick: None, fx_dirty: false, fx_checked: None, rows: Default::default() };
         p.buffer.on = true;
         p.input(b"a");
         p.replay = Some(replay::Replay { decoder: None, read_only: false });
@@ -3934,7 +3977,7 @@ mod tests {
     fn frozen_pane_keeps_its_copy() {
         let mut own = Screen::new(10, 4);
         own.feed(b"live");
-        let mut p = Pane { id: 1, needs_forced_layout: true, activity: 0, locked: false, selected_command: None, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: own, encoding: 0, decoder: None, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, initial_text_due: false, initial_text_sent: false, idle_time: crate::activity::DEFAULT_IDLE, progress_anim: Default::default(), #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, secure_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default(), ended: false, exec_failed: false, created: std::time::SystemTime::UNIX_EPOCH, created_at: Instant::now(), auto_log_id: 0, hold_open: false, survivors: Vec::new(), exit_seen: None, exit_pid: None, start_dir: None, log: None, log_started: None, log_compact: (false, false), archived: false, held_idle: false, shell_gen: 0, workgroup: None, auto_send_clippings: false, auto_request_review: false, fx_signal: Default::default(), fx_memory: Default::default(), fx_rules: Default::default(), fx_pick: None, fx_dirty: false, fx_checked: None, rows: Default::default() };
+        let mut p = Pane { id: 1, needs_forced_layout: true, activity: 0, locked: false, selected_command: None, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: own, encoding: 0, decoder: None, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, initial_text_due: false, initial_text_sent: false, idle_time: crate::activity::DEFAULT_IDLE, progress_anim: Default::default(), #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, secure_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default(), ended: false, exec_failed: false, created: std::time::SystemTime::UNIX_EPOCH, created_at: Instant::now(), auto_log_id: 0, hold_open: false, survivors: Vec::new(), exit_seen: None, exit_unread: None, exit_pid: None, start_dir: None, log: None, log_started: None, log_compact: (false, false), archived: false, held_idle: false, shell_gen: 0, workgroup: None, auto_send_clippings: false, auto_request_review: false, fx_signal: Default::default(), fx_memory: Default::default(), fx_rules: Default::default(), fx_pick: None, fx_dirty: false, fx_checked: None, rows: Default::default() };
         let mut snap = Screen::new(10, 4);
         snap.feed(b"frozen");
         p.freeze(snap);
@@ -4064,7 +4107,7 @@ mod tests {
     #[test]
     fn relaunch_takes_every_shell_field_from_the_fresh_pane() {
         fn classify(p: &Pane) {
-            let Pane { id: _, needs_forced_layout: _, activity: _, locked: _, pinned_width: _, session_guid: _, stable_id: _, screen: _, encoding: _, decoder: _, pty: _, exited: _, error: _, profile: _, command: _, live: _, session_note: _, buffer: _, frozen: _, suppress_output: _, got_output: _, coprocess: _, co_out: _, co_end: _, tmux_hook: _, tmux_q: _, ssh_hook: _, ssh_q: _, conductor: _, ssh_registry_out: _, ssh_answers: _, ssh_files_out: _, ssh_search_out: _, ssh_clock: _, ssh_held: _, pending_jumps: _, screen_filter: _, gateway: _, tmux_size: _, last_newline: _, composer: _, dvr: _, replay_at: _, throughput: _, held: _, held_until: _, replay: _, echo_probe: _, stuck: _, stuck_seen: _, no_focus_reports: _, password_input: _, secure_input: _, cookie: _, inline_paused: _, frustration: _, wheel: _, arrangement: _, ssh: _, motion: _, ended: _, created: _, created_at: _, auto_log_id: _, hold_open: _, survivors: _, exit_seen: _, exit_pid: _,
+            let Pane { id: _, needs_forced_layout: _, activity: _, locked: _, pinned_width: _, session_guid: _, stable_id: _, screen: _, encoding: _, decoder: _, pty: _, exited: _, error: _, profile: _, command: _, live: _, session_note: _, buffer: _, frozen: _, suppress_output: _, got_output: _, coprocess: _, co_out: _, co_end: _, tmux_hook: _, tmux_q: _, ssh_hook: _, ssh_q: _, conductor: _, ssh_registry_out: _, ssh_answers: _, ssh_files_out: _, ssh_search_out: _, ssh_clock: _, ssh_held: _, pending_jumps: _, screen_filter: _, gateway: _, tmux_size: _, last_newline: _, composer: _, dvr: _, replay_at: _, throughput: _, held: _, held_until: _, replay: _, echo_probe: _, stuck: _, stuck_seen: _, no_focus_reports: _, password_input: _, secure_input: _, cookie: _, inline_paused: _, frustration: _, wheel: _, arrangement: _, ssh: _, motion: _, ended: _, created: _, created_at: _, auto_log_id: _, hold_open: _, survivors: _, exit_seen: _, exit_unread: _, exit_pid: _,
                 // 13p, all from the fresh pane (the merge's classification): Initial Text's state (a
                 // restarted SSH shell types once after its own login, S2), the idle time (read
                 // again by apply_session_start, S4), the progress bar's animation (a restart

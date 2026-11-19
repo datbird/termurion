@@ -529,12 +529,10 @@ impl App {
         };
         let mut order: Vec<PaneId> = self.panes.keys().copied().collect();
         order.sort_unstable();
-        if !order.is_empty() {
-            let by = self.pump_from % order.len();
-            order.rotate_left(by);
-        }
-        self.pump_from = self.pump_from.wrapping_add(1);
-        for id in &order {
+        let start = if order.is_empty() { 0 } else { self.pump_from % order.len() };
+        order.rotate_left(start);
+        let mut first_more = None;
+        for (k, id) in order.iter().enumerate() {
             let Some(p) = self.panes.get_mut(id) else { continue };
             p.own_mut().prompt_state.enabled = auto_composer;
             p.log_compact = (smart_logging, auto_composer);
@@ -544,10 +542,17 @@ impl App {
             let r = p.pump_until(deadline);
             // Parsing goes on while the window is hidden; only the redraws are held back there.
             self.parse_owed |= r.more;
+            if r.more && first_more.is_none() {
+                first_more = Some(k);
+            }
             if r.changed {
                 outputs.push(*id);
             }
             changed |= r.changed;
+        }
+        // The pane that used the slice up goes last next turn, so each one gets to go first.
+        if !order.is_empty() {
+            self.pump_from = next_pump_start(order.len(), start, first_more);
         }
         changed |= self.ssh_pump();
         changed |= self.tmux_pump(event_loop);
@@ -581,15 +586,77 @@ impl App {
             }
             self.after_output(&outputs, now);
         }
-        if self.parse_owed {
-            // Owed output is parsed by the loop itself: the readers' notifies add no events.
-            self.wake_queued.store(true, std::sync::atomic::Ordering::Release);
-        } else if was_owed {
-            // Caught up: notifies count again, and one more read finds what came while they did not.
-            self.wake_queued.store(false, std::sync::atomic::Ordering::Release);
+        if self.pty_wake.turn_ended(was_owed, self.parse_owed) {
+            // Caught up: pty notifies count again, and one more read finds what came while
+            // they did not. It is not a turn of its own for the rotation.
+            let from = self.pump_from;
             self.pump_panes(event_loop);
+            self.pump_from = from;
         }
     }
+}
+
+/// The pane after which the next slice starts: past the pane that ran out of time first, else
+/// one on. `first_more` counts from `start`.
+fn next_pump_start(n: usize, start: usize, first_more: Option<usize>) -> usize {
+    (start + first_more.unwrap_or(0) + 1) % n
+}
+
+/// The pty readers' wake. At most one `Wake` waits in the queue. While output is owed the loop
+/// parses by itself (`about_to_wait`), and a `Wake` per chunk would keep macOS' run loop from
+/// ever reaching it, so the readers' notifies are held back then. Only the pty readers use
+/// this flag: every other worker's notify sends its own `Wake` and is never held.
+#[derive(Clone)]
+struct PtyWake {
+    queued: Arc<std::sync::atomic::AtomicBool>,
+    hold_while_owed: bool,
+}
+
+impl PtyWake {
+    fn new(hold_while_owed: bool) -> PtyWake {
+        PtyWake { queued: Arc::new(std::sync::atomic::AtomicBool::new(false)), hold_while_owed }
+    }
+
+    fn notify(&self, send: impl Fn() + Send + Sync + 'static) -> Notify {
+        coalesced_wake(self.queued.clone(), send)
+    }
+
+    /// A `Wake` arrived: pty notifies send again, unless output is owed and held back.
+    fn wake_taken(&self, owed: bool) {
+        if !(owed && self.hold_while_owed) {
+            self.queued.swap(false, std::sync::atomic::Ordering::AcqRel);
+        }
+    }
+
+    /// A parse turn ended. True when the caller must read once more: the debt was just paid,
+    /// and notifies that were held back may have come with data.
+    fn turn_ended(&self, was_owed: bool, owed: bool) -> bool {
+        if !self.hold_while_owed {
+            return false;
+        }
+        if owed {
+            self.queued.store(true, std::sync::atomic::Ordering::Release);
+            false
+        } else if was_owed {
+            self.queued.swap(false, std::sync::atomic::Ordering::AcqRel);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// `Poll` while a slice left output unread, else the loop's normal control flow.
+fn parse_control(owed: bool) -> Option<ControlFlow> {
+    owed.then_some(ControlFlow::Poll)
+}
+
+/// The app's two notifies: the plain one every worker uses (one `Wake` per call), and the
+/// pty readers' one (`PtyWake`).
+fn wake_pair(gate: &PtyWake, send: impl Fn() + Send + Sync + 'static) -> (Notify, Notify) {
+    let send = Arc::new(send);
+    let plain = send.clone();
+    (Arc::new(move || plain()), gate.notify(move || send()))
 }
 
 /// A pty's notify that queues one `Wake` and no more until the main thread has taken it.
@@ -604,7 +671,9 @@ fn coalesced_wake(queued: Arc<std::sync::atomic::AtomicBool>, send: impl Fn() + 
 pub struct App {
     notify: Notify,
     /// A `Wake` is already on its way: more pty notifies add nothing until it is handled.
-    wake_queued: Arc<std::sync::atomic::AtomicBool>,
+    pty_wake: PtyWake,
+    /// The notify the pty readers get: coalesced, and held back while output is owed.
+    pty_notify: Notify,
     /// The pane the next parse slice starts at, so a flood in one pane cannot starve the others.
     pump_from: usize,
     /// A slice ran out of time with output unread: the loop parses again after drawing.
@@ -2326,8 +2395,8 @@ pub fn run() {
         }
     };
     let wake = proxy.clone();
-    let wake_queued = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let notify = coalesced_wake(wake_queued.clone(), move || {
+    let pty_wake = PtyWake::new(!cfg!(windows));
+    let (notify, pty_notify) = wake_pair(&pty_wake, move || {
         let _ = wake.lock().unwrap().send_event(UserEvent::Wake);
     });
     gpu_pick::set_wake(notify.clone());
@@ -2490,7 +2559,8 @@ pub fn run() {
         app_hidden: Vec::new(),
         host_welcome,
         notify,
-        wake_queued,
+        pty_wake,
+        pty_notify,
         pump_from: 0,
         parse_owed: false,
         jobs,
@@ -4744,16 +4814,16 @@ impl App {
         let injected = self.injected_command(&p, &cmd, transport);
         let launch = injected.as_deref().unwrap_or(&cmd);
         let started = match &self.host {
-            Some(h) => match Pane::start_hosted_transport(id, h, transport, launch, Some(&cwd), &env, cols, rows, self.notify.clone()) {
+            Some(h) => match Pane::start_hosted_transport(id, h, transport, launch, Some(&cwd), &env, cols, rows, self.pty_notify.clone()) {
                 // A host below protocol 4 cannot run this transport: the session runs inside
                 // Termurion instead.
                 Err(e) if e == crate::host_client::HOST_TOO_OLD => {
                     self.banners.set("host", "The session host is too old for this SSH session, so it runs inside Termurion.");
-                    Pane::start_transport(id, &self.api, transport, launch, Some(&cwd), &env, cols, rows, self.notify.clone())
+                    Pane::start_transport(id, &self.api, transport, launch, Some(&cwd), &env, cols, rows, self.pty_notify.clone())
                 }
                 other => other,
             },
-            None => Pane::start_transport(id, &self.api, transport, launch, Some(&cwd), &env, cols, rows, self.notify.clone()),
+            None => Pane::start_transport(id, &self.api, transport, launch, Some(&cwd), &env, cols, rows, self.pty_notify.clone()),
         };
         match started {
             Ok(mut pane) => {
@@ -8257,8 +8327,8 @@ impl ApplicationHandler<UserEvent> for App {
         // Unread output: the next slice runs at once, not at the next event.
         if self.parse_owed {
             self.pump_panes(event_loop);
-            if self.parse_owed {
-                return event_loop.set_control_flow(ControlFlow::Poll);
+            if let Some(flow) = parse_control(self.parse_owed) {
+                return event_loop.set_control_flow(flow);
             }
         }
         let wake = [fx_due, fx_frame_due, gpu_due, egui_due, tray_due, workgroup_due, jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, badge_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, panels_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, hold_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
@@ -8332,9 +8402,7 @@ impl ApplicationHandler<UserEvent> for App {
                 // Cleared before parsing, so output that lands meanwhile wakes the loop again.
                 // While output is owed the loop drives itself, and more Wakes would only keep
                 // it from ever reaching `about_to_wait`, where the frames are delivered.
-                if !self.parse_owed {
-                    self.wake_queued.store(false, std::sync::atomic::Ordering::Release);
-                }
+                self.pty_wake.wake_taken(self.parse_owed);
             }
         }
         self.pump_panes(event_loop);
@@ -8674,6 +8742,11 @@ impl ApplicationHandler<UserEvent> for App {
                 self.ensure_faces();
                 if sig != self.font_sig || self.pane_faces.stale() || self.laid_out.as_ref() != Some(&self.room()) {
                     self.relayout();
+                }
+                // Windows' title-bar drag runs its own message loop with no `about_to_wait`: a
+                // redraw there is the other place owed output gets its slice.
+                if self.parse_owed {
+                    self.pump_panes(event_loop);
                 }
                 self.render();
                 // The IME's candidate window follows the caret of the frame just drawn.
@@ -9298,6 +9371,85 @@ mod tests {
         queued.store(false, std::sync::atomic::Ordering::SeqCst);
         notify();
         assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 2, "after the Wake was taken the next notify sends again");
+    }
+
+    fn counting_pair(hold: bool) -> (PtyWake, Notify, Notify, Arc<std::sync::atomic::AtomicUsize>) {
+        let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = sent.clone();
+        let gate = PtyWake::new(hold);
+        let (plain, pty) = wake_pair(&gate, move || {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        (gate, plain, pty, sent)
+    }
+
+    fn sends(sent: &Arc<std::sync::atomic::AtomicUsize>) -> usize {
+        sent.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[test]
+    fn a_worker_wake_during_a_flood_is_never_held_back() {
+        let (gate, plain, pty, sent) = counting_pair(true);
+        // A flood: the slice ended owed, so the readers' notifies are held.
+        assert!(!gate.turn_ended(false, true));
+        pty();
+        pty();
+        assert_eq!(sends(&sent), 0, "the readers add no events while output is owed");
+        // A paste, a git status or an API reply wakes the loop all the same, every time.
+        plain();
+        plain();
+        assert_eq!(sends(&sent), 2, "a worker's notify always sends its own Wake");
+        // The Wake arm runs while owed and must not release the readers' hold.
+        gate.wake_taken(true);
+        pty();
+        assert_eq!(sends(&sent), 2);
+    }
+
+    #[test]
+    fn owed_output_holds_the_readers_and_catching_up_releases_them() {
+        let (gate, _plain, pty, sent) = counting_pair(true);
+        assert_eq!(parse_control(true), Some(ControlFlow::Poll), "owed: the loop polls and pumps again");
+        assert!(!gate.turn_ended(false, true), "the first owed turn has nothing to re-read");
+        assert!(!gate.turn_ended(true, true), "still owed: the loop pumps by itself");
+        pty();
+        assert_eq!(sends(&sent), 0);
+        assert_eq!(parse_control(false), None, "caught up: the normal control flow");
+        assert!(gate.turn_ended(true, false), "caught up: one more read for what the held notifies announced");
+        pty();
+        assert_eq!(sends(&sent), 1, "no notify stays swallowed after catching up");
+        pty();
+        assert_eq!(sends(&sent), 1, "and they coalesce again");
+        gate.wake_taken(false);
+        pty();
+        assert_eq!(sends(&sent), 2);
+        assert!(!gate.turn_ended(false, false));
+    }
+
+    #[test]
+    fn windows_never_holds_the_readers_back() {
+        // Its title-bar drag has no `about_to_wait`: the Wakes keep the parse going there.
+        let (gate, _plain, pty, sent) = counting_pair(false);
+        assert!(!gate.turn_ended(false, true));
+        pty();
+        assert_eq!(sends(&sent), 1);
+        gate.wake_taken(true);
+        pty();
+        assert_eq!(sends(&sent), 2);
+    }
+
+    #[test]
+    fn every_busy_pane_goes_first_in_turn() {
+        // Two panes that each use the whole slice, then one idle pane among three.
+        let mut start = 0;
+        let mut firsts = Vec::new();
+        for _ in 0..4 {
+            firsts.push(start);
+            start = next_pump_start(2, start, Some(0));
+        }
+        assert_eq!(firsts, [0, 1, 0, 1], "the pane that ran out of time yields the first place");
+        // Pane 1 of 3 ran dry first (k = 1 from start 0): the next turn starts after it.
+        assert_eq!(next_pump_start(3, 0, Some(1)), 2);
+        assert_eq!(next_pump_start(3, 2, None), 0, "nobody ran out of time: one on");
     }
 
     #[test]
