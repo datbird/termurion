@@ -10,7 +10,8 @@ use wgpu::{
 
 /// The first size of a staging chunk; a bigger write gets a chunk of its own size.
 const CHUNK: BufferAddress = 256 * 1024;
-/// Chunks kept free after a burst (a flood); the rest are let go.
+/// Chunks kept free after a burst (a flood); the rest are let go. Of chunks bigger than
+/// `CHUNK` (one large write each) only the largest is kept.
 const KEEP_FREE: usize = 8;
 
 struct Chunk {
@@ -94,8 +95,15 @@ impl UploadBelt {
 
     fn take_free(&mut self, size: BufferAddress) -> Option<Chunk> {
         let mut free = self.free.lock().unwrap();
-        let i = free.iter().position(|c| c.buffer.size() >= size)?;
+        // The smallest that fits, so a small write leaves a big chunk for a big one.
+        let i = free.iter().enumerate().filter(|(_, c)| c.buffer.size() >= size).min_by_key(|(_, c)| c.buffer.size())?.0;
         Some(free.swap_remove(i))
+    }
+
+    /// The sizes of the chunks free now (tests).
+    #[cfg(test)]
+    fn free_sizes(&self) -> Vec<BufferAddress> {
+        self.free.lock().unwrap().iter().map(|c| c.buffer.size()).collect()
     }
 
     /// Submits the recorded copies and then `commands`, in one submission, and maps the chunks
@@ -112,13 +120,67 @@ impl UploadBelt {
             let buffer = chunk.buffer.clone();
             buffer.slice(..).map_async(MapMode::Write, move |mapped| {
                 if mapped.is_ok() {
-                    let mut free = free.lock().unwrap();
-                    if free.len() < KEEP_FREE {
-                        free.push(Chunk { buffer: chunk.buffer, used: 0 });
-                    }
+                    // What is let go drops after the lock.
+                    let _dropped = keep(&mut free.lock().unwrap(), Chunk { buffer: chunk.buffer, used: 0 });
                 }
             });
         }
         index
+    }
+}
+
+/// Puts a chunk back on the free list, or hands back what does not stay: past `KEEP_FREE`
+/// chunks, and every chunk bigger than `CHUNK` but the largest.
+fn keep(free: &mut Vec<Chunk>, chunk: Chunk) -> Vec<Chunk> {
+    let mut out = Vec::new();
+    if chunk.buffer.size() > CHUNK {
+        match free.iter().position(|c| c.buffer.size() > CHUNK) {
+            Some(i) if free[i].buffer.size() >= chunk.buffer.size() => return vec![chunk],
+            Some(i) => out.push(free.swap_remove(i)),
+            None => {}
+        }
+    }
+    if free.len() < KEEP_FREE {
+        free.push(chunk);
+    } else {
+        out.push(chunk);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A burst of writes bigger than a chunk, then small frames: at most one big chunk stays
+    /// free, and the small writes go into standard chunks.
+    #[test]
+    fn a_burst_leaves_at_most_one_big_chunk() {
+        let (device, queue) = crate::test_gpu::shared();
+        let target = device.create_buffer(&BufferDescriptor { label: None, size: 4 * CHUNK, usage: BufferUsages::COPY_DST, mapped_at_creation: false });
+        let mut belt = UploadBelt::new();
+        let frame = |belt: &mut UploadBelt, sizes: &[u64]| {
+            for (i, &n) in sizes.iter().enumerate() {
+                belt.write(&device, &target, (i as u64 * 64) % CHUNK, &vec![7u8; n as usize]);
+            }
+            belt.submit(&queue, []);
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        };
+        // Three big writes a frame for a few frames.
+        for _ in 0..4 {
+            frame(&mut belt, &[CHUNK + 4096, 2 * CHUNK, 3 * CHUNK]);
+        }
+        let big = |belt: &UploadBelt| belt.free_sizes().iter().filter(|s| **s > CHUNK).count();
+        assert!(big(&belt) <= 1, "free after the burst: {:?}", belt.free_sizes());
+        for _ in 0..20 {
+            frame(&mut belt, &[4096, 512, 64]);
+        }
+        assert!(big(&belt) <= 1, "free after small frames: {:?}", belt.free_sizes());
+        assert!(belt.free_sizes().len() <= KEEP_FREE);
+        let made = belt.buffers_made();
+        for _ in 0..20 {
+            frame(&mut belt, &[4096, 512, 64]);
+        }
+        assert_eq!(belt.buffers_made(), made, "small frames made new chunks");
     }
 }

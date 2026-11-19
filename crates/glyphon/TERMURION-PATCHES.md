@@ -51,7 +51,8 @@ through `[patch.crates-io]` in Termurion's Cargo.toml. The `examples/`, `benches
    bigger write gets its own), records each write as a copy into one encoder, and `submit` sends
    that encoder ahead of the caller's command buffers in one submission, then maps the chunks
    again with `map_async` (a free chunk comes back on a later poll or submit; at most 8 are kept
-   free). `buffers_made()` counts the chunks made. `RowRenderer::prepare` takes the belt for its
+   free, and of those bigger than 256 KB only the largest; a write takes the smallest free chunk
+   that fits). `buffers_made()` counts the chunks made. `RowRenderer::prepare` takes the belt for its
    instance and row table writes, and `TextRenderer::prepare_with_custom_uploads` writes its
    vertices through it (the upstream `prepare*` methods still use the queue). A grown buffer is
    dropped, not destroyed, since a copy recorded in the same frame may target it. Tests:
