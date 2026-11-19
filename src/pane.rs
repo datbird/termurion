@@ -64,6 +64,16 @@ impl InputBuffer {
     }
 }
 
+/// How long one turn of the loop parses output before it draws and looks at input again.
+pub const PARSE_SLICE: Duration = Duration::from_millis(4);
+
+/// What one bounded parse did: the screen changed, and output is still waiting unread.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Pump {
+    pub changed: bool,
+    pub more: bool,
+}
+
 /// Where a pane's shell runs: in Termurion, in the session host (it outlives Termurion), or in
 /// tmux (a pane of a tmux window, reached through its gateway).
 pub enum Io {
@@ -72,6 +82,9 @@ pub enum Io {
     Tmux(TmuxIo),
     /// A browser pane (13x Task 5): no pty and no output; the web view is the app's.
     Browser(crate::browser::BrowserIo),
+    /// Test only: one chunk per read; the shell has already exited.
+    #[cfg(test)]
+    Chunks(std::cell::RefCell<std::collections::VecDeque<Vec<u8>>>),
 }
 
 /// A tmux pane's pty stand-in: `%output` waits in `inbox`, typing waits in `outbox` for the
@@ -159,6 +172,8 @@ impl Io {
                 if data.is_empty() { Read::Empty } else { Read::Data(data) }
             }
             Io::Browser(_) => Read::Empty,
+            #[cfg(test)]
+            Io::Chunks(c) => c.borrow_mut().pop_front().map_or(Read::Empty, Read::Data),
         }
     }
 
@@ -174,6 +189,8 @@ impl Io {
             }
             // Typing has nowhere to go: the page has its own keyboard.
             Io::Browser(_) => Ok(()),
+            #[cfg(test)]
+            Io::Chunks(_) => Ok(()),
         }
     }
 
@@ -186,6 +203,8 @@ impl Io {
             // tmux sets its panes' sizes (milestone 8c sends Termurion's).
             Io::Tmux(_) => Ok(()),
             Io::Browser(_) => Ok(()),
+            #[cfg(test)]
+            Io::Chunks(_) => Ok(()),
         }
     }
 
@@ -196,6 +215,8 @@ impl Io {
             Io::Local(p) => p.clear(),
             Io::Hosted(p) => p.clear(),
             Io::Tmux(_) | Io::Browser(_) => Ok(()),
+            #[cfg(test)]
+            Io::Chunks(_) => Ok(()),
         }
     }
 
@@ -207,6 +228,8 @@ impl Io {
             Io::Local(p) => p.set_paused(false),
             Io::Hosted(p) => p.set_paused(paused),
             Io::Tmux(_) | Io::Browser(_) => {}
+            #[cfg(test)]
+            Io::Chunks(_) => {}
         }
     }
 
@@ -216,6 +239,8 @@ impl Io {
             Io::Hosted(p) => p.pending(),
             Io::Tmux(t) => t.outbox.borrow().len(),
             Io::Browser(_) => 0,
+            #[cfg(test)]
+            Io::Chunks(_) => 0,
         }
     }
 
@@ -227,6 +252,8 @@ impl Io {
             // reads more input (and keeps writing %output meanwhile): the host kills it.
             Io::Hosted(p) => p.terminate(),
             Io::Tmux(_) | Io::Browser(_) => {}
+            #[cfg(test)]
+            Io::Chunks(_) => {}
         }
     }
 
@@ -236,6 +263,8 @@ impl Io {
             Io::Hosted(p) => p.exit_code(),
             Io::Tmux(t) => t.ended.get(),
             Io::Browser(_) => None,
+            #[cfg(test)]
+            Io::Chunks(_) => Some(0),
         }
     }
 
@@ -245,6 +274,8 @@ impl Io {
             Io::Local(p) => Some(p.pid()),
             Io::Hosted(p) => Some(p.pid()),
             Io::Tmux(_) | Io::Browser(_) => None,
+            #[cfg(test)]
+            Io::Chunks(_) => None,
         }
     }
 }
@@ -747,19 +778,34 @@ impl Pane {
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
     pub fn pump(&mut self) -> bool {
-        let Some(pty) = &self.pty else { return false };
-        let mut chunks = Vec::new();
-        while let Read::Data(chunk) = pty.try_read() {
+        self.pump_until(Instant::now() + Duration::from_secs(3600)).changed
+    }
+
+    /// Parses waiting output one chunk at a time and stops once `deadline` has passed, leaving
+    /// the rest in the channel (`more`). A chunk is never split, so the bytes stay in order.
+    /// The coprocess and the exit check wait until nothing is left unread.
+    pub fn pump_until(&mut self, deadline: Instant) -> Pump {
+        if self.pty.is_none() {
+            return Pump::default();
+        }
+        let mut changed = false;
+        let mut more = false;
+        // The hook may end the pty (a detach), so it is looked at again for every chunk.
+        while let Some(Read::Data(chunk)) = self.pty.as_ref().map(|p| p.try_read()) {
             self.got_output = true;
             self.fx_dirty = true;
+            changed = true;
             self.throughput.add(Instant::now(), chunk.len());
-            chunks.push(chunk);
-        }
-        let mut changed = !chunks.is_empty();
-        // SSH integration, then tmux control mode, are found before anything can drop output.
-        for chunk in chunks {
+            // SSH integration, then tmux control mode, are found before anything can drop output.
             self.log_raw(&chunk);
             self.hook_output(&chunk);
+            if Instant::now() >= deadline {
+                more = true;
+                break;
+            }
+        }
+        if more {
+            return Pump { changed, more };
         }
         if self.coprocess.is_some() {
             // Its output goes to the shell as typed, while the shell keeps up.
@@ -788,7 +834,7 @@ impl Pane {
                     changed = true;
                 }
         }
-        let Some(pty) = &self.pty else { return changed };
+        let Some(pty) = &self.pty else { return Pump { changed, more } };
         if self.exited.is_none()
             && let Some(code) = pty.exit_code() {
                 self.exited = Some(code);
@@ -804,7 +850,7 @@ impl Pane {
         if self.exited.is_some() && self.coprocess.is_some() {
             self.stop_coprocess();
         }
-        changed
+        Pump { changed, more }
     }
 
     /// One read through the hooks. The SSH hook sees it first, unless tmux control mode is on:
@@ -2513,6 +2559,62 @@ pub fn resize_report_bytes(on: bool, tmux: bool, rows: u16, cols: u16, px: (u32,
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+
+    fn chunked(chunks: Vec<Vec<u8>>) -> Pane {
+        Pane::with(1, Some(Io::Chunks(std::cell::RefCell::new(VecDeque::from(chunks)))), 80, 24)
+    }
+
+    fn waiting(p: &Pane) -> usize {
+        match p.pty.as_ref() {
+            Some(Io::Chunks(c)) => c.borrow().len(),
+            _ => 0,
+        }
+    }
+
+    #[test]
+    fn a_slice_stops_at_its_deadline() {
+        let mut p = chunked((0..10).map(|_| vec![b'x'; 64 * 1024]).collect());
+        let past = Instant::now() - Duration::from_millis(1);
+        let r = p.pump_until(past);
+        assert!(r.changed && r.more, "{r:?}");
+        assert_eq!(waiting(&p), 9, "one chunk parsed, the rest stays in the channel");
+        let r = p.pump_until(Instant::now() + Duration::from_secs(60));
+        assert!(r.changed && !r.more, "{r:?}");
+        assert_eq!(waiting(&p), 0);
+    }
+
+    #[test]
+    fn slices_keep_the_bytes_in_order() {
+        let chunks: Vec<Vec<u8>> = (0..60).map(|i| format!("line {i} \u{e9}\r\n").into_bytes()).collect();
+        let mut whole = chunked(chunks.clone());
+        whole.pump();
+        let mut sliced = chunked(chunks);
+        let past = Instant::now() - Duration::from_millis(1);
+        let mut turns = 0;
+        while sliced.pump_until(past).more {
+            turns += 1;
+        }
+        assert!(turns >= 50, "every chunk was its own slice: {turns}");
+        for line in 0..24 {
+            assert_eq!(whole.screen.line_text(line), sliced.screen.line_text(line), "line {line}");
+        }
+    }
+
+    #[test]
+    fn exit_waits_for_unparsed_output() {
+        let mut p = chunked(vec![b"one\r\n".to_vec(), b"two\r\n".to_vec(), b"three\r\n".to_vec()]);
+        let past = Instant::now() - Duration::from_millis(1);
+        // Every slice runs out of time after one chunk: the exit must not show before the last.
+        let mut slices = 0;
+        while p.pump_until(past).more {
+            assert!(p.exited.is_none(), "output is still unread");
+            slices += 1;
+        }
+        assert!(slices >= 3, "{slices}");
+        assert_eq!(p.exited, Some(0), "the exit shows once everything was parsed");
+    }
+
     #[test]
     fn a_new_pane_starts_with_no_cached_rows() {
         assert_eq!(Pane::idle(1, 80, 24).rows.len(), 0);

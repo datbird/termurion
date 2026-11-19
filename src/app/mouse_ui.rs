@@ -673,7 +673,7 @@ mod tests {
         }
         let second_bar = format!("fn {}_bar", "stuck");
         assert!(!MOD.contains(&second_bar) && !UI.contains(&second_bar));
-        assert!(body(MOD, "user_event").contains("self.stuck_tick()"));
+        assert!(body(MOD, "pump_panes").contains("self.stuck_tick()"));
     }
 
     /// Fix round 2, 1: the wheel over an overlay stops before the program's wheel path (no

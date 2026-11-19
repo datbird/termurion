@@ -510,8 +510,105 @@ impl Gpu {
     }
 }
 
+impl App {
+    /// One parse slice for all panes (`PARSE_SLICE` in total), then what follows new output.
+    /// Panes take turns going first; unread output leaves `parse_owed` set for the next turn.
+    fn pump_panes(&mut self, event_loop: &ActiveEventLoop) {
+        let mut changed = false;
+        let mut outputs = Vec::new();
+        let now = Instant::now();
+        let deadline = now + crate::pane::PARSE_SLICE;
+        let was_owed = std::mem::replace(&mut self.parse_owed, false);
+        self.sync_output_policy();
+        self.sync_host_policy();
+        // The prompt state machine follows View > Auto Composer before it reads output (the
+        // Task 3 contract: every pane, new ones included).
+        let (auto_composer, smart_logging, always_line_marks) = {
+            let fs = self.fs();
+            (fs.auto_composer, fs.smart_logging, fs.always_line_marks)
+        };
+        let mut order: Vec<PaneId> = self.panes.keys().copied().collect();
+        order.sort_unstable();
+        if !order.is_empty() {
+            let by = self.pump_from % order.len();
+            order.rotate_left(by);
+        }
+        self.pump_from = self.pump_from.wrapping_add(1);
+        for id in &order {
+            let Some(p) = self.panes.get_mut(id) else { continue };
+            p.own_mut().prompt_state.enabled = auto_composer;
+            p.log_compact = (smart_logging, auto_composer);
+            // New prompt marks are line-style with Auto Composer or AlwaysUseLineStyleMarks
+            // (`S:18934`); marks already made keep their style.
+            p.screen.line_style_marks = auto_composer || always_line_marks;
+            let r = p.pump_until(deadline);
+            // Parsing goes on while the window is hidden; only the redraws are held back there.
+            self.parse_owed |= r.more;
+            if r.changed {
+                outputs.push(*id);
+            }
+            changed |= r.changed;
+        }
+        changed |= self.ssh_pump();
+        changed |= self.tmux_pump(event_loop);
+        // Panes a tmux or ssh pump fed got output too (`feed_output`); they draw through the pacer.
+        for (id, p) in self.panes.iter() {
+            if p.got_output && !outputs.contains(id) {
+                outputs.push(*id);
+            }
+        }
+        for id in &outputs {
+            if let Some(p) = self.panes.get_mut(id)
+                && p.screen.watched_output()
+            {
+                p.fx_signal.output(now);
+            }
+        }
+        self.stuck_tick();
+        self.api_output(&outputs);
+        self.api_session_events();
+        self.record_replay_frames();
+        // A pane whose shell exited stays and follows its end action, once its output drained.
+        let (exited_now, _) = self.handle_ended(event_loop);
+        changed |= !exited_now.is_empty();
+        self.check_coprocesses();
+        if changed {
+            // An exit shows in the tab bar: a held pane's end draws through the pacer too.
+            for id in exited_now {
+                if !outputs.contains(&id) {
+                    outputs.push(id);
+                }
+            }
+            self.after_output(&outputs, now);
+        }
+        if self.parse_owed {
+            // Owed output is parsed by the loop itself: the readers' notifies add no events.
+            self.wake_queued.store(true, std::sync::atomic::Ordering::Release);
+        } else if was_owed {
+            // Caught up: notifies count again, and one more read finds what came while they did not.
+            self.wake_queued.store(false, std::sync::atomic::Ordering::Release);
+            self.pump_panes(event_loop);
+        }
+    }
+}
+
+/// A pty's notify that queues one `Wake` and no more until the main thread has taken it.
+fn coalesced_wake(queued: Arc<std::sync::atomic::AtomicBool>, send: impl Fn() + Send + Sync + 'static) -> Notify {
+    Arc::new(move || {
+        if !queued.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            send();
+        }
+    })
+}
+
 pub struct App {
     notify: Notify,
+    /// A `Wake` is already on its way: more pty notifies add nothing until it is handled.
+    wake_queued: Arc<std::sync::atomic::AtomicBool>,
+    /// The pane the next parse slice starts at, so a flood in one pane cannot starve the others.
+    pump_from: usize,
+    /// A slice ran out of time with output unread: the loop parses again after drawing.
+    parse_owed: bool,
     /// A primary selection read on its worker, waiting for the loop to paste it: (pane, text, paste argument).
     selection_paste: Arc<Mutex<Option<(PaneId, String, String)>>>,
     /// The foreground jobs of the panes' shells.
@@ -2229,7 +2326,8 @@ pub fn run() {
         }
     };
     let wake = proxy.clone();
-    let notify: Notify = Arc::new(move || {
+    let wake_queued = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let notify = coalesced_wake(wake_queued.clone(), move || {
         let _ = wake.lock().unwrap().send_event(UserEvent::Wake);
     });
     gpu_pick::set_wake(notify.clone());
@@ -2392,6 +2490,9 @@ pub fn run() {
         app_hidden: Vec::new(),
         host_welcome,
         notify,
+        wake_queued,
+        pump_from: 0,
+        parse_owed: false,
         jobs,
         proxy,
         menu_bar: None,
@@ -8152,6 +8253,13 @@ impl ApplicationHandler<UserEvent> for App {
         let gpu_due = self.gpu_recovery_tick();
         let fx_due = self.tick_fx_profiles();
         let fx_frame_due = self.fx_frame_tick();
+        // Unread output: the next slice runs at once, not at the next event.
+        if self.parse_owed {
+            self.pump_panes(event_loop);
+            if self.parse_owed {
+                return event_loop.set_control_flow(ControlFlow::Poll);
+            }
+        }
         let wake = [fx_due, fx_frame_due, gpu_due, egui_due, tray_due, workgroup_due, jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, badge_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, panels_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, hold_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
@@ -8220,63 +8328,15 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Wake => {
                 self.pay_wake_owed(event_loop);
                 self.take_selection_paste();
-            }
-        }
-        let mut changed = false;
-        let mut outputs = Vec::new();
-        let now = Instant::now();
-        self.sync_output_policy();
-        self.sync_host_policy();
-        // The prompt state machine follows View > Auto Composer before it reads output (the
-        // Task 3 contract: every pane, new ones included).
-        let (auto_composer, smart_logging, always_line_marks) = {
-            let fs = self.fs();
-            (fs.auto_composer, fs.smart_logging, fs.always_line_marks)
-        };
-        for (id, p) in self.panes.iter_mut() {
-            p.own_mut().prompt_state.enabled = auto_composer;
-            p.log_compact = (smart_logging, auto_composer);
-            // New prompt marks are line-style with Auto Composer or AlwaysUseLineStyleMarks
-            // (`S:18934`); marks already made keep their style.
-            p.screen.line_style_marks = auto_composer || always_line_marks;
-            let got = p.pump();
-            if got {
-                outputs.push(*id);
-            }
-            changed |= got;
-        }
-        changed |= self.ssh_pump();
-        changed |= self.tmux_pump(event_loop);
-        // Panes a tmux or ssh pump fed got output too (`feed_output`); they draw through the pacer.
-        for (id, p) in self.panes.iter() {
-            if p.got_output && !outputs.contains(id) {
-                outputs.push(*id);
-            }
-        }
-        for id in &outputs {
-            if let Some(p) = self.panes.get_mut(id)
-                && p.screen.watched_output()
-            {
-                p.fx_signal.output(now);
-            }
-        }
-        self.stuck_tick();
-        self.api_output(&outputs);
-        self.api_session_events();
-        self.record_replay_frames();
-        // A pane whose shell exited stays and follows its end action, once its output drained.
-        let (exited_now, _) = self.handle_ended(event_loop);
-        changed |= !exited_now.is_empty();
-        self.check_coprocesses();
-        if changed {
-            // An exit shows in the tab bar: a held pane's end draws through the pacer too.
-            for id in exited_now {
-                if !outputs.contains(&id) {
-                    outputs.push(id);
+                // Cleared before parsing, so output that lands meanwhile wakes the loop again.
+                // While output is owed the loop drives itself, and more Wakes would only keep
+                // it from ever reaching `about_to_wait`, where the frames are delivered.
+                if !self.parse_owed {
+                    self.wake_queued.store(false, std::sync::atomic::Ordering::Release);
                 }
             }
-            self.after_output(&outputs, now);
         }
+        self.pump_panes(event_loop);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -9222,6 +9282,22 @@ pub(crate) fn apply_row_switch(renderer: &mut Renderer, globals: &Globals) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wakes_are_coalesced() {
+        let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let queued = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let count = sent.clone();
+        let notify = coalesced_wake(queued.clone(), move || {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        notify();
+        notify();
+        assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 1, "two notifies before the main thread ran send one event");
+        queued.store(false, std::sync::atomic::Ordering::SeqCst);
+        notify();
+        assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 2, "after the Wake was taken the next notify sends again");
+    }
 
     #[test]
     fn skip_gpu_needs_every_condition() {
