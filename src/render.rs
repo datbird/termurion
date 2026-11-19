@@ -537,6 +537,57 @@ pub struct TableFont {
     pub px: Option<f32>,
 }
 
+/// A vertex buffer that lives across frames and uploads only the 4 KB chunks that changed.
+struct GpuVec {
+    buf: wgpu::Buffer,
+    cap: u64,
+    /// What the buffer held after the last write, for the chunk diff.
+    last: Vec<u8>,
+    /// Bytes uploaded so far (tests).
+    written: u64,
+}
+
+const GPU_CHUNK: usize = 4096;
+
+impl GpuVec {
+    fn new(device: &wgpu::Device) -> GpuVec {
+        GpuVec { buf: Self::alloc(device, GPU_CHUNK as u64), cap: GPU_CHUNK as u64, last: Vec::new(), written: 0 }
+    }
+
+    fn alloc(device: &wgpu::Device, cap: u64) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor { label: None, size: cap, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
+    }
+
+    /// Brings the buffer to `bytes` and returns the slice to draw; `None` when there is nothing.
+    fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) -> Option<wgpu::BufferSlice<'_>> {
+        if bytes.is_empty() {
+            return None;
+        }
+        let len = bytes.len() as u64;
+        if len > self.cap {
+            while self.cap < len {
+                self.cap *= 2;
+            }
+            self.buf = Self::alloc(device, self.cap);
+            queue.write_buffer(&self.buf, 0, bytes);
+            self.written += len;
+        } else {
+            for (i, chunk) in bytes.chunks(GPU_CHUNK).enumerate() {
+                let start = i * GPU_CHUNK;
+                // A chunk past the old end, or a different length, counts as changed.
+                if self.last.get(start..start + chunk.len()) != Some(chunk) {
+                    queue.write_buffer(&self.buf, start as u64, chunk);
+                    self.written += chunk.len() as u64;
+                }
+            }
+        }
+        self.last.clear();
+        self.last.extend_from_slice(bytes);
+        // Only the new length: a list that shrank leaves its old tail unread.
+        Some(self.buf.slice(..len))
+    }
+}
+
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -552,6 +603,13 @@ pub struct Renderer {
     text: TextRenderer,
     /// Draws the text rows, keeping each row's prepared glyphs on the GPU between frames.
     rows: RowRenderer,
+    /// The quad and image vertex lists, kept on the GPU between frames.
+    under: GpuVec,
+    over: GpuVec,
+    pops: GpuVec,
+    picture: GpuVec,
+    backdrop: GpuVec,
+    cover: GpuVec,
     /// Whether text rows draw through `rows` (`RedrawOnlyChangedRows`); off, every row goes through
     /// `text` each frame.
     row_instances: bool,
@@ -659,6 +717,12 @@ impl Renderer {
             viewport,
             text,
             rows,
+            under: GpuVec::new(device),
+            over: GpuVec::new(device),
+            pops: GpuVec::new(device),
+            picture: GpuVec::new(device),
+            backdrop: GpuVec::new(device),
+            cover: GpuVec::new(device),
             row_instances: true,
             serial: 0,
             buffers: Vec::new(),
@@ -727,9 +791,26 @@ impl Renderer {
         self.rows = RowRenderer::new(&mut self.atlas, device, wgpu::MultisampleState::default());
         self.quads = QuadPipeline::new(device, format);
         self.images = ImagePipeline::new(device, format, &self.quads.uniform);
+        for v in [&mut self.under, &mut self.over, &mut self.pops, &mut self.picture, &mut self.backdrop, &mut self.cover] {
+            *v = GpuVec::new(device);
+        }
         self.device = device.clone();
         self.queue = queue.clone();
         self.format = format;
+    }
+
+    /// Bytes the persistent vertex buffers uploaded so far (tests).
+    #[cfg(test)]
+    pub(crate) fn bytes_written(&self) -> u64 {
+        [&self.under, &self.over, &self.pops, &self.picture, &self.backdrop, &self.cover].iter().map(|v| v.written).sum()
+    }
+
+    /// Forgets what the vertex buffers hold, so the next frame uploads every byte (tests).
+    #[cfg(test)]
+    pub(crate) fn forget_buffers(&mut self) {
+        for v in [&mut self.under, &mut self.over, &mut self.pops, &mut self.picture, &mut self.backdrop, &mut self.cover] {
+            v.last.clear();
+        }
     }
 
     /// Sets the font size and measures the cell: the advance of "W" by the font's own line
@@ -1871,21 +1952,18 @@ impl Renderer {
         let underlines = self.gapped_underlines(frame, rows);
         let over = QuadPipeline::vertices(&underlines.iter().chain(&frame.strikes).chain(&frame.scrollbars).chain(&frame.overlay).copied().collect::<Vec<_>>());
         let pops = QuadPipeline::vertices(&frame.popups);
-        let make = |v: &[f32]| {
-            self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: None,
-                contents: bytemuck::cast_slice(v),
-                usage: wgpu::BufferUsages::VERTEX,
-            })
-        };
-        let (under_buf, over_buf, pops_buf) = (make(&under), make(&over), make(&pops));
+        let (under_buf, over_buf, pops_buf) = (
+            self.under.write(&self.device, &self.queue, bytemuck::cast_slice(&under)),
+            self.over.write(&self.device, &self.queue, bytemuck::cast_slice(&over)),
+            self.pops.write(&self.device, &self.queue, bytemuck::cast_slice(&pops)),
+        );
         // Background images and inline images share one texture cache.
         let all: Vec<crate::scene::ImageQuad> = frame.backgrounds.iter().chain(&frame.images).cloned().collect();
         self.images.prepare(&self.device, &self.queue, &all);
         let picture = ImagePipeline::vertices(&frame.images);
-        let picture_buf = make(&picture);
+        let picture_buf = self.picture.write(&self.device, &self.queue, bytemuck::cast_slice(&picture));
         let backdrop = ImagePipeline::vertices(&frame.backgrounds);
-        let backdrop_buf = make(&backdrop);
+        let backdrop_buf = self.backdrop.write(&self.device, &self.queue, bytemuck::cast_slice(&backdrop));
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
@@ -1906,10 +1984,10 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            if !backdrop.is_empty() {
+            if let Some(buf) = backdrop_buf {
                 pass.set_pipeline(&self.images.pipeline);
                 pass.set_bind_group(0, &self.images.screen_group, &[]);
-                pass.set_vertex_buffer(0, backdrop_buf.slice(..));
+                pass.set_vertex_buffer(0, buf);
                 for (i, q) in frame.backgrounds.iter().enumerate() {
                     let Some((group, _)) = self.images.cache.get(&(q.key, q.repeat)) else { continue };
                     pass.set_bind_group(1, group, &[]);
@@ -1919,14 +1997,14 @@ impl Renderer {
             }
             pass.set_pipeline(&self.quads.pipeline);
             pass.set_bind_group(0, &self.quads.bind_group, &[]);
-            if !under.is_empty() {
-                pass.set_vertex_buffer(0, under_buf.slice(..));
+            if let Some(buf) = under_buf {
+                pass.set_vertex_buffer(0, buf);
                 pass.draw(0..(under.len() / 6) as u32, 0..1);
             }
-            if !picture.is_empty() {
+            if let Some(buf) = picture_buf {
                 pass.set_pipeline(&self.images.pipeline);
                 pass.set_bind_group(0, &self.images.screen_group, &[]);
-                pass.set_vertex_buffer(0, picture_buf.slice(..));
+                pass.set_vertex_buffer(0, buf);
                 for (i, q) in frame.images.iter().enumerate() {
                     let Some((group, _)) = self.images.cache.get(&(q.key, q.repeat)) else { continue };
                     pass.set_bind_group(1, group, &[]);
@@ -1935,20 +2013,20 @@ impl Renderer {
                 }
             }
             // Popup boxes cover images and quads; their text and what they cut stay on top.
-            if !pops.is_empty() {
+            if let Some(buf) = pops_buf {
                 pass.set_pipeline(&self.quads.pipeline);
                 pass.set_bind_group(0, &self.quads.bind_group, &[]);
-                pass.set_vertex_buffer(0, pops_buf.slice(..));
+                pass.set_vertex_buffer(0, buf);
                 pass.draw(0..(pops.len() / 6) as u32, 0..1);
             }
             if self.row_instances {
                 self.rows.render(&self.atlas, &self.viewport, &mut pass).map_err(|e| format!("text render: {e:?}"))?;
             }
             self.text.render(&self.atlas, &self.viewport, &mut pass).map_err(|e| format!("text render: {e:?}"))?;
-            if !over.is_empty() {
+            if let Some(buf) = over_buf {
                 pass.set_pipeline(&self.quads.pipeline);
                 pass.set_bind_group(0, &self.quads.bind_group, &[]);
-                pass.set_vertex_buffer(0, over_buf.slice(..));
+                pass.set_vertex_buffer(0, buf);
                 pass.draw(0..(over.len() / 6) as u32, 0..1);
             }
         }
@@ -1957,7 +2035,7 @@ impl Renderer {
         if frame.fade < 1.0 {
             let f = frame.fade.clamp(0.0, 1.0) as f64;
             let cover = QuadPipeline::vertices(&[Quad { rect: crate::layout::Rect { x: 0.0, y: 0.0, w: width as f32, h: height as f32 }, color: [0.0; 4] }]);
-            let cover_buf = make(&cover);
+            let cover_buf = self.cover.write(&self.device, &self.queue, bytemuck::cast_slice(&cover));
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1974,7 +2052,9 @@ impl Renderer {
             pass.set_pipeline(&self.quads.fader);
             pass.set_bind_group(0, &self.quads.bind_group, &[]);
             pass.set_blend_constant(wgpu::Color { r: f, g: f, b: f, a: f });
-            pass.set_vertex_buffer(0, cover_buf.slice(..));
+            if let Some(buf) = cover_buf {
+                pass.set_vertex_buffer(0, buf);
+            }
             pass.draw(0..6, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));

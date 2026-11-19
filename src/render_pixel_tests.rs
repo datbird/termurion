@@ -466,3 +466,60 @@ fn growth_from_the_rows_keeps_box_glyphs() {
         same(&mut on, &mut off, &boxes, vf);
     }
 }
+
+fn quad(x: f32, color: [f32; 4]) -> crate::scene::Quad {
+    crate::scene::Quad { rect: crate::layout::Rect { x, y: 2.0, w: 3.0, h: 5.0 }, color }
+}
+
+fn quad_frame(n: usize, first: [f32; 4]) -> Frame {
+    let quads = (0..n).map(|i| quad(i as f32 * 4.0, if i == 0 { first } else { [0.0, 0.5, 0.0, 1.0] })).collect();
+    Frame { clear: [0.0, 0.0, 0.0, 1.0], fade: 1.0, quads, ..Default::default() }
+}
+
+#[test]
+fn persistent_buffers_write_only_what_changed() {
+    let mut r = fresh(false);
+    // 200 quads is 28800 bytes: seven chunks.
+    r.draw_offscreen(&quad_frame(200, [1.0, 0.0, 0.0, 1.0]), 808, 40).unwrap();
+    let first = r.bytes_written();
+    assert!(first >= 200 * 144, "the first frame uploads everything");
+    r.draw_offscreen(&quad_frame(200, [1.0, 0.0, 0.0, 1.0]), 808, 40).unwrap();
+    assert_eq!(r.bytes_written(), first, "the same frame uploads nothing");
+    // One quad's color, inside the first chunk.
+    r.draw_offscreen(&quad_frame(200, [0.0, 0.0, 1.0, 1.0]), 808, 40).unwrap();
+    assert!(r.bytes_written() - first <= 4096, "one changed quad wrote {} bytes", r.bytes_written() - first);
+    assert!(r.bytes_written() > first);
+}
+
+#[test]
+fn a_bigger_list_grows_the_buffer() {
+    for vf in [true, false] {
+        if !can_run(vf) {
+            continue;
+        }
+        let mut grown = fresh(vf);
+        let mut alone = fresh(vf);
+        let (small, big) = (quad_frame(3, [1.0, 0.0, 0.0, 1.0]), quad_frame(30, [1.0, 0.0, 0.0, 1.0]));
+        grown.draw_offscreen(&small, 200, 40).unwrap();
+        let after_big = grown.draw_offscreen(&big, 200, 40).unwrap();
+        assert_same("a frame with 10x the quads", &after_big, &alone.draw_offscreen(&big, 200, 40).unwrap(), 200);
+        // And back down: only the new length draws, no stale tail.
+        let after_small = grown.draw_offscreen(&small, 200, 40).unwrap();
+        assert_same("a list that shrank", &after_small, &fresh(vf).draw_offscreen(&small, 200, 40).unwrap(), 200);
+    }
+}
+
+#[test]
+fn persistent_buffers_match_the_full_path() {
+    for vf in [true, false] {
+        if !can_run(vf) {
+            continue;
+        }
+        let (mut kept, mut full) = (fresh(vf), fresh(vf));
+        for c in pixel_cases(&kept) {
+            full.forget_buffers();
+            let want = pixels(&mut full, &c);
+            assert_same(&format!("{} (view formats {vf})", c.name), &pixels(&mut kept, &c), &want, c.size.0);
+        }
+    }
+}
