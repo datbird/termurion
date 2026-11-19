@@ -2804,8 +2804,6 @@ mod tests {
         assert!(g.dvr.is_empty());
     }
 
-    /// `PS:6586`: a pane is idle after its own idle time plus one second, so the frame gap
-    /// follows the pane's `idle_time`, not a constant.
     /// A pane captured less than the floor ago waits without any capture work: its damage is
     /// left for the frame after the gap.
     #[test]
@@ -2830,6 +2828,8 @@ mod tests {
         assert!(g.replay_waits(t0, floor), "a gateway never records");
     }
 
+    /// `PS:6586`: a pane is idle after its own idle time plus one second, so the frame gap
+    /// follows the pane's `idle_time`, not a constant.
     #[test]
     fn replay_gap_reads_the_idle_time() {
         use crate::cadence::frame_gap;
