@@ -10,7 +10,7 @@ use crate::{
         GlyphMetadata, GlyphSystem, GlyphonCacheKey,
     },
     Buffer, Color, FontSystem, GlyphKey, GlyphToRender, PrepareError, RasterizeCustomGlyphRequest,
-    RasterizedCustomGlyph, RenderError, State, SwashCache, TextAtlas, TextBounds, Viewport,
+    RasterizedCustomGlyph, RenderError, State, SwashCache, TextAtlas, TextBounds, UploadBelt, Viewport,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -194,11 +194,14 @@ impl RowRenderer {
         self.draws.clear();
     }
 
-    /// Prepares the rows to draw, in the order they draw. Rows not given are dropped.
+    /// Prepares the rows to draw, in the order they draw. Rows not given are dropped. Buffer
+    /// writes go through `uploads`, whose `submit` must send them before the rows draw.
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare<'a>(
         &mut self,
         device: &Device,
         queue: &Queue,
+        uploads: &mut UploadBelt,
         font_system: &mut FontSystem,
         atlas: &mut TextAtlas,
         viewport: &Viewport,
@@ -230,6 +233,7 @@ impl RowRenderer {
             let prepared = self.prepare_rows(
                 device,
                 queue,
+                uploads,
                 font_system,
                 atlas,
                 viewport,
@@ -256,7 +260,7 @@ impl RowRenderer {
 
         let frame = self.frame;
         self.drop_entries(atlas, |_, e| e.frame != frame);
-        self.write_table(device, queue, atlas, uniforms);
+        self.write_table(device, uploads, atlas, uniforms);
         Ok(())
     }
 
@@ -265,6 +269,7 @@ impl RowRenderer {
         &mut self,
         device: &Device,
         queue: &Queue,
+        uploads: &mut UploadBelt,
         font_system: &mut FontSystem,
         atlas: &mut TextAtlas,
         viewport: &Viewport,
@@ -320,8 +325,9 @@ impl RowRenderer {
                         atlas.hold(k);
                     }
                     if !entry.instances.is_empty() {
-                        let slot = self.alloc(device, queue, entry.instances.len() as u32);
-                        queue.write_buffer(
+                        let slot = self.alloc(device, uploads, entry.instances.len() as u32);
+                        uploads.write(
+                            device,
                             &self.instances,
                             slot.start as u64 * INSTANCE_SIZE,
                             instance_bytes(&entry.instances),
@@ -347,7 +353,7 @@ impl RowRenderer {
     }
 
     /// Takes a slot for `len` instances, doubling the buffer when none is free.
-    fn alloc(&mut self, device: &Device, queue: &Queue, len: u32) -> Slot {
+    fn alloc(&mut self, device: &Device, uploads: &mut UploadBelt, len: u32) -> Slot {
         let class = (len.max(MIN_SLOT).next_power_of_two() / MIN_SLOT).trailing_zeros();
         if let Some(start) = self.free.get_mut(class as usize).and_then(Vec::pop) {
             return Slot { start, class };
@@ -358,13 +364,14 @@ impl RowRenderer {
             while self.end + size > capacity {
                 capacity *= 2;
             }
-            self.instances.destroy();
+            // Dropped, not destroyed: copies recorded this frame may still target it.
             self.instances = instance_buffer(device, capacity);
             self.capacity = capacity;
             // The new buffer starts empty: write every live row from its CPU copy.
             for entry in self.entries.values().flatten() {
                 if let Some(slot) = entry.slot {
-                    queue.write_buffer(
+                    uploads.write(
+                        device,
                         &self.instances,
                         slot.start as u64 * INSTANCE_SIZE,
                         instance_bytes(&entry.instances),
@@ -405,13 +412,12 @@ impl RowRenderer {
     fn write_table(
         &mut self,
         device: &Device,
-        queue: &Queue,
+        uploads: &mut UploadBelt,
         atlas: &TextAtlas,
         uniforms: Vec<RowUniform>,
     ) {
         if uniforms.len() as u32 > self.table_rows {
             let rows = (uniforms.len() as u32).next_power_of_two();
-            self.table.destroy();
             self.table = table_buffer(device, rows, self.stride);
             self.table_rows = rows;
             self.rows_bind_group = atlas.cache.create_rows_bind_group(device, &self.table);
@@ -437,7 +443,7 @@ impl RowRenderer {
                 };
                 bytes[n * stride..n * stride + raw.len()].copy_from_slice(raw);
             }
-            queue.write_buffer(&self.table, (first * stride) as u64, &bytes);
+            uploads.write(device, &self.table, (first * stride) as u64, &bytes);
         }
         self.table_cpu = uniforms;
     }
@@ -582,6 +588,7 @@ mod tests {
         swash: SwashCache,
         atlas: TextAtlas,
         rows: RowRenderer,
+        uploads: UploadBelt,
     }
 
     impl Rig {
@@ -608,6 +615,7 @@ mod tests {
                 swash: SwashCache::new(),
                 atlas,
                 rows,
+                uploads: UploadBelt::new(),
             }
         }
 
@@ -631,6 +639,7 @@ mod tests {
                 .prepare(
                     &self.device,
                     &self.queue,
+                    &mut self.uploads,
                     &mut self.font_system,
                     &mut self.atlas,
                     &self.viewport,
@@ -639,6 +648,7 @@ mod tests {
                     rasterize,
                 )
                 .unwrap();
+            self.uploads.submit(&self.queue, []);
         }
 
         /// Prepares and draws the rows with this rig's `RowRenderer`.
@@ -905,6 +915,27 @@ mod tests {
         assert_eq!(rig.rows.prepared_rows(), 100, "scrolled rows were prepared again");
         let text = rig.draw_text(areas(3));
         assert_same(&rows, &text, "scrolled 3 up");
+    }
+
+    /// A new row every frame, the others moving up: after a warm-up the belt reuses its chunks
+    /// and the rows still match the text path.
+    #[test]
+    fn streaming_rows_reuse_the_upload_chunks() {
+        let mut rig = Rig::new();
+        let buffers: Vec<Buffer> = (0..80).map(|n| rig.shape(&format!("{n:03} a streamed line"), MONO)).collect();
+        let areas = |first: usize| (first..first + 8).map(|n| RowArea { serial: n as u64 + 1000, ..row(1, &buffers[n], 1.0, (n - first) as f32 * 20.0, whole()) }).collect::<Vec<_>>();
+        for first in 0..20 {
+            rig.draw_rows(areas(first));
+        }
+        let warm = rig.uploads.buffers_made();
+        assert!(warm > 0, "nothing went through the belt");
+        for first in 20..70 {
+            rig.draw_rows(areas(first));
+        }
+        assert_eq!(rig.uploads.buffers_made(), warm, "streaming rows made new staging buffers");
+        let rows = rig.draw_rows(areas(70));
+        let text = rig.draw_text(areas(70));
+        assert_same(&rows, &text, "streamed rows");
     }
 
     #[test]

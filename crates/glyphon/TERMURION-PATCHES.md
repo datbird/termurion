@@ -46,5 +46,15 @@ through `[patch.crates-io]` in Termurion's Cargo.toml. The `examples/`, `benches
    `TextRenderer` byte for byte. No storage buffers and no `first_instance` (GLES 3.0). `cache.rs`
    holds the row pipeline; `text_render.rs` shares `prepare_glyph`, `text_glyph_image` and the
    bounds clamp (`GlyphBounds::clamped`). Tests: `row_render::tests`.
+7. Upload belt (`upload.rs`, `row_render.rs`, `text_render.rs`). Every `Queue::write_buffer` makes a
+   staging buffer that the next submit frees. `UploadBelt` keeps mapped staging chunks (256 KB, a
+   bigger write gets its own), records each write as a copy into one encoder, and `submit` sends
+   that encoder ahead of the caller's command buffers in one submission, then maps the chunks
+   again with `map_async` (a free chunk comes back on a later poll or submit; at most 8 are kept
+   free). `buffers_made()` counts the chunks made. `RowRenderer::prepare` takes the belt for its
+   instance and row table writes, and `TextRenderer::prepare_with_custom_uploads` writes its
+   vertices through it (the upstream `prepare*` methods still use the queue). A grown buffer is
+   dropped, not destroyed, since a copy recorded in the same frame may target it. Tests:
+   `row_render::tests` (the rig submits the belt after each prepare).
 
 To update glyphon, copy the new version here and apply these changes again.

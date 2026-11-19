@@ -523,3 +523,34 @@ fn persistent_buffers_match_the_full_path() {
         }
     }
 }
+
+/// Claude Code's bottom area redrawn each frame, a new line above it every other frame: after a
+/// warm-up the upload path makes no GPU buffer (each `Queue::write_buffer` made one).
+#[test]
+fn streaming_frames_make_no_upload_buffers() {
+    let mut r = fresh(false);
+    let size = grid_size(&r, 120.0, 30.0);
+    let mut s = crate::screen::Screen::new(120, 30);
+    let bar = "\u{2500}".repeat(116);
+    s.feed(b"\r\n\r\n\r\n\r\n");
+    let mut frame = |s: &mut crate::screen::Screen, r: &mut Renderer, tick: usize| {
+        let mut out = String::from("\r\x1b[2A\x1b[J");
+        if tick % 2 == 0 {
+            out.push_str(&format!("the renderer keeps each row it built, line {tick}\r\n"));
+        }
+        out.push_str(&format!("{} Thinking ({tick}s)\r\n", ["\u{00b7}", "\u{2722}", "\u{2733}"][tick % 3]));
+        out.push_str(&format!("\u{256d}{bar}\u{256e}\r\n\u{2502} > {}\u{2502}\r\n\u{2570}{bar}\u{256f}\x1b[1A\r\x1b[4C", " ".repeat(113)));
+        s.feed(out.as_bytes());
+        let c = screen_case("claude", r, s, size, true);
+        assert!(!c.frame.glyphs.is_empty(), "the frame has no box glyphs");
+        pixels(r, &c);
+    };
+    for tick in 0..30 {
+        frame(&mut s, &mut r, tick);
+    }
+    let warm = r.upload_buffers_made();
+    for tick in 30..90 {
+        frame(&mut s, &mut r, tick);
+    }
+    assert_eq!(r.upload_buffers_made(), warm, "streaming frames made new upload buffers");
+}

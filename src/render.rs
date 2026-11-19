@@ -559,7 +559,8 @@ impl GpuVec {
     }
 
     /// Brings the buffer to `bytes` and returns the slice to draw; `None` when there is nothing.
-    fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) -> Option<wgpu::BufferSlice<'_>> {
+    /// A run of changed chunks goes up as one write.
+    fn write(&mut self, device: &wgpu::Device, uploads: &mut glyphon::UploadBelt, bytes: &[u8]) -> Option<wgpu::BufferSlice<'_>> {
         if bytes.is_empty() {
             return None;
         }
@@ -569,16 +570,25 @@ impl GpuVec {
                 self.cap *= 2;
             }
             self.buf = Self::alloc(device, self.cap);
-            queue.write_buffer(&self.buf, 0, bytes);
+            uploads.write(device, &self.buf, 0, bytes);
             self.written += len;
         } else {
+            let mut run: Option<usize> = None;
+            let mut flush = |from: usize, to: usize, written: &mut u64| {
+                uploads.write(device, &self.buf, from as u64, &bytes[from..to]);
+                *written += (to - from) as u64;
+            };
             for (i, chunk) in bytes.chunks(GPU_CHUNK).enumerate() {
                 let start = i * GPU_CHUNK;
                 // A chunk past the old end, or a different length, counts as changed.
                 if self.last.get(start..start + chunk.len()) != Some(chunk) {
-                    queue.write_buffer(&self.buf, start as u64, chunk);
-                    self.written += chunk.len() as u64;
+                    run.get_or_insert(start);
+                } else if let Some(from) = run.take() {
+                    flush(from, start, &mut self.written);
                 }
+            }
+            if let Some(from) = run {
+                flush(from, bytes.len(), &mut self.written);
             }
         }
         self.last.clear();
@@ -603,6 +613,10 @@ pub struct Renderer {
     text: TextRenderer,
     /// Draws the text rows, keeping each row's prepared glyphs on the GPU between frames.
     rows: RowRenderer,
+    /// Every buffer write of a frame goes up through this, ahead of the frame's commands.
+    uploads: glyphon::UploadBelt,
+    /// The target size the quad uniform holds, so it is written only when it changes.
+    quad_screen: Option<(u32, u32)>,
     /// The quad and image vertex lists, kept on the GPU between frames.
     under: GpuVec,
     over: GpuVec,
@@ -717,6 +731,8 @@ impl Renderer {
             viewport,
             text,
             rows,
+            uploads: glyphon::UploadBelt::new(),
+            quad_screen: None,
             under: GpuVec::new(device),
             over: GpuVec::new(device),
             pops: GpuVec::new(device),
@@ -794,6 +810,8 @@ impl Renderer {
         for v in [&mut self.under, &mut self.over, &mut self.pops, &mut self.picture, &mut self.backdrop, &mut self.cover] {
             *v = GpuVec::new(device);
         }
+        self.uploads = glyphon::UploadBelt::new();
+        self.quad_screen = None;
         self.device = device.clone();
         self.queue = queue.clone();
         self.format = format;
@@ -803,6 +821,12 @@ impl Renderer {
     #[cfg(test)]
     pub(crate) fn bytes_written(&self) -> u64 {
         [&self.under, &self.over, &self.pops, &self.picture, &self.backdrop, &self.cover].iter().map(|v| v.written).sum()
+    }
+
+    /// Staging buffers the upload path made so far (tests).
+    #[cfg(test)]
+    pub(crate) fn upload_buffers_made(&self) -> u64 {
+        self.uploads.buffers_made()
     }
 
     /// Forgets what the vertex buffers hold, so the next frame uploads every byte (tests).
@@ -1476,7 +1500,7 @@ impl Renderer {
             self.draw_with(frame, &view, raw.as_ref(), w, h)?;
             chain.set_frame_drawn(true);
         }
-        chain.run_in(&self.device, &self.queue, uniforms, out, region.filter(|_| animation_only));
+        chain.run_with(&self.device, &self.queue, Some(&mut self.uploads), uniforms, out, region.filter(|_| animation_only));
         Ok(())
     }
 
@@ -1503,7 +1527,7 @@ impl Renderer {
             // Let go of every glyph the kept rows hold. With no rows nothing is allocated, so this
             // cannot fail.
             self.rows.clear();
-            let released = self.rows.prepare(&self.device, &self.queue, &mut self.font_system, &mut self.atlas, &self.viewport, [], &mut self.swash, |_| None);
+            let released = self.rows.prepare(&self.device, &self.queue, &mut self.uploads, &mut self.font_system, &mut self.atlas, &self.viewport, [], &mut self.swash, |_| None);
             debug_assert!(released.is_ok(), "releasing the kept rows failed: {released:?}");
         }
     }
@@ -1940,18 +1964,21 @@ impl Renderer {
             // The rows, then the box and block glyphs, both on one atlas: when either grows it, the
             // rows prepare again, until neither moves it.
             loop {
-                self.rows.prepare(&self.device, &self.queue, &mut self.font_system, &mut self.atlas, &self.viewport, row_areas(), &mut self.swash, &rasterize).map_err(|e| format!("text prepare: {e:?}"))?;
+                self.rows.prepare(&self.device, &self.queue, &mut self.uploads, &mut self.font_system, &mut self.atlas, &self.viewport, row_areas(), &mut self.swash, &rasterize).map_err(|e| format!("text prepare: {e:?}"))?;
                 let seen = self.atlas.generation();
-                self.text.prepare_with_custom(&self.device, &self.queue, &mut self.font_system, &mut self.atlas, &self.viewport, glyph_areas.clone(), &mut self.swash, &rasterize).map_err(|e| format!("text prepare: {e:?}"))?;
+                self.text.prepare_with_custom_uploads(&self.device, &self.queue, &mut self.uploads, &mut self.font_system, &mut self.atlas, &self.viewport, glyph_areas.clone(), &mut self.swash, &rasterize).map_err(|e| format!("text prepare: {e:?}"))?;
                 if self.atlas.generation() == seen {
                     break;
                 }
             }
         } else {
-            self.text.prepare_with_custom(&self.device, &self.queue, &mut self.font_system, &mut self.atlas, &self.viewport, areas.chain(glyph_areas), &mut self.swash, rasterize).map_err(|e| format!("text prepare: {e:?}"))?;
+            self.text.prepare_with_custom_uploads(&self.device, &self.queue, &mut self.uploads, &mut self.font_system, &mut self.atlas, &self.viewport, areas.chain(glyph_areas), &mut self.swash, rasterize).map_err(|e| format!("text prepare: {e:?}"))?;
         }
 
-        self.queue.write_buffer(&self.quads.uniform, 0, bytemuck::cast_slice(&[width as f32, height as f32, 0.0, 0.0]));
+        if self.quad_screen != Some((width, height)) {
+            self.uploads.write(&self.device, &self.quads.uniform, 0, bytemuck::cast_slice(&[width as f32, height as f32, 0.0, 0.0]));
+            self.quad_screen = Some((width, height));
+        }
         let under = QuadPipeline::vertices(&frame.quads);
         // Underline strokes lie under the overlay (the dimming, the cursor extras); with gaps on they
         // break around the ink of the glyphs in their row, strikethrough stays whole.
@@ -1959,17 +1986,17 @@ impl Renderer {
         let over = QuadPipeline::vertices(&underlines.iter().chain(&frame.strikes).chain(&frame.scrollbars).chain(&frame.overlay).copied().collect::<Vec<_>>());
         let pops = QuadPipeline::vertices(&frame.popups);
         let (under_buf, over_buf, pops_buf) = (
-            self.under.write(&self.device, &self.queue, bytemuck::cast_slice(&under)),
-            self.over.write(&self.device, &self.queue, bytemuck::cast_slice(&over)),
-            self.pops.write(&self.device, &self.queue, bytemuck::cast_slice(&pops)),
+            self.under.write(&self.device, &mut self.uploads, bytemuck::cast_slice(&under)),
+            self.over.write(&self.device, &mut self.uploads, bytemuck::cast_slice(&over)),
+            self.pops.write(&self.device, &mut self.uploads, bytemuck::cast_slice(&pops)),
         );
         // Background images and inline images share one texture cache.
         let all: Vec<crate::scene::ImageQuad> = frame.backgrounds.iter().chain(&frame.images).cloned().collect();
         self.images.prepare(&self.device, &self.queue, &all);
         let picture = ImagePipeline::vertices(&frame.images);
-        let picture_buf = self.picture.write(&self.device, &self.queue, bytemuck::cast_slice(&picture));
+        let picture_buf = self.picture.write(&self.device, &mut self.uploads, bytemuck::cast_slice(&picture));
         let backdrop = ImagePipeline::vertices(&frame.backgrounds);
-        let backdrop_buf = self.backdrop.write(&self.device, &self.queue, bytemuck::cast_slice(&backdrop));
+        let backdrop_buf = self.backdrop.write(&self.device, &mut self.uploads, bytemuck::cast_slice(&backdrop));
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
@@ -2041,7 +2068,7 @@ impl Renderer {
         if frame.fade < 1.0 {
             let f = frame.fade.clamp(0.0, 1.0) as f64;
             let cover = QuadPipeline::vertices(&[Quad { rect: crate::layout::Rect { x: 0.0, y: 0.0, w: width as f32, h: height as f32 }, color: [0.0; 4] }]);
-            let cover_buf = self.cover.write(&self.device, &self.queue, bytemuck::cast_slice(&cover));
+            let cover_buf = self.cover.write(&self.device, &mut self.uploads, bytemuck::cast_slice(&cover));
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2063,7 +2090,7 @@ impl Renderer {
             }
             pass.draw(0..6, 0..1);
         }
-        self.queue.submit(Some(encoder.finish()));
+        self.uploads.submit(&self.queue, Some(encoder.finish()));
         self.atlas.trim();
         Ok(())
     }

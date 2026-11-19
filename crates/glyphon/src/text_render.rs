@@ -2,7 +2,7 @@ use crate::{
     custom_glyph::CustomGlyphCacheKey, ColorMode, ContentType, FontSystem, GlyphDetails,
     GlyphToRender, GpuCacheStatus, PrepareError, RasterizeCustomGlyphRequest,
     RasterizedCustomGlyph, RenderError, Resolution, State, SwashCache, SwashContent, TextArea,
-    TextAtlas, TextBounds, Viewport,
+    TextAtlas, TextBounds, UploadBelt, Viewport,
 };
 use cosmic_text::{Color, SubpixelBin};
 use std::slice;
@@ -125,6 +125,43 @@ impl TextRenderer {
         &mut self,
         device: &Device,
         queue: &Queue,
+        font_system: &mut FontSystem,
+        atlas: &mut TextAtlas,
+        viewport: &Viewport,
+        text_areas: impl IntoIterator<Item = TextArea<'a>>,
+        cache: &mut SwashCache,
+        metadata_to_depth: impl FnMut(usize) -> f32,
+        rasterize_custom_glyph: impl FnMut(
+            RasterizeCustomGlyphRequest,
+        ) -> Option<RasterizedCustomGlyph>,
+    ) -> Result<(), PrepareError> {
+        self.prepare_inner(device, queue, None, font_system, atlas, viewport, text_areas, cache, metadata_to_depth, rasterize_custom_glyph)
+    }
+
+    /// Termurion patch 7: `prepare_with_custom`, writing the vertices through `uploads`, whose
+    /// `submit` must then send them before the render pass.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_with_custom_uploads<'a>(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        uploads: &mut UploadBelt,
+        font_system: &mut FontSystem,
+        atlas: &mut TextAtlas,
+        viewport: &Viewport,
+        text_areas: impl IntoIterator<Item = TextArea<'a>>,
+        cache: &mut SwashCache,
+        rasterize_custom_glyph: impl FnMut(RasterizeCustomGlyphRequest) -> Option<RasterizedCustomGlyph>,
+    ) -> Result<(), PrepareError> {
+        self.prepare_inner(device, queue, Some(uploads), font_system, atlas, viewport, text_areas, cache, zero_depth, rasterize_custom_glyph)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_inner<'a>(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        uploads: Option<&mut UploadBelt>,
         font_system: &mut FontSystem,
         atlas: &mut TextAtlas,
         viewport: &Viewport,
@@ -287,9 +324,13 @@ impl TextRenderer {
         };
 
         if self.vertex_buffer_size >= vertices_raw.len() as u64 {
-            queue.write_buffer(&self.vertex_buffer, 0, vertices_raw);
+            match uploads {
+                Some(uploads) => uploads.write(device, &self.vertex_buffer, 0, vertices_raw),
+                None => queue.write_buffer(&self.vertex_buffer, 0, vertices_raw),
+            }
         } else {
-            self.vertex_buffer.destroy();
+            // Termurion patch 7: dropped, not destroyed; a copy recorded this frame may still
+            // target it.
 
             let (buffer, buffer_size) = create_oversized_buffer(
                 device,

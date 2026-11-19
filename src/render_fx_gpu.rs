@@ -494,6 +494,11 @@ impl Chain {
     /// size. The caller passes rects only for an animation frame of a kept scene,
     /// united with last frame's (its glow outside them must go back to the plain picture).
     pub fn run_in(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, uniforms: &Uniforms, out: &wgpu::TextureView, rects: Option<&[PxRect]>) {
+        self.run_with(device, queue, None, uniforms, out, rects);
+    }
+
+    /// `run_in`, writing the uniforms through the renderer's upload path when one is given.
+    pub fn run_with(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, mut uploads: Option<&mut glyphon::UploadBelt>, uniforms: &Uniforms, out: &wgpu::TextureView, rects: Option<&[PxRect]>) {
         // Nothing to draw into yet (no frame_views call).
         if self.targets.is_empty() && self.plain.is_none() {
             return;
@@ -504,7 +509,10 @@ impl Chain {
             if let Some(layout) = &pass.layout {
                 let packed = uniforms.pack(layout);
                 if self.last_packed[i] != packed {
-                    queue.write_buffer(&pass.uniforms, 0, &packed);
+                    match uploads.as_deref_mut() {
+                        Some(up) => up.write(device, &pass.uniforms, 0, &packed),
+                        None => queue.write_buffer(&pass.uniforms, 0, &packed),
+                    }
                     self.last_packed[i] = packed;
                     self.uniform_writes += 1;
                 }
@@ -568,7 +576,14 @@ impl Chain {
             (None, Some(Kept { copy: Some((_, pipeline, bind)), .. })) if !skip_kept => Self::blit(&mut encoder, bind, pipeline, out),
             (None, _) => {}
         }
-        queue.submit([encoder.finish()]);
+        match uploads {
+            Some(up) => {
+                up.submit(queue, [encoder.finish()]);
+            }
+            None => {
+                queue.submit([encoder.finish()]);
+            }
+        }
         self.kept_ok = self.kept.is_some() && !skip_kept;
         self.shaded_region = rects.is_some();
     }

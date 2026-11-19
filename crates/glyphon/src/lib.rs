@@ -12,6 +12,7 @@ mod text_atlas;
 #[cfg(test)]
 mod test_gpu;
 mod text_render;
+mod upload;
 mod viewport;
 
 pub use cache::Cache;
@@ -24,6 +25,8 @@ pub use text_atlas::{ColorMode, GlyphKey, TextAtlas};
 // Termurion patch 6: the row renderer.
 pub use row_render::{RowArea, RowRenderer};
 pub use text_render::TextRenderer;
+// Termurion patch 7: one reused upload path for buffer writes.
+pub use upload::UploadBelt;
 pub use viewport::Viewport;
 
 // Re-export all top-level types from `cosmic-text` for convenience.
