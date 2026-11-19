@@ -241,6 +241,26 @@
 - [ ] **Step 7: Bench** `termurion termurion-fx ghostty ghostty-fx`, both with the setting on and off. Expected with it on: flood fps at or above Ghostty's, MB/s at or above Ghostty's, CPU per MB/s at or under 3.69; with it off: 1.1.10's flood within noise.
 - [ ] **Step 8: Commit** `Output: parse while the frame is drawn`.
 
+### Task 8b: The frame rate follows the display (low to medium risk)
+
+Owner ruling 2026-11-19: draw up to the display's own refresh rate, as Ghostty does (60, 120, 144 Hz). Windows battery saver keeps iTerm2's 30 fps.
+
+**Files:**
+- Modify: `src/cadence.rs` (`State.display_hz`, `Prefs.match_display`, `interval`, `shortest_interval`), the window code that builds each window's `State` list (find it from `window_interval`'s callers), `src/app/frame_settings.rs`, `schema/global.toml` (setting `MatchDisplayRefreshRate`, default true, tab Advanced, section Drawing, after `ParseWhileDrawing`)
+- Test: `src/cadence.rs` tests, a source scan in the window code
+
+**Interfaces:**
+- Produces: `State.display_hz: Option<f64>`: the refresh rate of the monitor the window is on, from winit `current_monitor()?.refresh_rate_millihertz() / 1000`, read when the window is made and again on `WindowEvent::Moved`, `ScaleFactorChanged` and `Resized` (a move to another monitor); `None` when the OS does not report it.
+- Produces: `Prefs.match_display: bool` (from `MatchDisplayRefreshRate`). When true and `display_hz` is `Some(hz)`, every rate in `interval` that is 60 fps by default (`maximum_frame_rate`, `active_update_cadence`, and the flood rate when Task 8's `parse_while_drawing` gives `maximum_frame_rate`) becomes `hz` clamped to 30..=240, but only while that setting still has its default value of 60. A value the user set by hand wins. `low_power_frame_rate` (30) and `metal_slow_frame_rate` with Parse While Drawing off are unchanged. `shortest_interval` follows the same rule.
+- Setting help text: "Match the display refresh rate\nTermurion draws up to the refresh rate of the display the window is on (for example 120 frames a second on a ProMotion display) instead of 60. Battery saver still draws at most 30."
+
+- [ ] **Step 1: Write the failing tests** (cadence): `a_120_hz_display_draws_at_120` (light output, `display_hz` 120: the 120 fps gap from `interval`'s formula); `a_flood_on_120_hz_draws_at_120_with_parse_while_drawing`; `battery_saver_keeps_30_on_any_display`; `a_hand_set_maximum_wins` (`maximum_frame_rate` 45, display 120: 45); `no_display_rate_keeps_60`; `the_switch_off_keeps_60` (`match_display` false, display 120: 60); and a source scan that `display_hz` is refreshed on `Moved`, `ScaleFactorChanged` and `Resized`.
+- [ ] **Step 2: Run** `scripts/check-unix --linux-only --test cadence`. Expected: the new tests FAIL.
+- [ ] **Step 3: Implement.** Check the surface's present mode on each OS does not hold the rate at 60 (Fifo follows the display; say what each backend uses).
+- [ ] **Step 4: Run** `scripts/check-unix --test cadence app::` and `scripts/xt test --lib -- cadence app::`. Expected: PASS apart from the baseline. `scripts/win-check`: 0 errors.
+- [ ] **Step 5: Bench** `termurion termurion-fx ghostty ghostty-fx` and record the funtimes display rate the app read. Expected: no CPU rise on a 60 Hz display.
+- [ ] **Step 6: Commit** `Frames: draw up to the display refresh rate`.
+
 ### Task 9: Whole verification
 
 No version bump. Nothing new is written here; a failure goes back to the task that owns it.
