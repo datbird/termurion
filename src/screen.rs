@@ -431,6 +431,9 @@ pub struct Screen {
     /// Alacritty's damage, kept for each reader until it takes it (alacritty keeps one copy,
     /// and reading it resets it).
     replay_dirty: DirtyRows,
+    /// A write outside the parser (`term_mut`, `edit_grid`) since the last capture: alacritty's
+    /// damage does not cover it, so the next capture compares every line, as 1.1.9 did.
+    replay_unsure: bool,
     render_dirty: DirtyRows,
     /// The view and size the renderer last took damage at.
     render_seen: Option<(usize, usize, usize)>,
@@ -813,6 +816,7 @@ impl Screen {
             replay_rows: Vec::new(),
             replay_cursor: None,
             replay_dirty: DirtyRows::default(),
+            replay_unsure: false,
             render_dirty: DirtyRows { full: true, rows: Vec::new() },
             render_seen: None,
             render_id: NEXT_RENDER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
@@ -1104,7 +1108,7 @@ impl Screen {
         self.bump_ticks();
         // A write outside the parser is not in alacritty's damage.
         self.render_dirty.full = true;
-        self.replay_dirty.full = true;
+        self.replay_unsure = true;
         &mut self.term
     }
 
@@ -1286,17 +1290,29 @@ impl Screen {
         let scrolled = self.term.grid().display_offset() > 0;
         self.drain_damage();
         let seen = std::mem::take(&mut self.replay_dirty);
+        let unsure = std::mem::take(&mut self.replay_unsure);
         let damaged = (!seen.full && seen.rows.len() == lines).then_some(seen.rows);
         let same_size = self.replay_rows.len() == lines && self.replay_rows.first().is_some_and(|r| r.len() == cols);
         let moved = self.replay_cursor != Some(cursor);
         let grid = self.term.grid();
         let same = |y: usize| grid[Line(y as i32)] == self.replay_rows[y];
         let clean: Vec<bool> = match damaged {
+            // After a write outside the parser (a selection change, a raw grid edit) every
+            // undamaged line is compared, as 1.1.9 always did.
+            Some(mut d) if !scrolled && same_size && unsure => {
+                if !moved {
+                    d[cursor.1] = false;
+                    if !d.iter().any(|x| *x) && same(cursor.1) {
+                        return None;
+                    }
+                }
+                (0..lines).map(|y| !d[y] && same(y)).collect()
+            }
             Some(mut d) if !scrolled && same_size => {
                 // alacritty damages the cursor's cell on every read; iTerm2 marks the cursor
                 // line only when the cursor moved, else when the line itself changed.
-                // A line alacritty did not damage is as captured (a write outside the parser
-                // reads as full damage), so only the cursor's line is compared.
+                // Only the parser wrote: a line alacritty did not damage is as captured, so
+                // only the cursor's line is compared.
                 if !moved {
                     d[cursor.1] = !same(cursor.1);
                     if !d.iter().any(|x| *x) {
@@ -1330,6 +1346,7 @@ impl Screen {
     pub fn replay_discard(&mut self) {
         self.drain_damage();
         self.replay_dirty = DirtyRows::default();
+        self.replay_unsure = false;
     }
 
     /// Moves alacritty's damage into both readers' copies and resets alacritty's.
@@ -1363,14 +1380,14 @@ impl Screen {
     /// through `term_mut` (`raw_grid_writes_mark_the_rows`).
     pub(crate) fn edit_grid(&mut self) -> &mut alacritty_terminal::grid::Grid<Cell> {
         self.render_dirty.full = true;
-        self.replay_dirty.full = true;
+        self.replay_unsure = true;
         self.term.grid_mut()
     }
 
     /// `edit_grid` for the main screen's grid, also while a full-screen app has the other one.
     pub(crate) fn edit_primary_grid(&mut self) -> &mut alacritty_terminal::grid::Grid<Cell> {
         self.render_dirty.full = true;
-        self.replay_dirty.full = true;
+        self.replay_unsure = true;
         self.term.primary_grid_mut()
     }
 
@@ -4646,8 +4663,9 @@ mod tests {
         assert_eq!(c.cursor, (1, 3), "the main grid's cursor");
     }
 
-    /// `replay_capture` as it was before it trusted the damage: every line alacritty did not
-    /// damage was compared against the last capture.
+    /// `replay_capture` as 1.1.9 had it, line for line: every line alacritty did not damage is
+    /// compared against the last capture. It reads only alacritty's damage (`replay_dirty`), never
+    /// the outside-write flag, as 1.1.9 had none.
     fn compared_capture(s: &mut Screen) -> Option<Capture> {
         let (lines, cols) = (s.term.screen_lines(), s.term.columns());
         let point = s.term.grid().cursor.point;
@@ -4678,14 +4696,50 @@ mod tests {
             }
         };
         let rows: Vec<Row<Cell>> = (0..lines).map(|y| grid[Line(y as i32)].clone()).collect();
-        s.replay_rows.clone_from(&rows);
+        if same_size {
+            for y in (0..lines).filter(|y| !clean[*y]) {
+                s.replay_rows[y].clone_from(&rows[y]);
+            }
+        } else {
+            s.replay_rows.clone_from(&rows);
+        }
         s.replay_cursor = Some(cursor);
         Some(Capture { rows, clean, cursor })
     }
 
-    /// Frames with damaged rows record the same rows, clean lines and cursor as when every
-    /// undamaged line was compared: Claude Code's redraws, scrolling, writes outside the
-    /// parser, the alternate screen, a resize.
+    /// A selection over row `y`, columns 2 to 9.
+    fn select_row(s: &mut Screen, y: i32) {
+        use alacritty_terminal::index::{Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(y), Column(2)), Side::Left);
+        sel.update(Point::new(Line(y), Column(9)), Side::Right);
+        s.set_selection(Some(sel), crate::seltext::Mode::Character);
+    }
+
+    /// A selection never changes a cell, so a selection made or dragged while output streams
+    /// leaves the recorded frame as it would be without it: a diff with its clean lines, not a
+    /// key frame (iTerm2 saves what changed on the screen, `TV:2876-2917`).
+    #[test]
+    fn a_selection_while_streaming_keeps_the_frame_a_diff() {
+        let (mut sel, mut plain) = (Screen::new(40, 8), Screen::new(40, 8));
+        for s in [&mut sel, &mut plain] {
+            s.feed(b"one\r\ntwo\r\nthree\r\n> ");
+            s.replay_capture();
+        }
+        for (i, bytes) in [&b"\x1b[2;1H\x1b[Kspinner *\x1b[4;3H"[..], b"\x1b[2;1H\x1b[Kspinner +\x1b[4;3H", b"x"].iter().enumerate() {
+            sel.feed(bytes);
+            plain.feed(bytes);
+            select_row(&mut sel, i as i32);
+            let (got, want) = (sel.replay_capture(), plain.replay_capture());
+            let (got, want) = (got.expect("a line changed"), want.expect("a line changed"));
+            assert_eq!(got.clean, want.clean, "step {i}: the selection changed the clean lines");
+            assert!(got.clean.iter().any(|c| *c), "step {i}: a key frame");
+        }
+    }
+
+    /// Frames with damaged rows record the same rows, clean lines and cursor as 1.1.9 did:
+    /// Claude Code's redraws, scrolling, writes outside the parser, a selection dragged while
+    /// output streams, the alternate screen, a resize.
     #[test]
     fn capture_from_damage_matches_the_compared_capture() {
         let (mut a, mut b) = (Screen::with_scrollback(40, 8, 100), Screen::with_scrollback(40, 8, 100));
@@ -4713,6 +4767,10 @@ mod tests {
                 }
                 if i == 12 {
                     s.resize(42, 9);
+                }
+                // A drag over streaming output.
+                if (14..18).contains(&i) {
+                    select_row(s, i as i32 - 13);
                 }
             }
             let (got, want) = (a.replay_capture(), compared_capture(&mut b));
