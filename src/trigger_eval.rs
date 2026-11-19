@@ -966,8 +966,7 @@ impl Screen {
 
     fn each_cell(&mut self, cells: &[(i32, usize)], f: &mut dyn FnMut(&mut Cell)) {
         // Not in alacritty's damage: the renderer looks at every row again.
-        self.mark_render_full();
-        let g = self.term.grid_mut();
+        let g = self.edit_grid();
         let (top, lines, cols) = (-(g.history_size() as i32), g.screen_lines() as i32, g.columns());
         for &(l, col) in cells {
             if l >= top && l < lines && col < cols {

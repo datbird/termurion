@@ -11593,6 +11593,74 @@ mod row_reuse_tests {
         assert!(back == draw(&own, &cfg, false, None), "the live rows, not the view's");
     }
 
+    /// A screen of different rows with history above and the prompt on the last row.
+    fn listing() -> Screen {
+        let mut s = Screen::with_scrollback(40, 8, 100);
+        let text: String = (0..20).map(|n| format!("listing row {n}\r\n")).collect();
+        s.feed(text.as_bytes());
+        s.feed(b"prompt $ ");
+        s
+    }
+
+    /// Every row kept and clean through the cache, then `edit` outside the parser: the next
+    /// frame shows the edited rows, not last frame's.
+    fn edit_shows_next_frame(s: &mut Screen, what: &str, edit: impl FnOnce(&mut Screen)) {
+        let cfg = Cfg::new();
+        let mut cache = RowCache::new();
+        damaged_draw(s, &cfg, &mut cache);
+        damaged_draw(s, &cfg, &mut cache);
+        let before = s.all_text();
+        edit(s);
+        assert_ne!(s.all_text(), before, "{what}: the edit changed the grid");
+        let next = damaged_draw(s, &cfg, &mut cache);
+        assert!(next == draw(s, &cfg, false, None), "{what}: the next frame shows the edited rows");
+    }
+
+    #[test]
+    fn a_spliced_row_shows_next_frame() {
+        // Replace Selection and Clear to Start of Selection splice the rows they change.
+        edit_shows_next_frame(&mut listing(), "splice", |s| {
+            let rows = s.text_rows(&["replaced".to_string()]);
+            s.splice_rows(1, 3, rows);
+        });
+        edit_shows_next_frame(&mut listing(), "splice out", |s| {
+            s.splice_rows(0, 2, Vec::new());
+        });
+    }
+
+    #[test]
+    fn a_fold_and_an_unfold_show_next_frame() {
+        edit_shows_next_frame(&mut listing(), "fold", |s| {
+            s.fold(1, 4).unwrap();
+        });
+        let mut s = listing();
+        let id = s.fold(1, 4).unwrap();
+        edit_shows_next_frame(&mut s, "unfold", |s| assert!(s.unfold(id)));
+    }
+
+    #[test]
+    fn a_porthole_open_close_and_resize_show_next_frame() {
+        let open = |s: &mut Screen| s.render_range(1, 3, crate::porthole::store::Source::default(), &|_| 2).unwrap();
+        edit_shows_next_frame(&mut listing(), "porthole open", |s| {
+            open(s);
+        });
+        let mut s = listing();
+        let id = open(&mut s);
+        edit_shows_next_frame(&mut s, "porthole resize", |s| assert!(s.set_porthole_rows(id, 4)));
+        let mut s = listing();
+        let id = open(&mut s);
+        edit_shows_next_frame(&mut s, "porthole close", |s| assert!(s.close_porthole(id)));
+    }
+
+    #[test]
+    fn a_clear_from_a_mark_shows_next_frame() {
+        // Auto Composer Ctrl+L with the prompt on row 0 clears from the top.
+        edit_shows_next_frame(&mut listing(), "clear from the top", |s| s.clear_from(0));
+        // Clear to Last Mark with its mark in history.
+        edit_shows_next_frame(&mut listing(), "clear from history", |s| s.clear_from(-4));
+        edit_shows_next_frame(&mut listing(), "clear from a visible row", |s| s.clear_from(3));
+    }
+
     #[test]
     fn term_mut_marks_everything_dirty() {
         let mut s = Screen::new(20, 6);

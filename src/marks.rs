@@ -483,11 +483,11 @@ impl Screen {
                 let _ = ml;
                 saved.set_mark(cur);
             }
-        self.term.grid_mut().cut_from(Line(line));
+        self.edit_grid().cut_from(Line(line));
         if line > 0 {
             self.term.scroll_up(line as usize);
         }
-        let grid = self.term.grid_mut();
+        let grid = self.edit_grid();
         grid[Line(0)] = saved;
         grid.cursor.point = Point::new(Line(0), cursor.column);
         self.prune_marks();

@@ -1075,8 +1075,7 @@ impl Screen {
         if cols == 0 || cols >= old {
             return;
         }
-        self.render_dirty.full = true;
-        let grid = self.term.grid_mut();
+        let grid = self.edit_grid();
         let line = number - grid.scrolled_off() as i64;
         if line < -(grid.history_size() as i64) || line >= grid.screen_lines() as i64 {
             return;
@@ -1356,9 +1355,18 @@ impl Screen {
         self.term.reset_damage();
     }
 
-    /// A write outside the parser: the renderer must look at every row again.
-    pub(crate) fn mark_render_full(&mut self) {
+    /// The shown screen's grid, for a write outside the parser. alacritty's damage never sees
+    /// it, so the renderer looks at every row again. Every Termurion grid write comes here or
+    /// through `term_mut` (`raw_grid_writes_mark_the_rows`).
+    pub(crate) fn edit_grid(&mut self) -> &mut alacritty_terminal::grid::Grid<Cell> {
         self.render_dirty.full = true;
+        self.term.grid_mut()
+    }
+
+    /// `edit_grid` for the main screen's grid, also while a full-screen app has the other one.
+    pub(crate) fn edit_primary_grid(&mut self) -> &mut alacritty_terminal::grid::Grid<Cell> {
+        self.render_dirty.full = true;
+        self.term.primary_grid_mut()
     }
 
     /// Which screen the renderer's kept rows belong to.
@@ -1902,8 +1910,7 @@ impl Screen {
             0 => {
                 self.prune_buttons();
                 let k = self.buttons.new_key();
-                self.render_dirty.full = true;
-                self.term.grid_mut()[point.line].set_button(k);
+                self.edit_grid()[point.line].set_button(k);
                 k
             }
             k => k,
@@ -2284,7 +2291,7 @@ impl Screen {
         }
         self.bump_ticks();
         self.clear_selection();
-        let removed = self.term.primary_grid_mut().splice(Line(first), Line(last), with);
+        let removed = self.edit_primary_grid().splice(Line(first), Line(last), with);
         // Rows moved: triggers go on from the cursor.
         self.triggers_from_cursor();
         self.composer_rows_moved();
@@ -2971,6 +2978,93 @@ impl crate::seltext::Cells for Screen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Grid writes that may skip the render marking, as (file under `src`, function, count, why).
+    /// Anything else writes through `edit_grid`, `edit_primary_grid` or `term_mut`.
+    const RAW_GRID: &[(&str, &str, usize, &str)] = &[
+        ("screen.rs", "edit_grid", 1, "the marking helper itself"),
+        ("screen.rs", "edit_primary_grid", 1, "the marking helper itself"),
+        ("screen.rs", "fold_block", 1, "a row's block id only; no row draws it"),
+        ("screen.rs", "set_row_mark", 1, "a row's mark id only; no row draws it"),
+        ("screen.rs", "set_row_manual", 1, "a row's manual mark id only; no row draws it"),
+        ("marks.rs", "remove_mark", 1, "a row's mark ids only; no row draws them"),
+    ];
+
+    /// Every raw grid write in one file's live code, by function: a `grid_mut()` or
+    /// `primary_grid_mut()` not reached through `term_mut()`.
+    fn raw_grid_writes(text: &str) -> std::collections::BTreeMap<String, Vec<String>> {
+        use crate::localfs::tests::{blank_strings, fn_name, live_code};
+        let mut found: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        let mut current = String::from("(outside any function)");
+        for (i, line) in live_code(text).lines().enumerate() {
+            if let Some(name) = fn_name(line) {
+                current = name;
+            }
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            let code = blank_strings(line).replace(" ", "");
+            let raw = code.matches("grid_mut()").count() - code.matches("term_mut().grid_mut()").count() - code.matches("term_mut().primary_grid_mut()").count();
+            for _ in 0..raw {
+                found.entry(current.clone()).or_default().push(format!("{}: {}", i + 1, line.trim()));
+            }
+        }
+        found
+    }
+
+    fn raw_grid_wrong(file: &str, text: &str, known: &[(&str, &str, usize, &str)]) -> Vec<String> {
+        let found = raw_grid_writes(text);
+        let mut wrong = Vec::new();
+        for (f, sites) in &found {
+            match known.iter().find(|(kf, kn, _, _)| *kf == file && kn == f) {
+                Some((_, _, n, _)) if *n == sites.len() => {}
+                _ => wrong.push(format!("{file} {f}: write through Screen::edit_grid, edit_primary_grid or term_mut, or list it in RAW_GRID with the reason:\n  {}", sites.join("\n  "))),
+            }
+        }
+        for (kf, kn, _, _) in known.iter().filter(|(kf, _, _, _)| *kf == file) {
+            if !found.contains_key(*kn) {
+                wrong.push(format!("{kf} {kn} is in RAW_GRID but has no raw grid write now: remove it"));
+            }
+        }
+        wrong
+    }
+
+    /// A Termurion edit of the grid is not in alacritty's damage, so the row cache would keep
+    /// last frame's rows (the final review's I1). Each one marks the rows for the renderer.
+    #[test]
+    fn raw_grid_writes_mark_the_rows() {
+        let all = crate::localfs::tests::sources();
+        assert!(all.len() > 400, "every source file is read ({} found)", all.len());
+        let mut wrong: Vec<String> = all.iter().flat_map(|(f, t)| raw_grid_wrong(f, t, RAW_GRID)).collect();
+        for (kf, _, _, why) in RAW_GRID {
+            if !all.iter().any(|(f, _)| f == kf) {
+                wrong.push(format!("RAW_GRID names {kf}, which does not exist"));
+            }
+            assert!(!why.trim().is_empty());
+        }
+        assert!(wrong.is_empty(), "{} raw grid writes:\n{}", wrong.len(), wrong.join("\n"));
+    }
+
+    #[test]
+    fn the_grid_guard_catches_planted_writes() {
+        let planted = [
+            "fn f(&mut self) {\n    self.term.grid_mut().cut_from(Line(0));\n}\n",
+            "fn f(&mut self) {\n    let g = self.term.primary_grid_mut();\n}\n",
+            "fn f(s: &mut Screen) {\n    s.term.grid_mut()[Line(0)][Column(0)].c = 'x';\n}\n",
+            "fn set_row_mark(&mut self) {\n    self.term.primary_grid_mut();\n    self.term.grid_mut();\n}\n",
+        ];
+        for text in planted {
+            assert!(!raw_grid_wrong("screen.rs", text, RAW_GRID).is_empty(), "missed:\n{text}");
+        }
+        let clean = [
+            "fn f(&mut self) {\n    self.term_mut().grid_mut()[Line(0)].set_note(1);\n    self.edit_grid().cut_from(Line(0));\n}\n",
+            "fn f() {}\n#[cfg(test)]\nmod tests {\n    fn t(s: &mut Screen) {\n        s.term.grid_mut();\n    }\n}\n",
+            "fn f() {\n    // self.term.grid_mut()\n    let _ = \"grid_mut()\";\n}\n",
+        ];
+        for text in clean {
+            assert!(raw_grid_wrong("other.rs", text, &[]).is_empty(), "flagged:\n{text}");
+        }
+    }
 
     /// The margin colors of an alternate screen come from each row's edge cells.
     #[test]

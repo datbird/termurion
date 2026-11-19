@@ -407,7 +407,7 @@ pub fn entries_upto(dir: &LocalPath, max: usize) -> io::Result<Vec<Entry>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -798,7 +798,7 @@ mod tests {
         ("platform/windows/ipc.rs", "connect_owned", 1, "a named pipe, not a file path"),
     ];
 
-    fn fn_name(line: &str) -> Option<String> {
+    pub(crate) fn fn_name(line: &str) -> Option<String> {
         let t = line.trim_start();
         let t = ["pub(super) ", "pub(crate) ", "pub "].iter().find_map(|p| t.strip_prefix(p)).unwrap_or(t);
         let t = ["const ", "async ", "unsafe "].iter().fold(t, |t, p| t.strip_prefix(p).unwrap_or(t));
@@ -809,7 +809,7 @@ mod tests {
 
     /// A line with the text inside its string literals blanked, so a message naming a call is not
     /// read as the call.
-    fn blank_strings(line: &str) -> String {
+    pub(crate) fn blank_strings(line: &str) -> String {
         let chars: Vec<char> = line.chars().collect();
         let mut out = String::with_capacity(line.len());
         let mut i = 0;
@@ -900,7 +900,7 @@ mod tests {
     }
 
     /// Every `.rs` under `src`, as (path relative to `src` with `/`, text).
-    fn sources() -> Vec<(String, String)> {
+    pub(crate) fn sources() -> Vec<(String, String)> {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut out = Vec::new();
         let mut dirs = vec![src.clone()];
