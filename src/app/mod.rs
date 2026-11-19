@@ -609,12 +609,11 @@ fn next_pump_start(n: usize, start: usize, first_more: Option<usize>) -> usize {
 #[derive(Clone)]
 struct PtyWake {
     queued: Arc<std::sync::atomic::AtomicBool>,
-    hold_while_owed: bool,
 }
 
 impl PtyWake {
-    fn new(hold_while_owed: bool) -> PtyWake {
-        PtyWake { queued: Arc::new(std::sync::atomic::AtomicBool::new(false)), hold_while_owed }
+    fn new() -> PtyWake {
+        PtyWake { queued: Arc::new(std::sync::atomic::AtomicBool::new(false)) }
     }
 
     fn notify(&self, send: impl Fn() + Send + Sync + 'static) -> Notify {
@@ -623,7 +622,7 @@ impl PtyWake {
 
     /// A `Wake` arrived: pty notifies send again, unless output is owed and held back.
     fn wake_taken(&self, owed: bool) {
-        if !(owed && self.hold_while_owed) {
+        if !owed {
             self.queued.swap(false, std::sync::atomic::Ordering::AcqRel);
         }
     }
@@ -631,9 +630,6 @@ impl PtyWake {
     /// A parse turn ended. True when the caller must read once more: the debt was just paid,
     /// and notifies that were held back may have come with data.
     fn turn_ended(&self, was_owed: bool, owed: bool) -> bool {
-        if !self.hold_while_owed {
-            return false;
-        }
         if owed {
             self.queued.store(true, std::sync::atomic::Ordering::Release);
             false
@@ -644,6 +640,11 @@ impl PtyWake {
             false
         }
     }
+}
+
+/// Whether a paint parses owed output first: only where a window drag has no `about_to_wait`.
+fn redraw_parses(owed: bool) -> bool {
+    owed && cfg!(windows)
 }
 
 /// `Poll` while a slice left output unread, else the loop's normal control flow.
@@ -2395,7 +2396,7 @@ pub fn run() {
         }
     };
     let wake = proxy.clone();
-    let pty_wake = PtyWake::new(!cfg!(windows));
+    let pty_wake = PtyWake::new();
     let (notify, pty_notify) = wake_pair(&pty_wake, move || {
         let _ = wake.lock().unwrap().send_event(UserEvent::Wake);
     });
@@ -8725,6 +8726,16 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::MouseInput { state: ElementState::Released, button, .. } => self.mouse_release(button, event_loop),
             WindowEvent::MouseWheel { delta, .. } => self.wheel(delta),
             WindowEvent::RedrawRequested => {
+                // Windows' title-bar drag runs its own message loop with no `about_to_wait`, so
+                // a paint there is where owed output gets its slice; while output is still owed
+                // it asks for the next paint, which parses again and draws. Before the guard
+                // below: the slice can close this window.
+                if redraw_parses(self.parse_owed) {
+                    self.pump_panes(event_loop);
+                    if self.parse_owed {
+                        self.redraw_here();
+                    }
+                }
                 // A tab or pane change in this window ends or shows Instant Replay.
                 self.replay_follow_focus(event_loop);
                 // Closing a loaded recording's pane there can close this window and make
@@ -8742,11 +8753,6 @@ impl ApplicationHandler<UserEvent> for App {
                 self.ensure_faces();
                 if sig != self.font_sig || self.pane_faces.stale() || self.laid_out.as_ref() != Some(&self.room()) {
                     self.relayout();
-                }
-                // Windows' title-bar drag runs its own message loop with no `about_to_wait`: a
-                // redraw there is the other place owed output gets its slice.
-                if self.parse_owed {
-                    self.pump_panes(event_loop);
                 }
                 self.render();
                 // The IME's candidate window follows the caret of the frame just drawn.
@@ -9373,10 +9379,10 @@ mod tests {
         assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 2, "after the Wake was taken the next notify sends again");
     }
 
-    fn counting_pair(hold: bool) -> (PtyWake, Notify, Notify, Arc<std::sync::atomic::AtomicUsize>) {
+    fn counting_pair() -> (PtyWake, Notify, Notify, Arc<std::sync::atomic::AtomicUsize>) {
         let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let count = sent.clone();
-        let gate = PtyWake::new(hold);
+        let gate = PtyWake::new();
         let (plain, pty) = wake_pair(&gate, move || {
             count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         });
@@ -9389,7 +9395,7 @@ mod tests {
 
     #[test]
     fn a_worker_wake_during_a_flood_is_never_held_back() {
-        let (gate, plain, pty, sent) = counting_pair(true);
+        let (gate, plain, pty, sent) = counting_pair();
         // A flood: the slice ended owed, so the readers' notifies are held.
         assert!(!gate.turn_ended(false, true));
         pty();
@@ -9407,7 +9413,7 @@ mod tests {
 
     #[test]
     fn owed_output_holds_the_readers_and_catching_up_releases_them() {
-        let (gate, _plain, pty, sent) = counting_pair(true);
+        let (gate, _plain, pty, sent) = counting_pair();
         assert_eq!(parse_control(true), Some(ControlFlow::Poll), "owed: the loop polls and pumps again");
         assert!(!gate.turn_ended(false, true), "the first owed turn has nothing to re-read");
         assert!(!gate.turn_ended(true, true), "still owed: the loop pumps by itself");
@@ -9426,15 +9432,24 @@ mod tests {
     }
 
     #[test]
-    fn windows_never_holds_the_readers_back() {
-        // Its title-bar drag has no `about_to_wait`: the Wakes keep the parse going there.
-        let (gate, _plain, pty, sent) = counting_pair(false);
+    fn a_paint_pays_the_debt_and_releases_the_readers() {
+        // Windows' drag: no `about_to_wait`, only paints. A flood holds the readers; the paint's
+        // slice (`pump_panes`, which ends every turn with `turn_ended`) catches up.
+        let (gate, _plain, pty, sent) = counting_pair();
         assert!(!gate.turn_ended(false, true));
         pty();
-        assert_eq!(sends(&sent), 1);
-        gate.wake_taken(true);
+        assert_eq!(sends(&sent), 0);
+        assert!(redraw_parses(true) == cfg!(windows), "only Windows parses in a paint");
+        assert!(!redraw_parses(false), "nothing owed: a paint only draws");
+        assert!(gate.turn_ended(true, false), "the drag ends with nothing owed: one more read");
         pty();
-        assert_eq!(sends(&sent), 2);
+        assert_eq!(sends(&sent), 1, "no wake stays swallowed");
+        let src = include_str!("mod.rs");
+        let arm = &src[src.find("WindowEvent::RedrawRequested => {\n                // Windows' title-bar").unwrap()..];
+        let arm = &arm[..arm.find("self.replay_follow_focus").unwrap()];
+        assert!(arm.contains("redraw_parses(self.parse_owed)") && arm.contains("self.pump_panes(event_loop)") && arm.contains("self.redraw_here()"));
+        let pump = &src[src.find("fn pump_panes(").unwrap()..];
+        assert!(pump[..pump.find("fn next_pump_start").unwrap_or(pump.len()).min(6000)].contains("self.pty_wake.turn_ended(was_owed, self.parse_owed)"));
     }
 
     #[test]
