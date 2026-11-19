@@ -657,13 +657,6 @@ fn paint_parses(owed: bool, painted_at: &mut u64, waits: u64) -> bool {
     redraw_parses(owed, waited)
 }
 
-impl App {
-    /// `about_to_wait` ran since this window's last paint (always true off a window).
-    fn waited_since_paint(&self) -> bool {
-        self.gpu.as_ref().is_none_or(|g| g.painted_at != self.waits)
-    }
-}
-
 /// `Poll` while a slice left output unread, else the loop's normal control flow.
 fn parse_control(owed: bool) -> Option<ControlFlow> {
     owed.then_some(ControlFlow::Poll)
@@ -8641,9 +8634,13 @@ impl ApplicationHandler<UserEvent> for App {
             // tmux keeps where Termurion's windows are (@origins).
             WindowEvent::Moved(_) => {
                 self.tmux_save_all_windows();
-                // The first paint of a move drag came after an `about_to_wait`, so it did not
-                // parse or ask for another. A move with none since starts the paint chain.
-                if redraw_parses(self.parse_owed, self.waited_since_paint()) {
+                // A move may start a drag's modal loop, where `about_to_wait` stops. Count this
+                // window as painted now, so its next paint parses unless `about_to_wait` runs first.
+                if redraw_parses(self.parse_owed, false) {
+                    let waits = self.waits;
+                    if let Some(g) = self.gpu.as_mut() {
+                        g.painted_at = waits;
+                    }
                     self.redraw_here();
                 }
             }
@@ -9516,11 +9513,11 @@ mod tests {
         let wait = &src[src.find("    fn about_to_wait(&mut self").unwrap()..];
         let count = wait.find("self.waits += 1;").expect("about_to_wait counts its runs");
         assert!(count < wait.find("self.pump_panes(event_loop)").unwrap(), "counted before its own slice");
-        // A move drag's first paint follows an `about_to_wait`; a move with none since asks for the
-        // paint that slices.
+        // A move counts its window as painted now and asks for a paint, so a drag that starts
+        // with no paint queued still slices.
         let moved = &src[src.find("WindowEvent::Moved(_) => {").unwrap()..];
         let moved = &moved[..moved.find("WindowEvent::Resized").unwrap()];
-        assert!(moved.contains("redraw_parses(self.parse_owed, self.waited_since_paint())") && moved.contains("self.redraw_here()"));
+        assert!(moved.contains("redraw_parses(self.parse_owed, false)") && moved.contains("g.painted_at = waits") && moved.contains("self.redraw_here()"));
     }
 
     #[test]
