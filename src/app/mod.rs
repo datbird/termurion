@@ -4238,7 +4238,7 @@ impl App {
             .tabs
             .get(self.active)
             .and_then(|t| self.panes.get(&t.focused))
-            .map_or(crate::palette::Palette::default().bg, |p| p.screen.palette.bg);
+            .map_or_else(|| crate::palette::Palette::default().bg, |p| p.screen.palette.bg);
         let focused = self.focused && self.app_active;
         let float = |key: &str, default: f32| g.number(key).map_or(default, |v| v as f32);
         let base = MinimalKnobs::default();
@@ -7029,7 +7029,7 @@ impl App {
         self.ensure_faces();
         let cell = self.cell();
         let draw = self.draw_prefs();
-        let palette_bg = self.panes.values().next().map_or(crate::palette::Palette::default().bg, |p| p.screen.palette.bg);
+        let palette_bg = self.panes.values().next().map_or_else(|| crate::palette::Palette::default().bg, |p| p.screen.palette.bg);
         let mut frame = Frame { clear: rgba(palette_bg, 1.0), gap_underlines: !draw.solid_underlines, ..Default::default() };
         // Only a window made for alpha draws see-through; its panes' alphas come from their profiles.
         let alphas = self.tabs.get(self.active).map(|t| self.pane_alphas(t)).unwrap_or_default();
@@ -7155,7 +7155,7 @@ impl App {
                     if let (Some(row), Some(f)) = (self.browser_split(id, rect).0, self.finds.get(&id)) {
                         let swap = self.globals.bool("SwapFindNextPrevious");
                         let count = self.browser_views.get(&id).map_or_else(String::new, |b| crate::browser_find::label(b.find.total(), b.find.current(), swap));
-                        let selection = self.panes.get(&id).map_or(crate::palette::Palette::default().selection, |p| p.screen.palette.selection);
+                        let selection = self.panes.get(&id).map_or_else(|| crate::palette::Palette::default().selection, |p| p.screen.palette.selection);
                         let bar = scene::FindBar { query: &f.query, count: &count, mode: self.find_mode().label(), error: false, notice: None, progress: None, selection };
                         scene::find_strip(&mut frame, row);
                         let first_quad = frame.quads.len();
@@ -7378,7 +7378,7 @@ impl App {
                 let count = if f.filter { "Filter".to_string() } else { f.results.label(self.globals.bool("SwapFindNextPrevious")) };
                 let mode = self.find_mode();
                 let restricted = self.panes.get_mut(&tab.focused).is_some_and(|p| find_ui::find_restricted(p.search_region().is_some(), f.filter, p.live.is_some()));
-                let palette_selection = self.panes.get(&tab.focused).map_or(crate::palette::Palette::default().selection, |p| p.screen.palette.selection);
+                let palette_selection = self.panes.get(&tab.focused).map_or_else(|| crate::palette::Palette::default().selection, |p| p.screen.palette.selection);
                 let bar = scene::FindBar { query: &f.query, count: &count, mode: mode.label(), error: f.error.is_some(), notice: restricted.then_some(crate::cmdsel::NOTICE), progress: f.progress, selection: palette_selection };
                 let first_quad = frame.quads.len();
                 let (mode_rect, old) = if self.dropdown_views.old_style() {
