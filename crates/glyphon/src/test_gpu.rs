@@ -10,7 +10,7 @@ pub(crate) fn shared() -> (wgpu::Device, wgpu::Queue) {
         desc.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
         let instance = wgpu::Instance::new(desc);
         let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() }))
                 .unwrap();
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();

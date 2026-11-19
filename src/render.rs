@@ -2142,7 +2142,10 @@ pub(crate) mod test_gpu {
                 };
             }
             let instance = wgpu::Instance::new(desc);
-            let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
+            // The discrete GPU where there are two: some integrated drivers (an Intel UHD 770 on
+            // Vulkan and DX12) draw a stray text pixel now and then from identical commands.
+            let pick = wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() };
+            let adapter = pollster::block_on(instance.request_adapter(&pick)).unwrap();
             let made = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
             // Kept for the life of the process: dropping an instance is the racy call.
             let (device, queue) = made;
