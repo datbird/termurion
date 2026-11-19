@@ -602,6 +602,7 @@ mod tests {
     const OWN: &[(&str, &str, usize, &str)] = &[
         ("test_tmp.rs", "new_in", 2, "test-only scratch folders under the temp folder, made and removed by the test helper"),
         ("test_tmp.rs", "drop", 1, "test-only scratch folder removed by the test helper"),
+        ("render_pixel_tests.rs", "pixel_cases", 1, "test-only listing of this crate's own tests/fixtures/agents folder"),
         ("test_tmp.rs", "walk", 2, "test-only walk of this crate's own source folder for the temp-folder guard"),
         ("platform/unix/update_fetch.rs", "system_curl", 1, "the fixed system paths /usr/bin/curl and /bin/curl, never a user's path"),
         ("platform/unix/update_fetch.rs", "fetch", 1, "curl's working folder is the fixed root folder /, never a user's path"),
