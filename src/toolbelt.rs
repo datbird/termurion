@@ -272,14 +272,22 @@ pub fn all_tool_names(dynamic: &[DynamicTool]) -> Vec<String> {
             v.push(d.name.clone());
         }
     }
-    v.sort_by(|a, b| standard_cmp(a, b).then_with(|| a.cmp(b)));
-    v
+    // Each name lowered once, not once per comparison (the menu sync sorts these after every output).
+    let mut keyed: Vec<(Vec<char>, String)> = v.into_iter().map(|n| (n.to_lowercase().chars().collect(), n)).collect();
+    keyed.sort_by(|(ka, a), (kb, b)| standard_cmp_lowered(ka, kb).then_with(|| a.cmp(b)));
+    keyed.into_iter().map(|(_, n)| n).collect()
 }
 
 /// `localizedStandardCompare:` for plain names: case ignored, digit runs compared by value.
+#[cfg(test)]
 fn standard_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
     let (a, b): (Vec<char>, Vec<char>) = (a.to_lowercase().chars().collect(), b.to_lowercase().chars().collect());
+    standard_cmp_lowered(&a, &b)
+}
+
+/// `standard_cmp` on names already lowered into characters.
+fn standard_cmp_lowered(a: &[char], b: &[char]) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
     let (mut i, mut j) = (0, 0);
     while i < a.len() && j < b.len() {
         if a[i].is_ascii_digit() && b[j].is_ascii_digit() {
