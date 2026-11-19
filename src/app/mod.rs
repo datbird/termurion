@@ -451,6 +451,8 @@ struct Gpu {
     title_sent: crate::platform::window::SentTitle,
     /// The frame drawn last, for the frames only an effect's animation wants (`scene_cache`).
     scene: scene_cache::SceneCache<Frame>,
+    /// `App::waits` at this window's last paint.
+    painted_at: u64,
     // Dropped last, after the surface.
     window: Arc<Window>,
 }
@@ -642,9 +644,24 @@ impl PtyWake {
     }
 }
 
-/// Whether a paint parses owed output first: only where a window drag has no `about_to_wait`.
-fn redraw_parses(owed: bool) -> bool {
-    owed && cfg!(windows)
+/// Whether a paint parses owed output first: only on Windows, and only when no `about_to_wait`
+/// ran since the window's last paint (a title-bar drag's modal loop). Outside it the pacer paces
+/// the frames.
+fn redraw_parses(owed: bool, waited: bool) -> bool {
+    owed && !waited && cfg!(windows)
+}
+
+/// A window paints at `waits` (`App::waits`): whether it parses first, and its last paint is now.
+fn paint_parses(owed: bool, painted_at: &mut u64, waits: u64) -> bool {
+    let waited = std::mem::replace(painted_at, waits) != waits;
+    redraw_parses(owed, waited)
+}
+
+impl App {
+    /// `about_to_wait` ran since this window's last paint (always true off a window).
+    fn waited_since_paint(&self) -> bool {
+        self.gpu.as_ref().is_none_or(|g| g.painted_at != self.waits)
+    }
 }
 
 /// `Poll` while a slice left output unread, else the loop's normal control flow.
@@ -679,6 +696,9 @@ pub struct App {
     pump_from: usize,
     /// A slice ran out of time with output unread: the loop parses again after drawing.
     parse_owed: bool,
+    /// How many times `about_to_wait` ran. A window that painted at the count it shows now is in
+    /// Windows' title-bar drag, whose modal loop has no `about_to_wait`.
+    waits: u64,
     /// A primary selection read on its worker, waiting for the loop to paste it: (pane, text, paste argument).
     selection_paste: Arc<Mutex<Option<(PaneId, String, String)>>>,
     /// The foreground jobs of the panes' shells.
@@ -2564,6 +2584,8 @@ pub fn run() {
         pty_notify,
         pump_from: 0,
         parse_owed: false,
+        // Above a new window's `painted_at`: its first paint only draws.
+        waits: 1,
         jobs,
         proxy,
         menu_bar: None,
@@ -8067,6 +8089,8 @@ impl ApplicationHandler<UserEvent> for App {
 
     /// Runs the cursor blink when the focused pane's profile asks for it.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // The next paint is outside a drag: it only draws.
+        self.waits += 1;
         // A size request the window manager never answered (it kept the old size, with no
         // Resized at all): once the stale window is past, the panes follow the size it has.
         if self.gpu.as_ref().and_then(|g| g.layout).is_some_and(|p| pending_expired(p, std::time::Instant::now())) {
@@ -8615,7 +8639,14 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::CloseRequested => self.close_window(id, event_loop),
             // tmux keeps where Termurion's windows are (@origins).
-            WindowEvent::Moved(_) => self.tmux_save_all_windows(),
+            WindowEvent::Moved(_) => {
+                self.tmux_save_all_windows();
+                // The first paint of a move drag came after an `about_to_wait`, so it did not
+                // parse or ask for another. A move with none since starts the paint chain.
+                if redraw_parses(self.parse_owed, self.waited_since_paint()) {
+                    self.redraw_here();
+                }
+            }
             WindowEvent::Resized(size) => {
                 // Off Windows a size request applies at once (`adopt_requested_size`), so a Resized
                 // queued from before it is stale: the window's size now is the one to lay out for,
@@ -8730,7 +8761,8 @@ impl ApplicationHandler<UserEvent> for App {
                 // a paint there is where owed output gets its slice; while output is still owed
                 // it asks for the next paint, which parses again and draws. Before the guard
                 // below: the slice can close this window.
-                if redraw_parses(self.parse_owed) {
+                let (owed, waits) = (self.parse_owed, self.waits);
+                if self.gpu.as_mut().is_some_and(|g| paint_parses(owed, &mut g.painted_at, waits)) {
                     self.pump_panes(event_loop);
                     if self.parse_owed {
                         self.redraw_here();
@@ -8909,7 +8941,7 @@ fn init_gpu_on(window: Arc<Window>, display: &winit::event_loop::OwnedDisplayHan
     surface.configure(&device, &config);
     let mut renderer = Renderer::new(&device, &queue, format, &first_font(), FONT_PX * window.scale_factor() as f32);
     renderer.set_view_formats(crate::render_fx_gpu::view_formats_supported(&adapter));
-    Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, alpha: None, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), scene: Default::default(), window })
+    Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, alpha: None, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), scene: Default::default(), painted_at: 0, window })
 }
 
 /// Set when the event loop returns, so a confirmed quit's backstop leaves the teardown alone.
@@ -9439,17 +9471,56 @@ mod tests {
         assert!(!gate.turn_ended(false, true));
         pty();
         assert_eq!(sends(&sent), 0);
-        assert!(redraw_parses(true) == cfg!(windows), "only Windows parses in a paint");
-        assert!(!redraw_parses(false), "nothing owed: a paint only draws");
+        assert!(redraw_parses(true, false) == cfg!(windows), "only Windows parses in a paint");
+        assert!(!redraw_parses(false, false), "nothing owed: a paint only draws");
         assert!(gate.turn_ended(true, false), "the drag ends with nothing owed: one more read");
         pty();
         assert_eq!(sends(&sent), 1, "no wake stays swallowed");
         let src = include_str!("mod.rs");
         let arm = &src[src.find("WindowEvent::RedrawRequested => {\n                // Windows' title-bar").unwrap()..];
         let arm = &arm[..arm.find("self.replay_follow_focus").unwrap()];
-        assert!(arm.contains("redraw_parses(self.parse_owed)") && arm.contains("self.pump_panes(event_loop)") && arm.contains("self.redraw_here()"));
+        assert!(arm.contains("paint_parses(owed, &mut g.painted_at, waits)") && arm.contains("self.pump_panes(event_loop)") && arm.contains("self.redraw_here()"));
         let pump = &src[src.find("fn pump_panes(").unwrap()..];
         assert!(pump[..pump.find("fn next_pump_start").unwrap_or(pump.len()).min(6000)].contains("self.pty_wake.turn_ended(was_owed, self.parse_owed)"));
+    }
+
+    #[test]
+    fn only_a_paint_with_no_wait_since_the_last_parses() {
+        // A flood: output is owed on every paint. `waits` counts `about_to_wait` runs.
+        let (mut painted_at, mut waits) = (0, 1);
+        let mut paint = |waits: u64| paint_parses(true, &mut painted_at, waits);
+        // Outside a drag every paint follows an `about_to_wait`: the pacer's frames only draw.
+        for _ in 0..3 {
+            waits += 1;
+            assert!(!paint(waits), "an about_to_wait ran since the last paint: no slice");
+        }
+        // The drag's modal loop: paints and no `about_to_wait` between them.
+        assert!(paint(waits) == cfg!(windows), "no about_to_wait since the last paint: Windows slices");
+        assert!(paint(waits) == cfg!(windows), "the chain goes on while the drag lasts");
+        // The drag ends: the loop waits again, and the next paint only draws.
+        waits += 1;
+        assert!(!paint(waits));
+        // Nothing owed: no paint parses, drag or not.
+        let mut at = waits;
+        assert!(!paint_parses(false, &mut at, waits));
+        if !cfg!(windows) {
+            for (mut at, w) in [(0, 0), (1, 1), (5, 5), (0, 9)] {
+                assert!(!paint_parses(true, &mut at, w), "macOS and Linux never parse in a paint");
+            }
+        }
+    }
+
+    #[test]
+    fn about_to_wait_counts_before_it_parses_and_a_move_restarts_the_drag() {
+        let src = include_str!("mod.rs");
+        let wait = &src[src.find("    fn about_to_wait(&mut self").unwrap()..];
+        let count = wait.find("self.waits += 1;").expect("about_to_wait counts its runs");
+        assert!(count < wait.find("self.pump_panes(event_loop)").unwrap(), "counted before its own slice");
+        // A move drag's first paint follows an `about_to_wait`; a move with none since asks for the
+        // paint that slices.
+        let moved = &src[src.find("WindowEvent::Moved(_) => {").unwrap()..];
+        let moved = &moved[..moved.find("WindowEvent::Resized").unwrap()];
+        assert!(moved.contains("redraw_parses(self.parse_owed, self.waited_since_paint())") && moved.contains("self.redraw_here()"));
     }
 
     #[test]

@@ -1292,7 +1292,7 @@ pub(super) fn init_gpu_from(window: Arc<Window>, from: &(wgpu::Instance, wgpu::A
     surface.configure(device, &config);
     let mut renderer = Renderer::new(device, queue, format, &super::first_font(), FONT_PX * window.scale_factor() as f32);
     renderer.set_view_formats(crate::render_fx_gpu::view_formats_supported(adapter));
-    Ok(Gpu { surface, adapter: adapter.clone(), device: device.clone(), queue: queue.clone(), config, renderer, instance: instance.clone(), alpha: None, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), scene: Default::default(), window })
+    Ok(Gpu { surface, adapter: adapter.clone(), device: device.clone(), queue: queue.clone(), config, renderer, instance: instance.clone(), alpha: None, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), scene: Default::default(), painted_at: 0, window })
 }
 
 impl App {

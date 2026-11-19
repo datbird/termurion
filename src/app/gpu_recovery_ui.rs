@@ -54,6 +54,7 @@ fn rebuild_window_gpu(old: Gpu, primary: &GpuHandles, alpha: Option<&AlphaGpu>) 
         // The same window: its title is sent once more, which is harmless.
         title_sent: Default::default(),
         scene: Default::default(),
+        painted_at: 0,
         window,
     })
 }
