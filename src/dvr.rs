@@ -139,8 +139,8 @@ pub struct Dvr {
     /// A loaded recording: appends are ignored and it cannot be cleared.
     pub read_only: bool,
     frames: VecDeque<Frame>,
-    /// The rows of the last key frame (`lastFrame_`).
-    last: Option<Vec<Row<Cell>>>,
+    /// A key frame was stored (`lastFrame_`; only whether there is one is read here).
+    keyed: bool,
     /// The last committed frame's info (`lastInfo_`).
     last_info: Option<Info>,
     /// Diff-eligible frames seen (`count_`).
@@ -151,7 +151,7 @@ pub struct Dvr {
 
 impl Dvr {
     pub fn new(capacity: u64) -> Dvr {
-        Dvr { ring: Ring::new(capacity), read_only: false, frames: VecDeque::new(), last: None, last_info: None, count: 0, since_key: 0 }
+        Dvr { ring: Ring::new(capacity), read_only: false, frames: VecDeque::new(), keyed: false, last_info: None, count: 0, since_key: 0 }
     }
 
     /// Drops the frames whose blocks the ring freed.
@@ -165,6 +165,11 @@ impl Dvr {
     /// One screen image (`D:76-105`, `E:104-151`): `rows` are the visible lines, `clean`
     /// marks the lines unchanged since the last frame, `now_us` stamps the commit.
     pub fn append(&mut self, rows: &[Row<Cell>], clean: &[bool], cursor: (usize, usize), now_us: i64) -> Appended {
+        self.append_owned(rows.to_vec(), clean, cursor, now_us)
+    }
+
+    /// `append` taking the rows, so a frame keeps them without copying them again.
+    pub fn append_owned(&mut self, rows: Vec<Row<Cell>>, clean: &[bool], cursor: (usize, usize), now_us: i64) -> Appended {
         if self.read_only {
             return Appended::ReadOnly;
         }
@@ -190,7 +195,7 @@ impl Dvr {
         // Termurion adds "something is stored": iTerm2 would write a diff with no key frame
         // under it (and assert when decoding it) after evicting every frame.
         let eligible = clean_count as f64 > height as f64 * CLEAN_SHARE
-            && self.last.is_some()
+            && self.keyed
             && self.last_info.is_some_and(|i| i.cols == width && i.rows == height)
             && self.since_key < self.ring.capacity / 2
             && !self.frames.is_empty();
@@ -209,13 +214,13 @@ impl Dvr {
         }
         let (lines, len) = match kind {
             Kind::Key => {
-                self.last = Some(rows.to_vec());
+                self.keyed = true;
                 self.since_key = 0;
-                (Lines::Key(rows.to_vec()), length)
+                (Lines::Key(rows), length)
             }
             Kind::Diff => {
                 self.since_key += diff_len;
-                let dirty = rows.iter().enumerate().map(|(y, r)| (!is_clean(y)).then(|| r.clone())).collect();
+                let dirty = rows.into_iter().enumerate().map(|(y, r)| (!is_clean(y)).then_some(r)).collect();
                 (Lines::Diff(dirty), diff_len)
             }
         };

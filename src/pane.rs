@@ -1013,7 +1013,7 @@ impl Pane {
         let Some(c) = self.own_mut().replay_capture() else { return false };
         self.replay_at = Some(now);
         let stamp = if self.dvr.is_empty() { now_us } else { now_us.max(self.dvr.last_timestamp() + 1) };
-        matches!(self.dvr.append(&c.rows, &c.clean, c.cursor, stamp), dvr::Appended::Key | dvr::Appended::Diff)
+        matches!(self.dvr.append_owned(c.rows, &c.clean, c.cursor, stamp), dvr::Appended::Key | dvr::Appended::Diff)
     }
 
     /// What the tmux hook found since the last call.
