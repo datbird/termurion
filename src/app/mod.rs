@@ -5270,15 +5270,16 @@ impl App {
         {
             self.banners.set("save", format!("Could not save settings: {e}"));
         }
-        let p = self.store.default_profile().clone();
-        let mut normal = p.font("Normal Font");
-        let mut alt = p.bool("Use Non-ASCII Font").then(|| p.font("Non Ascii Font").family);
+        // Every frame asks, so the settings are read in place and the profile is copied only on a change.
+        let p = self.store.default_profile();
+        let (normal, alt) = (p.font("Normal Font"), p.bool("Use Non-ASCII Font").then(|| p.font("Non Ascii Font").family));
         // Re-measuring the font re-shapes all text, so only do it when a font setting changed.
-        // The settings are compared before the font names are looked up (every frame asks).
         let sig = format!("{normal:?} {alt:?} {} {} {} {} {} {} {}", p.float("Horizontal Spacing"), p.float("Vertical Spacing"), self.scale(), p.font("Badge Font").family, self.globals.string("FontsForGenerousRounding"), self.globals.int("MinimumWeightDifferenceForBoldFont"), self.globals.bool("EnableContextualAlternates"));
         if sig == self.font_sig {
             return;
         }
+        let p = p.clone();
+        let (mut normal, mut alt) = (normal, alt);
         self.font_sig = sig;
         // A held slice (Reduce Flicker) was drawn at the old cells: it never outlives a font or scale change.
         for p in self.panes.values_mut() {

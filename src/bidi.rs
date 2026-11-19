@@ -74,7 +74,8 @@ impl Rules {
 
 /// A strong right-to-left letter (class R or AL).
 pub fn is_rtl_letter(c: char) -> bool {
-    !c.is_ascii() && matches!(bidi_class(c), BidiClass::R | BidiClass::AL)
+    // The first R or AL character is U+05BE; everything under the Hebrew block skips the table.
+    c >= '\u{590}' && matches!(bidi_class(c), BidiClass::R | BidiClass::AL)
 }
 
 /// The explicit embedding, override and isolate controls.
@@ -254,6 +255,13 @@ pub fn visual_spans(o: &Order, logical: std::ops::Range<usize>) -> Vec<std::ops:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `is_rtl_letter` skips the class table under U+0590; that must agree with the table.
+    #[test]
+    fn nothing_under_the_hebrew_block_is_right_to_left() {
+        assert!(('\0'..'\u{590}').all(|c| !matches!(bidi_class(c), BidiClass::R | BidiClass::AL)));
+        assert!(is_rtl_letter('\u{5d0}') && is_rtl_letter('\u{627}') && !is_rtl_letter('a') && !is_rtl_letter('\u{2500}'));
+    }
 
     fn cells(s: &str) -> Vec<CellText> {
         s.chars().map(|c| CellText { text: c.to_string(), wide: false, spacer: false }).collect()

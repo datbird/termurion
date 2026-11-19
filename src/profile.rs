@@ -51,7 +51,9 @@ pub fn settle_default_font(os: &str, installed: &dyn Fn(&str) -> bool, monospace
 
 /// What a new profile's font is on this machine.
 pub fn default_font() -> &'static str {
-    default_font_for(crate::platform::OS_NAME, std::path::Path::new("/System/Library/Fonts/Monaco.ttf").exists())
+    // Asked on every frame; the file does not come and go while the app runs.
+    static MONACO: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    default_font_for(crate::platform::OS_NAME, *MONACO.get_or_init(|| std::path::Path::new("/System/Library/Fonts/Monaco.ttf").exists()))
 }
 
 /// Pixels per point at scale 1, the way this OS's own apps size type. macOS counts 72 points to

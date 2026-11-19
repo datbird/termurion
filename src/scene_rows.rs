@@ -78,9 +78,32 @@ pub struct RowKey {
 fn hash_parts(context: u64, cells: &[Cell], extra: u64) -> u64 {
     let mut h = rustc_hash::FxHasher::default();
     context.hash(&mut h);
-    cells.hash(&mut h);
+    hash_cells(cells, &mut h);
     extra.hash(&mut h);
     h.finish()
+}
+
+/// A color folded into 32 bits. Collisions only cost a compare: a hit always compares the cells.
+fn color_bits(c: alacritty_terminal::vte::ansi::Color) -> u32 {
+    use alacritty_terminal::vte::ansi::Color;
+    match c {
+        Color::Named(n) => 0x0300_0000 | n as u32,
+        Color::Spec(rgb) => 0x0100_0000 | (rgb.r as u32) << 16 | (rgb.g as u32) << 8 | rgb.b as u32,
+        Color::Indexed(i) => 0x0200_0000 | i as u32,
+    }
+}
+
+/// Hashes a row's cells in two writes each, not the derived field by field walk. This runs on
+/// every row that alacritty touched, so it is the hot part of finding a row.
+fn hash_cells(cells: &[Cell], h: &mut rustc_hash::FxHasher) {
+    cells.len().hash(h);
+    for c in cells {
+        h.write_u64(c.c as u64 | (c.flags.bits() as u64) << 32);
+        h.write_u64(color_bits(c.fg) as u64 | (color_bits(c.bg) as u64) << 32);
+        if let Some(extra) = &c.extra {
+            extra.hash(h);
+        }
+    }
 }
 
 impl RowKey {
@@ -397,5 +420,41 @@ mod tests {
         cache.end_frame();
         // Ten rows on screen: the cap falls to the floor and the unused entries go.
         assert_eq!(cache.len(), 10);
+    }
+
+    /// Each part of a cell moves the row's hash (not only its compare), so rows that differ in
+    /// one attribute land in different buckets.
+    #[test]
+    fn every_part_of_a_cell_changes_the_row_hash() {
+        use alacritty_terminal::term::cell::Flags;
+        use alacritty_terminal::vte::ansi::{Color, NamedColor};
+        let base = key().cells;
+        let h = |cells: &[Cell]| hash_parts(7, cells, 9);
+        let mut seen = vec![h(&base)];
+        let mut vary = |f: &dyn Fn(&mut Cell)| {
+            let mut cells = base.clone();
+            f(&mut cells[1]);
+            let v = h(&cells);
+            assert!(!seen.contains(&v), "a changed cell hashed like another row");
+            seen.push(v);
+            let mut cache = RowCache::new();
+            cache.put(RowKey { context: 7, cells: base.clone(), extra: 9 }, out());
+            assert!(cache.get_parts(7, &cells, 9).is_none());
+        };
+        vary(&|c| c.c = 'b');
+        vary(&|c| c.fg = Color::Spec(rgb(1, 2, 3)));
+        vary(&|c| c.fg = Color::Indexed(3));
+        vary(&|c| c.fg = Color::Named(NamedColor::Red));
+        vary(&|c| c.bg = Color::Spec(rgb(1, 2, 3)));
+        vary(&|c| c.bg = Color::Indexed(3));
+        vary(&|c| c.flags = Flags::BOLD);
+        vary(&|c| c.flags = Flags::UNDERLINE);
+        vary(&|c| c.push_zerowidth('\u{301}'));
+        vary(&|c| c.set_underline_color(Some(Color::Indexed(9))));
+        // A cell more or fewer is a different row.
+        let mut longer = base.clone();
+        longer.push(Cell::default());
+        assert_ne!(h(&base), h(&longer));
+        assert_ne!(h(&base), h(&base[..2]));
     }
 }

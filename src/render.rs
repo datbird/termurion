@@ -1636,7 +1636,13 @@ impl Renderer {
     fn double_strikes(&self, rows: &[TextRow]) -> Vec<TextRow> {
         use unicode_width::UnicodeWidthChar;
         let struck = |s: &Span| s.fake_bold && s.bold && !(s.icon || s.badge || s.toolbelt || s.prose);
-        let blank = |text: &str| text.chars().map(|c| " ".repeat(c.width().unwrap_or(0))).collect::<String>();
+        let blank = |text: &str| {
+            let mut out = String::with_capacity(text.len());
+            for c in text.chars() {
+                out.extend(std::iter::repeat_n(' ', c.width().unwrap_or(0)));
+            }
+            out
+        };
         let mut out = Vec::new();
         for row in rows {
             let face = self.face_of(row.face);
@@ -1656,7 +1662,7 @@ impl Renderer {
                 let hit = |s: &Span| struck(s) && fonts::double_strike_shift(fonts::MaskMode::from_code(s.mask), self.scale) == shift;
                 out.push(TextRow {
                     x: row.x + shift,
-                    spans: row.spans.iter().map(|s| if hit(s) { s.clone() } else { Span { text: blank(&s.text), bold: false, italic: false, fake_bold: false, ..s.clone() } }).collect(),
+                    spans: row.spans.iter().map(|s| if hit(s) { s.clone() } else { Span { text: blank(&s.text), color: s.color, bold: false, italic: false, alt_font: s.alt_font, icon: s.icon, prose: s.prose, badge: s.badge, toolbelt: s.toolbelt, fake_bold: false, ligatures: s.ligatures, mask: s.mask, font: s.font } }).collect(),
                     ..row.clone()
                 });
             }
