@@ -1155,6 +1155,7 @@ impl Renderer {
         let family = if self.has_family(&resolved) { resolved } else { "Arial".into() };
         if family != self.badge_family {
             self.look += 1;
+            self.buffers.clear();
             self.badge_family = family;
         }
     }
@@ -1172,6 +1173,7 @@ impl Renderer {
         let family = if self.has_family(&resolved) { resolved } else { "Consolas".into() };
         if family != self.toolbelt_family {
             self.look += 1;
+            self.buffers.clear();
             self.toolbelt_family = family;
         }
         self.toolbelt_widths.clear();
@@ -1181,7 +1183,10 @@ impl Renderer {
     /// (`smallSystemFontSize`).
     pub fn set_toolbelt_size(&mut self, points: f32) {
         let pt = if points > 0.0 { points } else { 11.0 };
-        self.look += u64::from(pt != self.toolbelt_pt);
+        if pt != self.toolbelt_pt {
+            self.look += 1;
+            self.buffers.clear();
+        }
         self.toolbelt_pt = pt;
     }
 
@@ -1417,7 +1422,8 @@ impl Renderer {
             // Let go of every glyph the kept rows hold. With no rows nothing is allocated, so this
             // cannot fail.
             self.rows.clear();
-            let _ = self.rows.prepare(&self.device, &self.queue, &mut self.font_system, &mut self.atlas, &self.viewport, [], &mut self.swash);
+            let released = self.rows.prepare(&self.device, &self.queue, &mut self.font_system, &mut self.atlas, &self.viewport, [], &mut self.swash, |_| None);
+            debug_assert!(released.is_ok(), "releasing the kept rows failed: {released:?}");
         }
     }
 
@@ -1847,9 +1853,9 @@ impl Renderer {
             // The rows, then the box and block glyphs, both on one atlas: when either grows it, the
             // rows prepare again, until neither moves it.
             loop {
-                self.rows.prepare(&self.device, &self.queue, &mut self.font_system, &mut self.atlas, &self.viewport, row_areas(), &mut self.swash).map_err(|e| format!("text prepare: {e:?}"))?;
+                self.rows.prepare(&self.device, &self.queue, &mut self.font_system, &mut self.atlas, &self.viewport, row_areas(), &mut self.swash, &rasterize).map_err(|e| format!("text prepare: {e:?}"))?;
                 let seen = self.atlas.generation();
-                self.text.prepare_with_custom(&self.device, &self.queue, &mut self.font_system, &mut self.atlas, &self.viewport, glyph_areas.clone(), &mut self.swash, rasterize).map_err(|e| format!("text prepare: {e:?}"))?;
+                self.text.prepare_with_custom(&self.device, &self.queue, &mut self.font_system, &mut self.atlas, &self.viewport, glyph_areas.clone(), &mut self.swash, &rasterize).map_err(|e| format!("text prepare: {e:?}"))?;
                 if self.atlas.generation() == seen {
                     break;
                 }

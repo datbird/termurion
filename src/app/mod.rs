@@ -6810,9 +6810,8 @@ impl App {
     /// Advanced switches, the renderer's face metrics and the window's scale.
     pub(super) fn draw_prefs(&mut self) -> scene::DrawPrefs {
         // The same switch keeps the renderer's prepared rows (a drawing bug can be turned off here).
-        let reuse_rows = self.globals.bool("RedrawOnlyChangedRows");
         if let Some(g) = self.gpu.as_mut() {
-            g.renderer.set_row_instances(reuse_rows);
+            apply_row_switch(&mut g.renderer, &self.globals);
         }
         let metrics = self.gpu.as_mut().map(|g| g.renderer.underline_metrics()).unwrap_or(scene::DrawPrefs::default().metrics);
         let fx_cursor = self.gpu.as_ref().and_then(|g| g.fx.as_ref()).and_then(|f| f.cursor_color());
@@ -9213,6 +9212,11 @@ impl App {
         }
         self.windows.parked().find_map(|(_, s)| s.gpu.as_ref().filter(|g| g.window.id() == id).and_then(|g| menu::hwnd_of(&g.window)))
     }
+}
+
+/// Applies `RedrawOnlyChangedRows` to a renderer.
+pub(crate) fn apply_row_switch(renderer: &mut Renderer, globals: &Globals) {
+    renderer.set_row_instances(globals.bool("RedrawOnlyChangedRows"));
 }
 
 #[cfg(test)]

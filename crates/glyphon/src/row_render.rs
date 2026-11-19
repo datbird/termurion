@@ -204,6 +204,7 @@ impl RowRenderer {
         viewport: &Viewport,
         rows: impl IntoIterator<Item = RowArea<'a>>,
         cache: &mut SwashCache,
+        mut rasterize_custom_glyph: impl FnMut(RasterizeCustomGlyphRequest) -> Option<RasterizedCustomGlyph>,
     ) -> Result<(), PrepareError> {
         let rows: Vec<RowArea<'a>> = rows.into_iter().collect();
         for key in self.unreleased.drain(..) {
@@ -235,6 +236,7 @@ impl RowRenderer {
                 &rows,
                 cache,
                 &mut uniforms,
+                &mut rasterize_custom_glyph,
             );
             if let Err(e) = prepared {
                 self.draws.clear();
@@ -269,6 +271,7 @@ impl RowRenderer {
         rows: &[RowArea],
         cache: &mut SwashCache,
         uniforms: &mut Vec<RowUniform>,
+        rasterize_custom_glyph: &mut impl FnMut(RasterizeCustomGlyphRequest) -> Option<RasterizedCustomGlyph>,
     ) -> Result<(), PrepareError> {
         let state = State { device, queue };
         let resolution = viewport.resolution();
@@ -310,7 +313,7 @@ impl RowRenderer {
                         cache: &mut *cache,
                         font_system: &mut *font_system,
                     };
-                    let mut entry = prepare_row(&state, &mut system, row)?;
+                    let mut entry = prepare_row(&state, &mut system, row, &mut *rasterize_custom_glyph)?;
                     entry.frame = frame;
                     self.prepared_rows += 1;
                     for &k in &entry.keys {
@@ -473,6 +476,7 @@ fn prepare_row(
     state: &State,
     system: &mut GlyphSystem,
     row: &RowArea,
+    rasterize_custom_glyph: &mut impl FnMut(RasterizeCustomGlyphRequest) -> Option<RasterizedCustomGlyph>,
 ) -> Result<Entry, PrepareError> {
     let mut instances = Vec::new();
     let mut run_ends = Vec::new();
@@ -510,7 +514,7 @@ fn prepare_row(
                 GlyphBounds::UNBOUNDED,
                 |system, _| text_glyph_image(system, physical.cache_key),
                 zero_depth,
-                no_custom_glyph,
+                &mut *rasterize_custom_glyph,
             )? {
                 instances.push(instance);
                 keys.push(GlyphKey(cache_key));
@@ -528,10 +532,6 @@ fn prepare_row(
         slot: None,
         frame: 0,
     })
-}
-
-fn no_custom_glyph(_: RasterizeCustomGlyphRequest) -> Option<RasterizedCustomGlyph> {
-    None
 }
 
 fn instance_bytes(instances: &[GlyphToRender]) -> &[u8] {
@@ -560,7 +560,7 @@ fn table_buffer(device: &Device, rows: u32, stride: u64) -> GpuBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Attrs, Cache, Family, Metrics, Resolution, Shaping, TextArea, TextRenderer};
+    use crate::{Attrs, Cache, ContentType, CustomGlyph, Family, Metrics, Resolution, Shaping, TextArea, TextRenderer};
     use wgpu::TextureFormat;
 
     const W: u32 = 320;
@@ -568,6 +568,10 @@ mod tests {
     const FORMAT: TextureFormat = TextureFormat::Rgba8UnormSrgb;
     const MONO: &str = "Termurion Wide Bold Test";
     const RTL: &str = "Termurion RTL Test";
+
+    fn no_custom_glyph(_: RasterizeCustomGlyphRequest) -> Option<RasterizedCustomGlyph> {
+        None
+    }
 
     struct Rig {
         device: Device,
@@ -615,6 +619,14 @@ mod tests {
         }
 
         fn prepare_rows<'a>(&mut self, rows: impl IntoIterator<Item = RowArea<'a>>) {
+            self.prepare_rows_with(rows, no_custom_glyph);
+        }
+
+        fn prepare_rows_with<'a>(
+            &mut self,
+            rows: impl IntoIterator<Item = RowArea<'a>>,
+            rasterize: impl FnMut(RasterizeCustomGlyphRequest) -> Option<RasterizedCustomGlyph>,
+        ) {
             self.rows
                 .prepare(
                     &self.device,
@@ -624,6 +636,7 @@ mod tests {
                     &self.viewport,
                     rows,
                     &mut self.swash,
+                    rasterize,
                 )
                 .unwrap();
         }
@@ -958,5 +971,74 @@ mod tests {
         let text = rig.draw_text(areas(pane));
         assert_same(&rows, &text, "culled lines");
         assert_eq!(rig.rows.prepared_rows(), 1, "a culled row was prepared");
+    }
+
+    fn solid(req: RasterizeCustomGlyphRequest) -> Option<RasterizedCustomGlyph> {
+        Some(RasterizedCustomGlyph {
+            data: vec![255; req.width as usize * req.height as usize],
+            content_type: ContentType::Mask,
+        })
+    }
+
+    /// Growth from the rows re-uploads every cached glyph, custom ones too, so it needs the
+    /// caller's rasterizer (a box glyph cached by TextRenderer used to panic here).
+    #[test]
+    fn growth_from_the_rows_keeps_custom_glyphs() {
+        let mut rig = Rig::new();
+        let blank = rig.shape("", MONO);
+        let glyphs = [CustomGlyph {
+            id: 7,
+            width: 12.0,
+            height: 12.0,
+            snap_to_physical_pixel: true,
+            ..Default::default()
+        }];
+        let mut text = TextRenderer::new(&mut rig.atlas, &rig.device, MultisampleState::default(), None);
+        let area = TextArea {
+            buffer: &blank,
+            left: 0.0,
+            top: 0.0,
+            scale: 1.0,
+            bounds: whole(),
+            default_color: Color::rgb(255, 255, 255),
+            custom_glyphs: &glyphs,
+        };
+        text.prepare_with_custom(&rig.device, &rig.queue, &mut rig.font_system, &mut rig.atlas, &rig.viewport, [area], &mut rig.swash, solid)
+            .unwrap();
+        let mut big = Buffer::new(&mut rig.font_system, Metrics::new(90.0, 100.0));
+        big.set_text(
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+            &Attrs::new().family(Family::Name(MONO)),
+            Shaping::Advanced,
+            None,
+        );
+        big.shape_until_scroll(&mut rig.font_system, false);
+        let generation = rig.atlas.generation();
+        rig.prepare_rows_with([row(1, &big, 0.0, 0.0, whole())], solid);
+        assert!(rig.atlas.generation() > generation, "the atlas did not grow");
+    }
+
+    /// A kept row that is wanted but culled still holds its glyphs; a full atlas must let them go
+    /// and try again rather than fail.
+    #[test]
+    fn a_full_atlas_is_retried_after_dropping_unreached_rows() {
+        let mut rig = Rig::new();
+        rig.atlas.set_max_size(256);
+        let big = |rig: &mut Rig, text: &str| {
+            let mut buf = Buffer::new(&mut rig.font_system, Metrics::new(100.0, 110.0));
+            buf.set_text(text, &Attrs::new().family(Family::Name(MONO)), Shaping::Advanced, None);
+            buf.shape_until_scroll(&mut rig.font_system, false);
+            buf
+        };
+        let first = big(&mut rig, "abcdefghi");
+        let second = big(&mut rig, "nopqrsuvx");
+        rig.draw_rows([row(1, &first, 0.0, 0.0, whole())]);
+        rig.atlas.trim();
+        let off = b(0, 500, W as i32, 600);
+        let areas = || [row(1, &first, 0.0, 0.0, off), row(2, &second, 0.0, 0.0, whole())];
+        let rows = rig.draw_rows(areas());
+        let text = rig.draw_text(areas());
+        assert_same(&rows, &text, "after the retry");
+        assert_eq!(rig.atlas.generation(), 0, "the atlas grew past its cap");
     }
 }

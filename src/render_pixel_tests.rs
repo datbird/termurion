@@ -397,3 +397,72 @@ fn row_instances_follow_every_kind_of_change() {
         step("a bigger font", &mut on, &mut off, &s, size, true);
     }
 }
+
+#[test]
+fn draw_prefs_turns_the_row_path_off() {
+    let probe = fresh(false);
+    let case = pixel_cases(&probe).into_iter().next().unwrap();
+    let mut globals = crate::globals::Globals::empty(std::path::Path::new("none.toml"));
+    globals.set("RedrawOnlyChangedRows", toml::Value::Boolean(false));
+    let mut r = fresh(false);
+    crate::app::apply_row_switch(&mut r, &globals);
+    pixels(&mut r, &case);
+    assert_eq!(r.row_prepares(), 0, "the setting off still drew through the row path");
+    globals.set("RedrawOnlyChangedRows", toml::Value::Boolean(true));
+    crate::app::apply_row_switch(&mut r, &globals);
+    pixels(&mut r, &case);
+    assert!(r.row_prepares() > 0);
+}
+
+/// A font change must reshape the badge and toolbelt rows, not keep the old text.
+#[test]
+fn a_badge_or_toolbelt_font_change_reshapes_the_rows() {
+    for toolbelt in [false, true] {
+        let mut s = span("Badge Text 123");
+        s.badge = !toolbelt;
+        s.toolbelt = toolbelt;
+        let clip = crate::layout::Rect { x: 0.0, y: 0.0, w: 300.0, h: 40.0 };
+        let mut r = crate::scene::TextRow { x: 4.0, y: 4.0, spans: vec![s].into(), clip, scale: 1.0, face: crate::render::DEFAULT_FACE };
+        r.scale = 1.0;
+        let frame = text_frame(vec![r]);
+        let set = |r: &mut Renderer| {
+            if toolbelt {
+                r.set_toolbelt_family(FACE);
+                r.set_toolbelt_size(20.0);
+            } else {
+                r.set_badge_family(FACE);
+            }
+        };
+        let mut changed = fresh(false);
+        changed.draw_offscreen(&frame, 300, 40).unwrap();
+        set(&mut changed);
+        let got = changed.draw_offscreen(&frame, 300, 40).unwrap();
+        let mut start = fresh(false);
+        set(&mut start);
+        assert_same(if toolbelt { "toolbelt font change" } else { "badge font change" }, &got, &start.draw_offscreen(&frame, 300, 40).unwrap(), 300);
+    }
+}
+
+/// Box glyphs cached on the atlas, then rows that grow it: growth re-uploads the box glyphs, so
+/// the row path needs the box rasterizer (it panicked without it).
+#[test]
+fn growth_from_the_rows_keeps_box_glyphs() {
+    for vf in [true, false] {
+        if !can_run(vf) {
+            continue;
+        }
+        let (mut on, mut off) = (rows(vf, true), rows(vf, false));
+        let size = grid_size(&on, 100.0, 30.0);
+        let mut s = crate::screen::Screen::new(100, 30);
+        s.feed("\u{250c}\u{2500}\u{2500}\u{2500}\u{2510}\r\n\u{2502} a \u{2502}\r\n\u{2514}\u{2500}\u{2500}\u{2500}\u{2518} \u{2588}\u{2591}".as_bytes());
+        let boxes = screen_case("boxes", &on, &s, size, true);
+        assert!(!boxes.frame.glyphs.is_empty(), "the frame has no box glyphs");
+        same(&mut on, &mut off, &boxes, vf);
+        let generation = on.atlas.generation();
+        for c in pixel_cases(&on).iter().filter(|c| is_flood(c)).take(40) {
+            same(&mut on, &mut off, c, vf);
+        }
+        assert!(on.atlas.generation() != generation, "the flood never grew the atlas");
+        same(&mut on, &mut off, &boxes, vf);
+    }
+}
