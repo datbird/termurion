@@ -991,6 +991,12 @@ impl Pane {
         crate::cadence::interval(state, prefs)
     }
 
+    /// True when the pane cannot record a frame at `now` whatever its gap: a tmux gateway, or a
+    /// capture less than `floor` (`cadence::shortest_interval`) ago.
+    pub fn replay_waits(&self, now: Instant, floor: Duration) -> bool {
+        self.gateway || self.replay_at.is_some_and(|t| now.saturating_duration_since(t) < floor)
+    }
+
     /// Records a frame of the pane's own screen, never a view (`PS:1470-1480`), when it
     /// changed and `gap` has passed since the last capture. True when one was stored. A frame
     /// the recorder could not hold is not captured at all (its damage is dropped). Stamps
@@ -2800,6 +2806,30 @@ mod tests {
 
     /// `PS:6586`: a pane is idle after its own idle time plus one second, so the frame gap
     /// follows the pane's `idle_time`, not a constant.
+    /// A pane captured less than the floor ago waits without any capture work: its damage is
+    /// left for the frame after the gap.
+    #[test]
+    fn a_pane_inside_the_floor_does_no_capture_work() {
+        let floor = crate::cadence::shortest_interval(&crate::cadence::Prefs::default());
+        let mut p = Pane::tmux(8, 1, 6, 20, 4);
+        p.dvr = crate::dvr::Dvr::new(capacity_for(4));
+        let t0 = Instant::now();
+        assert!(!p.replay_waits(t0, floor), "a pane that never captured may record");
+        p.tmux_io().unwrap().push_output(b"hi");
+        p.pump();
+        assert!(p.record_frame(t0, 1_000, floor));
+        p.tmux_io().unwrap().push_output(b" more");
+        p.pump();
+        assert!(p.replay_waits(t0 + floor / 2, floor));
+        assert!(!p.replay_waits(t0 + floor, floor));
+        // The check reads nothing, so the damage waited for the frame after the floor.
+        assert!(p.record_frame(t0 + floor, 2_000, floor), "the damage waited");
+        assert_eq!(p.dvr.timestamps(), vec![1_000, 2_000]);
+        let mut g = Pane::tmux(9, 1, 7, 20, 4);
+        g.gateway = true;
+        assert!(g.replay_waits(t0, floor), "a gateway never records");
+    }
+
     #[test]
     fn replay_gap_reads_the_idle_time() {
         use crate::cadence::frame_gap;

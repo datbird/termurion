@@ -1104,6 +1104,7 @@ impl Screen {
         self.bump_ticks();
         // A write outside the parser is not in alacritty's damage.
         self.render_dirty.full = true;
+        self.replay_dirty.full = true;
         &mut self.term
     }
 
@@ -1294,13 +1295,15 @@ impl Screen {
             Some(mut d) if !scrolled && same_size => {
                 // alacritty damages the cursor's cell on every read; iTerm2 marks the cursor
                 // line only when the cursor moved, else when the line itself changed.
+                // A line alacritty did not damage is as captured (a write outside the parser
+                // reads as full damage), so only the cursor's line is compared.
                 if !moved {
-                    d[cursor.1] = false;
-                    if !d.iter().any(|x| *x) && same(cursor.1) {
+                    d[cursor.1] = !same(cursor.1);
+                    if !d.iter().any(|x| *x) {
                         return None;
                     }
                 }
-                (0..lines).map(|y| !d[y] && same(y)).collect()
+                d.iter().map(|x| !x).collect()
             }
             _ => {
                 if same_size && !moved && (0..lines).all(same) {
@@ -1360,12 +1363,14 @@ impl Screen {
     /// through `term_mut` (`raw_grid_writes_mark_the_rows`).
     pub(crate) fn edit_grid(&mut self) -> &mut alacritty_terminal::grid::Grid<Cell> {
         self.render_dirty.full = true;
+        self.replay_dirty.full = true;
         self.term.grid_mut()
     }
 
     /// `edit_grid` for the main screen's grid, also while a full-screen app has the other one.
     pub(crate) fn edit_primary_grid(&mut self) -> &mut alacritty_terminal::grid::Grid<Cell> {
         self.render_dirty.full = true;
+        self.replay_dirty.full = true;
         self.term.primary_grid_mut()
     }
 
@@ -4639,6 +4644,88 @@ mod tests {
         let c = s.replay_capture().expect("back to the main screen");
         assert_eq!(text(&c.rows[3]), "z");
         assert_eq!(c.cursor, (1, 3), "the main grid's cursor");
+    }
+
+    /// `replay_capture` as it was before it trusted the damage: every line alacritty did not
+    /// damage was compared against the last capture.
+    fn compared_capture(s: &mut Screen) -> Option<Capture> {
+        let (lines, cols) = (s.term.screen_lines(), s.term.columns());
+        let point = s.term.grid().cursor.point;
+        let cursor = (point.column.0, (point.line.0.max(0) as usize).min(lines.saturating_sub(1)));
+        let scrolled = s.term.grid().display_offset() > 0;
+        s.drain_damage();
+        let seen = std::mem::take(&mut s.replay_dirty);
+        let damaged = (!seen.full && seen.rows.len() == lines).then_some(seen.rows);
+        let same_size = s.replay_rows.len() == lines && s.replay_rows.first().is_some_and(|r| r.len() == cols);
+        let moved = s.replay_cursor != Some(cursor);
+        let grid = s.term.grid();
+        let same = |y: usize| grid[Line(y as i32)] == s.replay_rows[y];
+        let clean: Vec<bool> = match damaged {
+            Some(mut d) if !scrolled && same_size => {
+                if !moved {
+                    d[cursor.1] = false;
+                    if !d.iter().any(|x| *x) && same(cursor.1) {
+                        return None;
+                    }
+                }
+                (0..lines).map(|y| !d[y] && same(y)).collect()
+            }
+            _ => {
+                if same_size && !moved && (0..lines).all(same) {
+                    return None;
+                }
+                vec![false; lines]
+            }
+        };
+        let rows: Vec<Row<Cell>> = (0..lines).map(|y| grid[Line(y as i32)].clone()).collect();
+        s.replay_rows.clone_from(&rows);
+        s.replay_cursor = Some(cursor);
+        Some(Capture { rows, clean, cursor })
+    }
+
+    /// Frames with damaged rows record the same rows, clean lines and cursor as when every
+    /// undamaged line was compared: Claude Code's redraws, scrolling, writes outside the
+    /// parser, the alternate screen, a resize.
+    #[test]
+    fn capture_from_damage_matches_the_compared_capture() {
+        let (mut a, mut b) = (Screen::with_scrollback(40, 8, 100), Screen::with_scrollback(40, 8, 100));
+        let bar = "\u{2500}".repeat(36);
+        let mut steps: Vec<Vec<u8>> = vec![b"\r\n\r\n\r\n\r\n".to_vec()];
+        for tick in 0..24 {
+            let mut out = String::from("\r\x1b[2A\x1b[J");
+            if tick % 2 == 0 {
+                out.push_str(&format!("answer line {tick}\r\n"));
+            }
+            out.push_str(&format!("{} Thinking ({tick}s)\r\n\u{256d}{bar}\u{256e}\r\n\u{2502} > {}\u{2502}\r\n\u{2570}{bar}\u{256f}\x1b[1A\r\x1b[4C", ["*", "+", "x"][tick % 3], " ".repeat(33)));
+            steps.push(out.into_bytes());
+            if tick % 5 == 0 {
+                steps.push(b"\x1b[3;5Hmid\x1b[8;5H".to_vec());
+            }
+        }
+        steps.extend([b"y\x08".to_vec(), b"\x1b[?1049h\x1b[Halt".to_vec(), b"\x1b[?1049l".to_vec(), b"".to_vec(), b"\x1b[2;1H\x1b[K".to_vec()]);
+        for (i, bytes) in steps.iter().enumerate() {
+            for s in [&mut a, &mut b] {
+                s.feed(bytes);
+                if i == 7 {
+                    // A write outside the parser.
+                    let grid = s.edit_grid();
+                    grid[Line(1)][Column(0)].c = 'Q';
+                }
+                if i == 12 {
+                    s.resize(42, 9);
+                }
+            }
+            let (got, want) = (a.replay_capture(), compared_capture(&mut b));
+            match (got, want) {
+                (None, None) => {}
+                (Some(g), Some(w)) => {
+                    assert_eq!(g.clean, w.clean, "step {i}: clean lines");
+                    assert_eq!(g.cursor, w.cursor, "step {i}: cursor");
+                    assert!(g.rows == w.rows, "step {i}: rows");
+                }
+                (g, w) => panic!("step {i}: a frame {} vs {}", g.is_some(), w.is_some()),
+            }
+        }
     }
 
     /// `TV:2910-2917`: a frame is saved only when something is dirty. alacritty reports full

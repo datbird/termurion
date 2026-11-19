@@ -4954,12 +4954,16 @@ impl App {
     pub(super) fn record_replay_frames(&mut self) {
         let now = Instant::now();
         let now_us = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_micros() as i64);
-        let visible = self.replay_visible_panes();
         let prefs = self.cadence_prefs();
+        // No gap is shorter than this: a pane that captured within it cannot record yet, so
+        // nothing about it is worked out (and no pane at all most of the time).
+        let floor = crate::cadence::shortest_interval(&prefs);
+        if self.panes.values().all(|p| p.replay_waits(now, floor)) {
+            return;
+        }
+        let visible = self.replay_visible_panes();
         for (id, p) in self.panes.iter_mut() {
-            // No gap is shorter than 1 ms (`interval`'s floor): a pane that captured within it
-            // cannot record yet, so its gap is not worked out.
-            if p.replay_at.is_some_and(|t| now.saturating_duration_since(t) < Duration::from_millis(1)) {
+            if p.replay_waits(now, floor) {
                 continue;
             }
             let gap = p.replay_gap(now, visible.contains(id), self.activity.get(id).and_then(|a| a.last_output()), &prefs, false);
@@ -4968,8 +4972,8 @@ impl App {
     }
 
     /// The panes of the tab in front of each window on screen (iTerm2's
-    /// `sessionBelongsToVisibleTab` with a visible, not minimized window).
-    fn replay_visible_panes(&self) -> std::collections::HashSet<PaneId> {
+    /// `sessionBelongsToVisibleTab` with a visible, not minimized window). A few panes, so a list.
+    fn replay_visible_panes(&self) -> Vec<PaneId> {
         let on_screen = self.gpu.as_ref().is_some_and(|g| g.window.is_minimized() != Some(true) && g.window.is_visible() != Some(false));
         let current = self.tabs.get(self.active).filter(|_| on_screen);
         current.into_iter().chain(self.parked_front_tabs()).flat_map(|t| t.layout.panes()).collect()

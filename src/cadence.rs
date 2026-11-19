@@ -124,6 +124,20 @@ pub fn interval(s: State, p: &Prefs) -> Duration {
     Duration::from_secs_f64(secs.max(0.002) - 0.001)
 }
 
+/// The shortest gap `interval` gives any state under `p` (low power only lengthens it).
+pub fn shortest_interval(p: &Prefs) -> Duration {
+    let rate = |fps: f64| 1.0 / fps.max(1.0);
+    // Each branch's gap as `interval` finishes it, so an odd setting (NaN) floors the same way.
+    // The adaptive rates only count with Maximize Throughput on.
+    let adaptive = if p.maximize_throughput { [rate(p.maximum_frame_rate), 1.0 / p.metal_slow_frame_rate] } else { [1.0, 1.0] };
+    [1.0, rate(p.active_update_cadence)]
+        .into_iter()
+        .chain(adaptive)
+        .map(|secs: f64| Duration::from_secs_f64(secs.max(0.002) - 0.001))
+        .min()
+        .unwrap_or_default()
+}
+
 /// A window has one surface, so it draws at the fastest rate any of its visible panes asks for
 /// (none: the background period).
 pub fn window_interval(states: &[State], p: &Prefs) -> Duration {
@@ -284,6 +298,34 @@ mod tests {
         assert_eq!(us(interval(State { alt_screen: true, ..s }, &zero)), 999_000, "MAX(1, rate)");
         let huge = Prefs { maximum_frame_rate: 100_000.0, ..p };
         assert_eq!(us(interval(s, &huge)), 1_000, "never below 1 ms");
+    }
+
+    /// The replay recorder skips a pane captured less than this ago without working out its
+    /// gap, so no state may give a shorter one.
+    #[test]
+    fn no_state_is_faster_than_the_shortest_interval() {
+        let base = Prefs::default();
+        let prefs = [
+            base,
+            Prefs { maximum_frame_rate: 120.0, ..base },
+            Prefs { active_update_cadence: 240.0, ..base },
+            Prefs { metal_slow_frame_rate: 500.0, ..base },
+            Prefs { metal_slow_frame_rate: f64::NAN, ..base },
+            Prefs { maximum_frame_rate: 100_000.0, maximize_throughput: false, ..base },
+            Prefs { active_update_cadence: 0.0, maximum_frame_rate: 0.5, metal_slow_frame_rate: 2.0, ..base },
+        ];
+        for p in prefs {
+            let floor = shortest_interval(&p);
+            let mut fastest = Duration::MAX;
+            for bits in 0..32u32 {
+                for throughput in [0, 500, 10_000, 50_000] {
+                    let s = State { active: bits & 1 != 0, idle: bits & 2 != 0, visible: bits & 4 != 0, alt_screen: bits & 8 != 0, throughput, low_power: bits & 16 != 0 };
+                    fastest = fastest.min(interval(s, &p));
+                }
+            }
+            assert!(floor <= fastest, "{p:?}: floor {floor:?} above the fastest state {fastest:?}");
+            assert_eq!(floor, fastest, "{p:?}: the floor is the fastest state");
+        }
     }
 
     #[test]
