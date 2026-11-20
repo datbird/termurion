@@ -270,6 +270,19 @@ fn ground_run(bytes: &[u8]) -> usize {
     memchr::memchr2(0x1b, 0x05, bytes).unwrap_or(bytes.len())
 }
 
+/// How many bytes at the front of `bytes` are ASCII (below 0x80).
+fn ascii_prefix(bytes: &[u8]) -> usize {
+    const HIGH: u128 = u128::from_ne_bytes([0x80; 16]);
+    let mut at = 0;
+    while let Some(block) = bytes.get(at..at + 16) {
+        if u128::from_ne_bytes(block.try_into().unwrap()) & HIGH != 0 {
+            break;
+        }
+        at += 16;
+    }
+    at + bytes[at..].iter().take_while(|b| **b < 0x80).count()
+}
+
 /// How many bytes at the front of `bytes` are the digits, `;` and `:` of a control sequence's
 /// parameters: they only add to the parameters, whatever state the parser is in.
 fn csi_param_run(bytes: &[u8]) -> usize {
@@ -325,10 +338,21 @@ impl Scanner {
             // byte that ends them, so it never holds a string's text.
             let stop: &[u8] = match before {
                 VState::Ground => {
-                    let n = ground_run(&bytes[i..]);
-                    if n > 0 {
-                        self.parser.advance(&mut self.tap, &bytes[i..i + n]);
-                        i += n;
+                    let run = ground_run(&bytes[i..]);
+                    if run > 0 {
+                        let text = ascii_prefix(&bytes[i..i + run]);
+                        let taken = if text > 0 {
+                            // ASCII leaves the parser between sequences and reaches the tap only as
+                            // ENQ, which is not in this run. The parser is given its first byte, which
+                            // ends a character half held from the last read, and not the rest.
+                            self.parser.advance(&mut self.tap, &bytes[i..=i]);
+                            text
+                        } else {
+                            let wide = bytes[i..i + run].iter().take_while(|b| **b >= 0x80).count();
+                            self.parser.advance(&mut self.tap, &bytes[i..i + wide]);
+                            wide
+                        };
+                        i += taken;
                         continue;
                     }
                     &[]
@@ -987,7 +1011,7 @@ mod tests {
             *seed
         };
         const PIECES: &[&[u8]] = &[
-            b"plain text here", b"\n", b"\r\n", b"\t", b"caf\xc3\xa9 \xe3\x81\x82", b"\xc3", b"\x80", b"\x9b", b"\xff", b"\x05", b"\x07", b"\x18", b"\x1a",
+            b"plain text here", b"a much longer run of plain text that is over thirty two bytes long, with 12345", b"\n", b"\r\n", b"\t", b"caf\xc3\xa9 \xe3\x81\x82", b"\xc3", b"\x80", b"\x9b", b"\xff", b"\x05", b"\x07", b"\x18", b"\x1a",
             b"\x1b[38;2;10;20;30m", b"\x1b[0m", b"\x1b[3J", b"\x1b[5n", b"\x1b[20t", b"\x1b[?1049h", b"\x1b[3;4H", b"\x1b[2b", b"\x1b[c", b"\x1b[", b"\x1b", b"\x7f", b"\x1b[1;2;3:4m", b"\x1b[?25l", b"\x1b[38:2::1:2:3m", b"\x1b[99999999999;1m", b"\x1b[;;;;m", b"\x1b[1\x18", b"\x1b[1\x1b[2m", b"\x1b[1?2m", b"\x1b[12", b";34",
             b"\x1b]0;a title\x07", b"\x1b]7;file://h/dir\x1b\\", b"\x1b]1337;SetMark\x07", b"\x1b]52;c;aGk=\x07", b"\x1b]", b"\x1bP$qm\x1b\\", b"\x1bP1000p", b"\x1b_Gi=1;AAAA\x1b\\", b"\x1bX junk \x1b\\", b"\x1b\\",
         ];
@@ -1007,6 +1031,11 @@ mod tests {
         assert_eq!(ground_run(b"ab\x05"), 2);
         assert_eq!(ground_run(b"\x1b"), 0);
         assert_eq!(ground_run(b"plain"), 5);
+        assert_eq!(ascii_prefix(b""), 0);
+        assert_eq!(ascii_prefix(b"ascii only text of over sixteen bytes"), 37);
+        assert_eq!(ascii_prefix("0123456789abcdef\u{e9}x".as_bytes()), 16);
+        assert_eq!(ascii_prefix("0123456789abcde\u{e9}x".as_bytes()), 15);
+        assert_eq!(ascii_prefix(b"\x80abc"), 0);
         let mut seed = 0x1234_5678_9abc_def1u64;
         for round in 0..3000 {
             let stream = random_output(&mut seed);
