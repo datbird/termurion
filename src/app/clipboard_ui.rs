@@ -45,8 +45,8 @@ impl App {
         let asked: Vec<(PaneId, Request)> =
             self.panes.iter_mut().flat_map(|(id, p)| p.own_mut().take_requests().into_iter().map(|r| (*id, r)).collect::<Vec<_>>()).collect();
         let asked = thin_requests(asked, self.steal_asked, std::time::Instant::now());
-        // A window request can change anything a menu shows.
-        self.menus_dirty |= !asked.is_empty();
+        // A window request can change anything a menu shows; a clipboard write shows nothing.
+        self.menus_dirty |= asked.iter().any(|(_, r)| !matches!(r, Request::ClipboardWrite(_)));
         for (pane, r) in asked {
             // A request acts in the window that shows its pane.
             self.enter_pane_window(pane);
