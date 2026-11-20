@@ -5,11 +5,18 @@ use crate::encoding::Form;
 
 const INLINE: usize = 8;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A cell's text for the scene. Not the `CellText` in `bidi` or `tab_layout`, which are other things.
+#[derive(Clone, PartialEq, Eq)]
 pub enum CellText {
     /// The first `len` bytes of `buf` are valid UTF-8.
     Inline { len: u8, buf: [u8; INLINE] },
     Heap(String),
+}
+
+impl std::fmt::Debug for CellText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.as_str(), f)
+    }
 }
 
 impl Default for CellText {

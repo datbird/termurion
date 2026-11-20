@@ -1620,8 +1620,8 @@ impl RowCtx<'_> {
     }
 }
 
-/// The looks of one viewport row's cells in display order, into `looks` (emptied first). Pictures go to `images` and the
-/// hovered cells' (visual) columns to `hovered`.
+/// The looks of one viewport row's cells in display order, into `looks` (emptied first).
+/// Pictures go to `images` and the hovered cells' (visual) columns to `hovered`.
 fn row_looks(cx: &RowCtx, row: usize, frac: f32, images: &mut Vec<ImageQuad>, hovered: &mut Vec<usize>, looks: &mut Vec<CellLook>) {
     let RowCtx { screen, term, rect, look, draw, highlights, palette, history, display_offset, cols, block_cursor, cursor_at, cursor_text, bg_brightness, .. } = *cx;
     let (cw, ch) = cx.cell;
@@ -11471,6 +11471,16 @@ mod row_reuse_tests {
         }
     }
 
+    fn zero_image_ids(shot: String) -> String {
+        let mut lines: Vec<String> = shot.lines().map(String::from).collect();
+        for i in 1..lines.len() {
+            if lines[i - 1].trim() == "key: (" {
+                lines[i] = "0,".to_string();
+            }
+        }
+        lines.join("\n")
+    }
+
     #[test]
     fn rows_build_the_same_frames_with_the_scratch() {
         let plain = super::agent_box_tests::baseline_cases();
@@ -11481,11 +11491,9 @@ mod row_reuse_tests {
             let cached = super::agent_box_tests::baseline_cases_via(Some(&mut cache));
             assert_eq!(plain.len(), cached.len());
             for ((name, a, _), (_, b, _)) in plain.iter().zip(&cached) {
-                // Each run of the cases makes a new image, and the frame carries its id.
-                if name == "image-with-text-below" {
-                    continue;
-                }
-                assert_eq!(format!("{a:#?}"), format!("{b:#?}"), "{name} on pass {pass}");
+                // Each run of the cases makes a new image and the frame carries its id: zero it.
+                let (a, b) = (zero_image_ids(format!("{a:#?}")), zero_image_ids(format!("{b:#?}")));
+                assert_eq!(a, b, "{name} on pass {pass}");
             }
         }
         assert!(cache.scratch.capacity() > 0, "the scratch is handed back with its room");
