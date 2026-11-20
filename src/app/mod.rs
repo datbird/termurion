@@ -7657,10 +7657,16 @@ impl App {
         // already shows (`Chain::skip_if_still`). Anything drawn over or around the picture
         // since, a surface change or a fade says otherwise, and the frame draws.
         let (w, h) = (gpu.config.width, gpu.config.height);
+        // Sampled before the acquire wait now: the effects' clock then runs a few ms ahead of
+        // the present, which the 33 ms and 16 ms frame gaps already allow.
         let fx_now = Instant::now();
         if let Some(fx) = gpu.fx.as_mut().filter(|f| f.active()) {
             fx.prepare(frame.fx.as_ref(), fx_signals.as_ref(), (w, h), focused_window, fx_now);
         }
+        // A system expose (X11 Expose, Win32 WM_PAINT) reaches this as the same RedrawRequested
+        // as an app request, so a merged expose and animation frame can be left out like any
+        // equal frame (`skip_gpu` makes the same assumption); every compositor in use keeps the
+        // last presented picture.
         let still = same_scene && shown && !skip.bar_busy && !alpha_changed && frame.fade >= 1.0 && gpu.fx.as_mut().and_then(|f| f.chain_mut()).is_some_and(|(chain, u)| chain.skip_if_still(u, (w, h)));
         if still {
             gpu.scene.keep(frame, built, size);
