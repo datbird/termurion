@@ -298,7 +298,7 @@ mod tests {
         let body = &body[..body.find("\n/// iTerm2's button numbers").unwrap()];
         let at = |what: &str| body.find(what).unwrap_or_else(|| panic!("{what} in render_frame"));
         let ask = at("would_reuse(");
-        for call in ["self.fx_sync()", "self.publish_caption()", "self.caption_text()", "self.sync_blur()", "title_sent.send("] {
+        for call in ["self.fx_sync()", "self.publish_caption()", "self.caption_text()", "self.sync_blur()", "title_sent.send(", "self.sync_menu_hidden()"] {
             let i = at(call);
             assert!(i > ask, "{call} comes after the would_reuse check");
             // The nearest line above that opens a block must be the will_reuse guard.

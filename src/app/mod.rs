@@ -7568,7 +7568,6 @@ impl App {
         self.note_frame(before, now);
         // A status bar field whose bar went away gives the keyboard back before drawing.
         self.check_composer_fields();
-        self.sync_menu_hidden();
         // The next edge drag snaps to what this frame shows.
         self.publish_snap();
         let scene_start = timing.then(Instant::now);
@@ -7578,6 +7577,8 @@ impl App {
         let will_reuse = self.gpu.as_ref().is_some_and(|g| g.scene.would_reuse(size, now));
         // The effects first: their cursor color is part of the frame (`draw_prefs`).
         if !will_reuse {
+            // Full screen and peek changes arrive through `redraw`, which asks for a built frame.
+            self.sync_menu_hidden();
             self.fx_sync();
         }
         if let Some(g) = self.gpu.as_ref() {
