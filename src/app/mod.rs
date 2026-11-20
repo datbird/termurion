@@ -7684,7 +7684,11 @@ impl App {
         self.perf_frames.entry(window_n).or_default().frame(start_gap, Some(wait), dropped, &mut self.perf, window_n);
         let texture = match acquired {
             wgpu::CurrentSurfaceTexture::Success(t) => t,
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return,
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                // No drawable ends the frame early; the animation still asks for its next one, a gap away.
+                gpu.pace_fx(fx_now, focused_window, fx_pacing, true);
+                return;
+            }
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Suboptimal(_) => {
                 gpu.reconfigure();
                 gpu.redraw();
