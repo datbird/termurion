@@ -10,6 +10,12 @@ use crate::alerts::{self, AlertKind, AlertPrefs};
 const TERMINAL_EVERY: Duration = Duration::from_secs(1);
 pub(super) const STATUS_BAR: &str = "status-change";
 
+/// Every pane has an entry in `last` and it equals the pane's status now, and `last` holds no
+/// pane that is gone.
+fn statuses_unchanged<'a>(last: &HashMap<PaneId, Option<String>>, mut now: impl ExactSizeIterator<Item = (&'a PaneId, &'a Option<String>)>) -> bool {
+    last.len() == now.len() && now.all(|(id, status)| last.get(id).is_some_and(|before| before == status))
+}
+
 impl App {
     fn alert_prefs(&self, pane: PaneId) -> AlertPrefs {
         let p = self.panes.get(&pane).and_then(|p| self.store.get(&p.profile));
@@ -136,6 +142,9 @@ impl App {
     /// bell's watch, and Window > Notify on Status Change (armed, the next change of a
     /// session's status shows a bar, then it disarms) (`status_changes`).
     pub(super) fn tick_status_change(&mut self) {
+        if self.status_change_idle() {
+            return;
+        }
         let now: Vec<(PaneId, Option<String>)> = self.panes.iter().map(|(id, p)| (*id, p.own().tab_status.status.clone())).collect();
         let mut changes = Vec::new();
         for (id, status) in &now {
@@ -160,6 +169,12 @@ impl App {
         }
         self.orch_status_changed(&changes);
         self.code_review_status_changed(&changes);
+    }
+
+    /// Nothing for `tick_status_change` to do: no watch waits and every pane's status is what
+    /// it was last pass, so no change could be found and no list needs rebuilding.
+    pub(super) fn status_change_idle(&self) -> bool {
+        self.status_watches.is_empty() && statuses_unchanged(&self.last_status, self.panes.iter().map(|(id, p)| (id, &p.own().tab_status.status)))
     }
 
     /// The status bar's answer. False for other bars.
@@ -233,6 +248,43 @@ fn older_click(list: &std::collections::VecDeque<(u64, PaneId)>, shown: u64) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A method's text, up to the `}` that closes it.
+    fn body<'a>(src: &'a str, name: &str) -> &'a str {
+        let b = &src[src.find(&format!("fn {name}(")).unwrap_or_else(|| panic!("{name}"))..];
+        &b[..b.find("\n    }\n").unwrap()]
+    }
+
+    fn statuses(list: &[(PaneId, Option<&str>)]) -> HashMap<PaneId, Option<String>> {
+        list.iter().map(|(id, s)| (*id, s.map(str::to_string))).collect()
+    }
+
+    #[test]
+    fn tick_status_change_does_nothing_when_nothing_is_due() {
+        let last = statuses(&[(1, Some("Busy")), (2, None)]);
+        let now = statuses(&[(1, Some("Busy")), (2, None)]);
+        assert!(statuses_unchanged(&last, now.iter()), "the same statuses leave nothing to find");
+        assert!(statuses_unchanged(&HashMap::new(), HashMap::new().iter()), "no panes, no work");
+        let src = include_str!("alerts_ui.rs");
+        let tick = body(src, "tick_status_change");
+        assert!(tick.starts_with("fn tick_status_change(&mut self) {\n        if self.status_change_idle() {\n            return;"), "the gate is the first thing the tick does");
+        assert!(body(src, "status_change_idle").contains("status_watches.is_empty()"), "a waiting watch keeps the tick running");
+    }
+
+    #[test]
+    fn tick_status_change_still_acts_when_due() {
+        let last = statuses(&[(1, Some("Busy")), (2, None)]);
+        let moved = statuses(&[(1, Some("Idle")), (2, None)]);
+        assert!(!statuses_unchanged(&last, moved.iter()), "a status that moved");
+        let cleared = statuses(&[(1, None), (2, None)]);
+        assert!(!statuses_unchanged(&last, cleared.iter()), "a status that cleared");
+        let added = statuses(&[(1, Some("Busy")), (2, None), (3, None)]);
+        assert!(!statuses_unchanged(&last, added.iter()), "a new pane is entered once, even with no status");
+        let gone = statuses(&[(1, Some("Busy"))]);
+        assert!(!statuses_unchanged(&last, gone.iter()), "a closed pane leaves the list");
+        let swapped = statuses(&[(1, Some("Busy")), (3, None)]);
+        assert!(!statuses_unchanged(&last, swapped.iter()), "same count, other panes");
+    }
 
     /// Two sessions each posted: a click on the first notification names the first session.
     #[test]
