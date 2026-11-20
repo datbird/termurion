@@ -164,6 +164,8 @@ pub struct RowRenderer {
     /// What the table holds now, one entry per row id (`None` where unknown).
     table_cpu: Vec<Option<RowUniform>>,
     rows_bind_group: BindGroup,
+    /// Reused for each slot's bytes.
+    scratch: Vec<u8>,
     generation: u64,
     frame: u64,
     prepared_rows: u64,
@@ -196,6 +198,7 @@ impl RowRenderer {
             table_rows: TABLE_CHUNK_ROWS,
             table_cpu: vec![None; TABLE_CHUNK_ROWS as usize],
             rows_bind_group,
+            scratch: Vec::new(),
             generation: atlas.generation(),
             frame: 0,
             prepared_rows: 0,
@@ -275,6 +278,7 @@ impl RowRenderer {
             );
             if let Err(e) = prepared {
                 self.draws.clear();
+                self.batches.clear();
                 // A full atlas: let go of every kept row this pass did not reach and try once more.
                 if !retried {
                     retried = true;
@@ -375,7 +379,7 @@ impl RowRenderer {
                     if !entry.instances.is_empty() {
                         let slot = self.alloc(device, uploads, entry.instances.len() as u32);
                         entry.slot = Some(slot);
-                        write_slot(device, uploads, &self.instances, &self.ids, &entry);
+                        write_slot(device, uploads, &mut self.scratch, &self.instances, &self.ids, &entry);
                     }
                     let drawn = entry.slot.map(|s| entry.drawn(s, runs.clone()));
                     let list = self.entries.entry(key).or_default();
@@ -417,7 +421,7 @@ impl RowRenderer {
             self.capacity = capacity;
             // The new buffers start empty: write every live row from its CPU copy.
             for entry in self.entries.values().flatten().filter(|e| e.slot.is_some()) {
-                write_slot(device, uploads, &self.instances, &self.ids, entry);
+                write_slot(device, uploads, &mut self.scratch, &self.instances, &self.ids, entry);
             }
         }
         let start = self.end;
@@ -615,15 +619,26 @@ fn instance_bytes(instances: &[GlyphToRender]) -> &[u8] {
 
 /// Termurion patch 8: writes the entry's whole slot, its instances then zero ones (`dim` 0,
 /// which `vs_row` culls) up to the slot's capacity, and its id for every one.
-fn write_slot(device: &Device, uploads: &mut UploadBelt, instances: &GpuBuffer, ids: &GpuBuffer, entry: &Entry) {
+fn write_slot(
+    device: &Device,
+    uploads: &mut UploadBelt,
+    scratch: &mut Vec<u8>,
+    instances: &GpuBuffer,
+    ids: &GpuBuffer,
+    entry: &Entry,
+) {
     let slot = entry.slot.expect("a written entry has a slot");
     let capacity = (MIN_SLOT << slot.class) as usize;
-    let mut bytes = vec![0u8; capacity * INSTANCE_SIZE as usize];
     let real = instance_bytes(&entry.instances);
-    bytes[..real.len()].copy_from_slice(real);
-    uploads.write(device, instances, slot.start as u64 * INSTANCE_SIZE, &bytes);
-    let id_bytes: Vec<u8> = (0..capacity).flat_map(|_| entry.id.to_ne_bytes()).collect();
-    uploads.write(device, ids, slot.start as u64 * ROW_ID_SIZE, &id_bytes);
+    scratch.clear();
+    scratch.extend_from_slice(real);
+    scratch.resize(capacity * INSTANCE_SIZE as usize, 0);
+    uploads.write(device, instances, slot.start as u64 * INSTANCE_SIZE, scratch);
+    scratch.clear();
+    for _ in 0..capacity {
+        scratch.extend_from_slice(&entry.id.to_ne_bytes());
+    }
+    uploads.write(device, ids, slot.start as u64 * ROW_ID_SIZE, scratch);
 }
 
 /// The instance buffer and its row id buffer, for `capacity` instances.
@@ -1264,5 +1279,54 @@ mod tests {
         // Kept rows past the first chunk draw right from the table too.
         let rows = rig.draw_rows(areas());
         assert_same(&rows, &text, "600 kept rows");
+    }
+
+    #[test]
+    fn the_table_grows_under_kept_rows() {
+        let mut rig = Rig::new();
+        let letters: Vec<Buffer> = (0..26).map(|n| rig.shape(&char::from(b'a' + n).to_string(), MONO)).collect();
+        let areas = |count: usize| {
+            (0..count)
+                .map(|n| RowArea {
+                    serial: n as u64 + 7000,
+                    ..row(1, &letters[n % 26], (n % 30) as f32 * 10.0, (n / 30) as f32 * 12.0, whole())
+                })
+                .collect::<Vec<_>>()
+        };
+        rig.draw_rows(areas(100));
+        assert_eq!(rig.rows.table_rows, TABLE_CHUNK_ROWS);
+        // The 100 kept rows keep their ids and must be written into the grown table.
+        let rows = rig.draw_rows(areas(600));
+        assert_eq!(rig.rows.prepared_rows(), 600, "kept rows were prepared again");
+        assert!(rig.rows.table_rows > TABLE_CHUNK_ROWS, "the row table did not grow");
+        let text = rig.draw_text(areas(600));
+        assert_same(&rows, &text, "100 kept rows in a grown table");
+    }
+
+    #[test]
+    fn a_failed_prepare_draws_nothing() {
+        let mut rig = Rig::new();
+        rig.atlas.set_max_size(256);
+        let small = rig.shape("A row that drew", MONO);
+        rig.draw_rows([row(1, &small, 0.0, 0.0, whole())]);
+        assert_eq!(rig.rows.draws_issued(), 1);
+        // A glyph bigger than the capped atlas never fits.
+        let mut huge = Buffer::new(&mut rig.font_system, Metrics::new(400.0, 420.0));
+        huge.set_text("W", &Attrs::new().family(Family::Name(MONO)), Shaping::Advanced, None);
+        huge.shape_until_scroll(&mut rig.font_system, false);
+        let failed = rig.rows.prepare(
+            &rig.device,
+            &rig.queue,
+            &mut rig.uploads,
+            &mut rig.font_system,
+            &mut rig.atlas,
+            &rig.viewport,
+            [row(1, &small, 0.0, 0.0, whole()), row(2, &huge, 0.0, 20.0, whole())],
+            &mut rig.swash,
+            no_custom_glyph,
+        );
+        rig.uploads.submit(&rig.queue, []);
+        assert!(failed.is_err(), "the huge glyph fit");
+        assert_eq!(rig.rows.draws_issued(), 0, "render would replay the last frame");
     }
 }
