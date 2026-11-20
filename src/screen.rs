@@ -3058,7 +3058,8 @@ pub struct MenuFacts {
     literal: bool,
     /// Title, current directory, host and user, hashed together.
     place: u64,
-    /// Marks kept, marks ever made, the last command mark, Alert on Next Mark.
+    /// Marks kept, marks ever made, the last command mark, Alert on Next Mark. No names: output
+    /// only makes marks (a new serial); a rename is a menu, API or context-menu action that syncs.
     marks: (usize, u32, Option<u32>, bool),
     notes: usize,
     downloads: (usize, bool),
