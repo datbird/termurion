@@ -557,10 +557,8 @@ impl App {
         if !order.is_empty() {
             self.pump_from = next_pump_start(order.len(), start, first_more);
         }
-        let (ssh, tmux) = (self.ssh_pump(), self.tmux_pump(event_loop));
-        changed |= ssh | tmux;
-        // A tmux or ssh pump can add, drop or retitle sessions and windows.
-        self.menus_dirty |= ssh | tmux;
+        changed |= self.ssh_pump();
+        changed |= self.tmux_pump(event_loop);
         // Panes a tmux or ssh pump fed got output too (`feed_output`); they draw through the pacer.
         for (id, p) in self.panes.iter() {
             if p.got_output && !outputs.contains(id) {

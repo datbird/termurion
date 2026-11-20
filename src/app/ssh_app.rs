@@ -89,6 +89,8 @@ impl App {
             if batch.drops(&out) {
                 continue;
             }
+            // Screen bytes and raw bytes change no menu; a conductor token can.
+            self.menus_dirty |= !matches!(out, Out::Screen(_) | Out::Raw(_));
             match out {
                 Out::Screen(bytes) => {
                     if let Some(p) = self.panes.get_mut(&pane) {

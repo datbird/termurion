@@ -293,6 +293,9 @@ impl App {
         // A reply may open the windows: a restored gateway's size is read first.
         self.tmux_resize_restored(pane);
         for e in events {
+            // Bytes for a pane or a line of text change no menu; the rest can add, drop or
+            // retitle windows and panes.
+            self.menus_dirty |= event_moves_menus(&e);
             let Some(t) = self.tmux.get_mut(&pane) else { return };
             match e {
                 Event::Print(line) => self.tmux_print(pane, &line),
@@ -1012,5 +1015,25 @@ mod tests {
         assert!(!t.writes_due(t0 + RESTORE_WRITE_DELAY));
         assert!(t.gw.take_writes().is_empty());
         assert_eq!(t.late_writes(), None);
+    }
+}
+
+/// Whether a tmux event can change something a menu shows (not pane bytes or printed text).
+fn event_moves_menus(e: &Event) -> bool {
+    use crate::tmux_proto::Note;
+    !matches!(e, Event::Print(_) | Event::Note(Note::Output { .. } | Note::ExtendedOutput { .. } | Note::Begin { .. } | Note::End { .. } | Note::Other(_) | Note::Text(_)))
+}
+
+#[cfg(test)]
+mod menu_event_tests {
+    use super::*;
+    use crate::tmux_proto::Note;
+
+    #[test]
+    fn pane_bytes_move_no_menu_but_a_window_does() {
+        assert!(!event_moves_menus(&Event::Print("x".into())));
+        assert!(!event_moves_menus(&Event::Note(Note::Output { pane: 1, data: vec![b'a'] })));
+        assert!(event_moves_menus(&Event::Note(Note::WindowAdd(2))));
+        assert!(event_moves_menus(&Event::Exit));
     }
 }
