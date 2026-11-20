@@ -209,14 +209,18 @@ fn dispatch(inner: &Inner, m: Msg, welcome: &mut Option<mpsc::Sender<Result<Welc
                 let _ = tx.send((from, dropped));
             }
         }
-        Msg::Output { id, offset, bytes } => {
+        Msg::Output { id, offset, mut bytes } => {
             if let Some(slot) = inner.slot(id) {
                 let mut s = slot.lock().unwrap();
                 let end = offset + bytes.len() as u64;
                 // Bytes already here (a replay overlapping live output) are not taken twice.
                 if end > s.end {
                     let skip = s.end.saturating_sub(offset) as usize;
-                    s.queue.push_back(bytes[skip..].to_vec());
+                    // Live output has nothing to skip: the message's bytes are queued as they are.
+                    if skip > 0 {
+                        bytes.drain(..skip);
+                    }
+                    s.queue.push_back(bytes);
                     s.end = end;
                     wake(&s);
                 }
