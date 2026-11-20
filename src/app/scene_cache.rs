@@ -323,6 +323,8 @@ mod tests {
         let check = &body[still.saturating_sub(300)..still];
         // The menu bar's theme is read only when the bar draws.
         assert!(body.contains("let bar_dark = bar_draws && self.dark()"));
+        // The sRGB view is made only when something reads it.
+        assert!(body.contains("(!fx_raw || bar_draws).then("));
         for input in ["same_scene", "shown", "bar_busy", "alpha_changed", "frame.fade"] {
             assert!(check.contains(input), "the still check reads {input}");
         }

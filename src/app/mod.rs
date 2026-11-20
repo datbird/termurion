@@ -7704,7 +7704,9 @@ impl App {
                 return;
             }
         };
-        let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // An effect chain that writes the raw view never reads the sRGB one, unless the bar draws on it.
+        let fx_raw = gpu.fx.as_ref().filter(|f| f.active()).is_some_and(|f| f.wants_raw_out());
+        let view = (!fx_raw || bar_draws).then(|| texture.texture.create_view(&wgpu::TextureViewDescriptor::default()));
         // The non-sRGB view a fade needs on an sRGB target; no fade, no view.
         let raw = gpu.config.view_formats.first().filter(|_| frame.fade < 1.0).map(|f| texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(*f), ..Default::default() }));
         #[cfg(debug_assertions)]
@@ -7719,10 +7721,10 @@ impl App {
                 let (chain, uniforms) = fx.chain_mut().expect("active");
                 chain.keep_output(bounded);
                 // Without view formats (OpenGL) the chain's last copy writes the window's own view.
-                let out = if chain.wants_raw_out() { texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(crate::render_fx_gpu::raw_format(gpu.config.format)), ..Default::default() }) } else { view.clone() };
+                let out = if chain.wants_raw_out() { texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(crate::render_fx_gpu::raw_format(gpu.config.format)), ..Default::default() }) } else { view.clone().expect("made unless the chain writes the raw view") };
                 gpu.renderer.draw_fx_for(&frame, chain, uniforms, &out, w, h, same_scene, region.as_deref())
             }
-            None => gpu.renderer.draw_with(&frame, &view, raw.as_ref(), w, h),
+            None => gpu.renderer.draw_with(&frame, view.as_ref().expect("made without effects"), raw.as_ref(), w, h),
         };
         // Animated effects keep the window drawing while they run, at the pace "Effects
         // animation" allows; a frame not due yet waits in the idle loop (`fx_frame_tick`).
@@ -7747,7 +7749,7 @@ impl App {
             && bar_draws
         {
             let (device, queue) = (gpu.render_device().clone(), gpu.render_queue().clone());
-            let frame = menu_bar_ui::BarFrame { device: &device, queue: &queue, target: &view, format: gpu.config.format, size: (w, h), scale: bar_scale, dark: bar_dark };
+            let frame = menu_bar_ui::BarFrame { device: &device, queue: &queue, target: view.as_ref().expect("made when the bar draws"), format: gpu.config.format, size: (w, h), scale: bar_scale, dark: bar_dark };
             let menu = self.menu_bar.as_ref().map(|b| &b.menu).filter(|_| bar_on);
             chosen = gpu.bar.draw(&frame, menu);
             // Drawn over the frame, which does not say so: the next one draws whole.

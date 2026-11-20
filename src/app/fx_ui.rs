@@ -242,6 +242,11 @@ impl FxRuntime {
         (render_fx::frame_region(terms, &self.uniforms, &self.last_uniforms, cell, self.live_lines, size), own)
     }
 
+    /// Whether the chain's last copy writes the window's own raw view (`Chain::wants_raw_out`).
+    pub(super) fn wants_raw_out(&self) -> bool {
+        self.chain.as_ref().is_some_and(|c| c.wants_raw_out())
+    }
+
     pub(super) fn chain_mut(&mut self) -> Option<(&mut Chain, &Uniforms)> {
         self.chain.as_mut().map(|c| (c, &self.uniforms))
     }
