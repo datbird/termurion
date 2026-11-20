@@ -5,6 +5,7 @@
 use crate::conductor_parser::{Parser, Token, AUTOPOLL_PID, NOTIF_PID};
 use crate::side_channel::Reducer;
 use crate::ssh_recovery::Tree as RecoveryTree;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -466,13 +467,35 @@ impl Hook {
     }
 
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Out> {
+        if self.held.is_empty() {
+            return self.feed_data(Cow::Borrowed(bytes));
+        }
         let mut data = std::mem::take(&mut self.held);
         data.extend_from_slice(bytes);
+        self.feed_data(Cow::Owned(data))
+    }
+
+    /// `feed` for a read the caller hands over: plain output comes back as the same allocation,
+    /// not a copy.
+    pub fn feed_vec(&mut self, bytes: Vec<u8>) -> Vec<Out> {
+        let mut data = std::mem::take(&mut self.held);
+        if data.is_empty() {
+            data = bytes;
+        } else {
+            data.extend_from_slice(&bytes);
+        }
+        self.feed_data(Cow::Owned(data))
+    }
+
+    fn feed_data(&mut self, mut data: Cow<[u8]>) -> Vec<Out> {
+        // Where the unread bytes begin: the start and the recovery lines are skipped over, not
+        // drained out of the front.
+        let mut at = 0;
         let mut out = Vec::new();
         loop {
             if let Some(parser) = &mut self.parser {
                 let past_init = parser.past_init();
-                let fed = parser.feed(&data);
+                let fed = parser.feed(&data[at..]);
                 let pending = if fed.rest.is_some() { 0 } else { parser.pending_bytes() };
                 let hooked_now = !past_init && fed.tokens.iter().any(|t| matches!(t, Token::Init(_)));
                 if hooked_now && !self.claim() {
@@ -482,7 +505,7 @@ impl Hook {
                     match fed.rest {
                         None => break,
                         Some(rest) => {
-                            data = rest;
+                            (data, at) = (Cow::Owned(rest), 0);
                             continue;
                         }
                     }
@@ -538,7 +561,7 @@ impl Hook {
                     None => break,
                     Some(rest) => {
                         self.end_parser();
-                        data = rest;
+                        (data, at) = (Cow::Owned(rest), 0);
                     }
                 }
                 continue;
@@ -551,28 +574,27 @@ impl Hook {
             // Past the depth cap nothing hooks: the bytes are plain output.
             let hooks = self.depth <= MAX_DEPTH;
             let recovers = hooks && self.recovery_allowed();
-            let start = if hooks { data.windows(START.len()).position(|w| w == START) } else { None };
-            let osc = if recovers { data.windows(OSC134.len()).position(|w| w == OSC134) } else { None };
+            let (start, osc) = find_triggers(&data[at..], hooks, recovers);
             match (start, osc) {
                 (Some(k), osc) if osc.is_none_or(|j| k < j) => {
-                    screen(&mut out, &data[..k]);
+                    screen(&mut out, &data[at..at + k]);
                     let id = self.ids.map_or_else(new_dcs_id, |next| next());
                     self.parser = Some(Parser::new(&id));
-                    data.drain(..k + START.len());
+                    at += k + START.len();
                 }
                 (_, Some(k)) => {
-                    screen(&mut out, &data[..k]);
-                    match recovery_osc(&data[k..]) {
+                    screen(&mut out, &data[at..at + k]);
+                    match recovery_osc(&data[at + k..]) {
                         Found::Wait => {
-                            self.held = data[k..].to_vec();
+                            self.held = data[at + k..].to_vec();
                             break;
                         }
                         Found::Plain(n) => {
-                            screen(&mut out, &data[k..k + n]);
-                            data.drain(..k + n);
+                            screen(&mut out, &data[at + k..at + k + n]);
+                            at += k + n;
                         }
                         Found::Line(text, n) => {
-                            data.drain(..k + n);
+                            at += k + n;
                             if self.recovery == Recovery::None {
                                 // The stale block's own OSC is only the sign of it (`T:2743-2745`).
                                 out.push(Out::Ssh(Token::BeginFramerRecovery(self.depth - 1), self.depth));
@@ -591,7 +613,8 @@ impl Hook {
                 }
                 _ => {
                     // A tail that may begin a start sequence waits for the next read.
-                    let tail = |prefix: &[u8]| (1..prefix.len()).rev().find(|n| data.ends_with(&prefix[..*n])).unwrap_or(0);
+                    let rest = &data[at..];
+                    let tail = |prefix: &[u8]| (1..prefix.len()).rev().find(|n| rest.ends_with(&prefix[..*n])).unwrap_or(0);
                     let keep = if !hooks {
                         0
                     } else if recovers {
@@ -599,8 +622,18 @@ impl Hook {
                     } else {
                         tail(START)
                     };
-                    screen(&mut out, &data[..data.len() - keep]);
-                    self.held = data[data.len() - keep..].to_vec();
+                    let end = at + rest.len() - keep;
+                    self.held = data[end..].to_vec();
+                    match data {
+                        // A whole read that is plain output moves on as it is.
+                        Cow::Owned(mut all) if at == 0 && !matches!(out.last(), Some(Out::Screen(_))) => {
+                            all.truncate(end);
+                            if !all.is_empty() {
+                                out.push(Out::Screen(all));
+                            }
+                        }
+                        data => screen(&mut out, &data[at..end]),
+                    }
                     break;
                 }
             }
@@ -693,6 +726,15 @@ fn recovery_osc(bytes: &[u8]) -> Found {
 }
 
 /// Adds screen bytes, joined to screen bytes just before them.
+/// Where the first start (`ESC P 2000 p`) and the first recovery OSC begin in `data`, as the
+/// hook asks for each (`hooks`: depth within the cap; `recovers`: an OSC 134 may begin a
+/// recovery). A start found makes the OSC search stop at it: only an OSC before it matters.
+fn find_triggers(data: &[u8], hooks: bool, recovers: bool) -> (Option<usize>, Option<usize>) {
+    let start = if hooks { memchr::memmem::find(data, START) } else { None };
+    let osc = if recovers { memchr::memmem::find(&data[..start.unwrap_or(data.len())], OSC134) } else { None };
+    (start, osc)
+}
+
 fn screen(out: &mut Vec<Out>, bytes: &[u8]) {
     if bytes.is_empty() {
         return;
@@ -1562,5 +1604,64 @@ mod tests {
         h.allow_recovery();
         h.feed(&crate::ssh_fixtures::output("a", 7, -1, 0, b"x"));
         assert_eq!(h.child_pids(), [7]);
+    }
+
+    /// What the hook's scan finds in a read is what the byte walk found, at the same offsets,
+    /// and a read cut anywhere gives the same screen bytes and tokens as the whole one.
+    #[test]
+    fn ssh_hook_feed_matches_the_byte_walk() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let alphabet = b"ab\n\x1bP2000p]134;[0";
+        for round in 0..400 {
+            let len = next() as usize % 3000;
+            let mut data: Vec<u8> = (0..len).map(|_| alphabet[next() as usize % alphabet.len()]).collect();
+            if round % 3 == 0 && len > 40 {
+                let at = next() as usize % (len - 20);
+                data[at..at + START.len()].copy_from_slice(START);
+            }
+            if round % 5 == 0 && len > 40 {
+                let at = next() as usize % (len - 20);
+                data[at..at + OSC134.len()].copy_from_slice(OSC134);
+            }
+            for (hooks, recovers) in [(true, true), (true, false), (false, false)] {
+                let start = if hooks { data.windows(START.len()).position(|w| w == START) } else { None };
+                let osc = if recovers { data.windows(OSC134.len()).position(|w| w == OSC134) } else { None };
+                // An OSC after the start never mattered (the start is acted on first): not looked for.
+                let osc = osc.filter(|j| start.is_none_or(|k| *j < k));
+                assert_eq!(find_triggers(&data, hooks, recovers), (start, osc), "round {round}");
+            }
+        }
+        // Cut at every offset, with the pieces fed separately: the same screen bytes and tokens.
+        let whole_stream = [&b"before \x1bP20"[..], b"00p", b"rest"].concat();
+        let mut recovering = [&b"out\x1b]134"[..], b";:begin-recovery\x07more \x1b]134;:end-recovery\x07"].concat();
+        recovering.extend_from_slice(b" after");
+        for stream in [whole_stream, recovering, b"no trigger here \x1bP200".to_vec(), [START, b"x".as_slice()].concat()] {
+            let joined = |pieces: &[&[u8]]| {
+                let mut h = hook();
+                h.allow_recovery();
+                let mut screen = Vec::new();
+                let mut other = Vec::new();
+                for piece in pieces {
+                    for o in h.feed(piece) {
+                        match o {
+                            Out::Screen(b) => screen.extend(b),
+                            o => other.push(o),
+                        }
+                    }
+                }
+                (screen, other, h.take_held())
+            };
+            let whole = joined(&[&stream]);
+            for cut in 0..=stream.len() {
+                let (head, tail) = stream.split_at(cut);
+                assert_eq!(joined(&[head, tail]), whole, "cut at {cut} of {:?}", String::from_utf8_lossy(&stream));
+            }
+        }
     }
 }
