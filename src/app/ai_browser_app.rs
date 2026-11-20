@@ -286,6 +286,11 @@ impl Calls {
         }
     }
 
+    /// Holds nothing for a sweep or a delivery to act on.
+    pub fn idle(&self) -> bool {
+        self.calls.is_empty() && self.turns.is_empty() && self.done.is_empty()
+    }
+
     /// The chats with a bound call.
     pub fn chats(&self) -> HashSet<String> {
         self.calls.values().filter_map(|c| c.bound.as_ref().map(|(chat, _)| chat.clone())).collect()
@@ -531,6 +536,21 @@ mod tests {
         let p = Page::open(7, epoch, url, "T", false).unwrap();
         let a = p.web_search(&crate::ai_browser::Loaded::Ok, Some(Ok("# secret page")));
         (Ready::Page(a), p.binding().clone())
+    }
+
+    #[test]
+    fn the_browser_calls_are_idle_only_when_they_hold_nothing() {
+        let mut s = Calls::default();
+        assert!(s.idle(), "nothing held");
+        s.calls.insert(1, call(7));
+        assert!(!s.idle(), "a call waits");
+        s.forget(1);
+        assert!(s.idle());
+        s.allow("C", std::time::Instant::now());
+        assert!(!s.idle(), "a turn's count is kept until a sweep ends it");
+        s.turns.clear();
+        s.done.push((9, plain("late")));
+        assert!(!s.idle(), "an answer waits to be taken");
     }
 
     #[test]

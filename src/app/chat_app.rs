@@ -27,6 +27,11 @@ use crate::chat_store::{self, Chat, Store, OPEN_FAILED, OPEN_FAILED_HEADING};
 use crate::layout::PaneId;
 use crate::pwm::Secret;
 
+/// The agent has a turn under way, a driver to poll or a file job to follow.
+fn agent_is_busy(a: &Agent) -> bool {
+    a.in_turn || a.driver.is_some() || a.files.is_some()
+}
+
 fn unix_now() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
@@ -502,12 +507,25 @@ impl App {
         crate::ai_context::block(wants, consent, &state, &screen, mark, commit)
     }
 
+    /// No chat has a turn, a driver or a file job, and nothing waits for a check, a command, a
+    /// Get-Help or a browser call: `chat_tick` would find nothing and answer None.
+    fn chat_tick_idle(&self) -> bool {
+        !self.chat_agents.values().any(agent_is_busy)
+            && self.ai_checks.is_empty()
+            && self.ai_exec_canceled.is_empty()
+            && self.ai_execs.is_empty()
+            && self.ai_helps.is_empty()
+            && self.ai_browser.idle()
+    }
+
     /// The chats' part of the loop: closed gates stop their chats, the turns and file jobs
     /// read what arrived, finished checks, commands and Get-Helps go back to their requests.
     /// Answers when it next needs to run (a file job's next poll).
     pub(super) fn chat_tick(&mut self) -> Option<Instant> {
-        let busy = |a: &Agent| a.in_turn || a.driver.is_some() || a.files.is_some();
-        if self.chat_db.is_some() && self.chat_agents.values().any(busy) {
+        if self.chat_tick_idle() {
+            return None;
+        }
+        if self.chat_db.is_some() && self.chat_agents.values().any(agent_is_busy) {
             let fx = self.engine(Engine::gate_tick).unwrap_or_default();
             self.chat_apply(fx);
             let reading: Vec<String> = self.chat_agents.iter().filter(|(_, a)| a.driver.is_some()).map(|(c, _)| c.clone()).collect();
@@ -920,6 +938,33 @@ mod tests {
     use crate::test_tmp::TempDir;
     use crate::ai_permissions::{allowed_of, defaults, Category, Key, Overrides, Permission};
     use crate::chat_broker::Broker;
+
+    /// A method's text, up to the `}` that closes it.
+    fn body<'a>(src: &'a str, name: &str) -> &'a str {
+        let b = &src[src.find(&format!("fn {name}(")).unwrap_or_else(|| panic!("{name}"))..];
+        &b[..b.find("\n    }\n").unwrap()]
+    }
+
+    #[test]
+    fn chat_tick_does_nothing_when_nothing_is_due() {
+        let src = include_str!("chat_app.rs");
+        let tick = body(src, "chat_tick");
+        assert!(tick.contains("if self.chat_tick_idle() {\n            return None;\n        }"), "the gate comes first");
+        assert!(tick.find("chat_tick_idle()").unwrap() < tick.find("ai_browser_sweep()").unwrap());
+        let idle = body(src, "chat_tick_idle");
+        for part in ["chat_agents", "ai_checks", "ai_exec_canceled", "ai_execs", "ai_helps", "ai_browser.idle()"] {
+            assert!(idle.contains(part), "{part} keeps the tick running");
+        }
+    }
+
+    #[test]
+    fn chat_tick_still_acts_when_due() {
+        let mut agent = Agent::default();
+        assert!(!agent_is_busy(&agent), "an agent at rest holds the tick back");
+        agent.in_turn = true;
+        assert!(agent_is_busy(&agent), "a turn under way runs the tick");
+        // The browser's calls are proven in `ai_browser_app` (the_browser_calls_are_idle_only_when_they_hold_nothing).
+    }
 
     #[test]
     fn the_hearing_subscription_opens_once_at_the_store_open() {
