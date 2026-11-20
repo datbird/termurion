@@ -28,23 +28,25 @@
 #
 # Needs: ssh funtimes, the apps in /Applications there, `vw read "funtimes VM"` for sudo (dtrace).
 # Every terminal setting it touches is saved first and put back on exit.
-# Usage: scripts/draw-bench [--secs N] [--passes N] [--sample] [--out DIR] [CONFIG...]
+# Usage: scripts/draw-bench [--secs N] [--passes N] [--sample] [--sample-idle] [--out DIR] [CONFIG...]
 #   --sample  also records a `sample` profile of the terminal during stream20, claude and flood (CPU
 #             numbers of those runs carry the profiler's cost; they are marked "sampled").
+#   --sample-idle  implies --sample and samples the idle prompt too (sample-<config>-idle.txt).
 set -uo pipefail
 # DRAW_BENCH_REPO: the checkout to read the shader from when running a copy of this script.
 repo="${DRAW_BENCH_REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
 host="${DRAW_BENCH_HOST:-funtimes}"
-secs=20; passes=1; sample=0; out=""
+secs=20; passes=1; sample=0; sample_idle=0; out=""
 configs=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --secs) secs="$2"; shift ;;
         --passes) passes="$2"; shift ;;
         --sample) sample=1 ;;
+        --sample-idle) sample=1; sample_idle=1 ;;
         --out) out="$2"; shift ;;
         termurion|termurion-fx|ghostty|ghostty-fx|iterm2) configs+=("$1") ;;
-        *) echo "usage: scripts/draw-bench [--secs N] [--passes N] [--sample] [--out DIR] [termurion|termurion-fx|ghostty|ghostty-fx|iterm2 ...]" >&2; exit 2 ;;
+        *) echo "usage: scripts/draw-bench [--secs N] [--passes N] [--sample] [--sample-idle] [--out DIR] [termurion|termurion-fx|ghostty|ghostty-fx|iterm2 ...]" >&2; exit 2 ;;
     esac
     shift
 done
@@ -293,7 +295,7 @@ for pass in $(seq 1 "$passes"); do
         setup "$cfg" || continue
         for wl in "${workloads[@]}"; do
             want=0; note=""
-            if [ "$sample" = 1 ] && [ "$wl" != idle ]; then want=1; note=sampled; fi
+            if [ "$sample" = 1 ] && { [ "$wl" != idle ] || [ "$sample_idle" = 1 ]; }; then want=1; note=sampled; fi
             for try in 1 2 3 4 5 6 7 8; do
                 wait_quiet
                 wait_slot
