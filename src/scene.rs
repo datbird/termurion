@@ -566,10 +566,10 @@ fn emit_run(frame: &mut Frame, rect: Rect, row: usize, cell: (f32, f32), run: &R
     }
 }
 
-struct CellLook {
+pub(crate) struct CellLook {
     /// The underline and strikethrough the cell asks for.
     ul: Option<Ul>,
-    text: String,
+    text: crate::cell_text::CellText,
     fg: Rgb,
     bg: Rgb,
     bold: bool,
@@ -619,7 +619,7 @@ fn bidi_control(c: char) -> bool {
 /// wide never groups, whatever unicode-width says of its text (S2).
 fn groupable(c: &CellLook) -> bool {
     use unicode_width::UnicodeWidthStr;
-    !c.wide && !c.text.is_ascii() && c.text.width() == 1 && !c.text.chars().any(bidi_control)
+    !c.wide && !c.text.is_ascii() && c.text.as_str().width() == 1 && !c.text.chars().any(bidi_control)
 }
 
 /// The Special Font Config entry (1 plus its index) that draws a cell, and the code point it
@@ -636,7 +636,7 @@ fn shown_text(c: &CellLook) -> std::borrow::Cow<'_, str> {
     match c.table {
         Some((_, drawn)) => {
             let first = c.text.chars().next().map_or(0, char::len_utf8);
-            std::borrow::Cow::Owned(format!("{drawn}{}", &c.text[first..]))
+            std::borrow::Cow::Owned(format!("{drawn}{}", &c.text.as_str()[first..]))
         }
         None => std::borrow::Cow::Borrowed(c.text.as_str()),
     }
@@ -1609,6 +1609,8 @@ struct RowCtx<'a> {
     bg_alpha: f32,
     opaque_colors: bool,
     orders: &'a [Option<std::sync::Arc<crate::bidi::Order>>],
+    /// The looks buffer `build_row` reuses from row to row; None allocates one per row.
+    scratch: Option<&'a std::cell::RefCell<Vec<CellLook>>>,
 }
 
 impl RowCtx<'_> {
@@ -1618,16 +1620,17 @@ impl RowCtx<'_> {
     }
 }
 
-/// The looks of one viewport row's cells in display order. Pictures go to `images` and the
+/// The looks of one viewport row's cells in display order, into `looks` (emptied first). Pictures go to `images` and the
 /// hovered cells' (visual) columns to `hovered`.
-fn row_looks(cx: &RowCtx, row: usize, frac: f32, images: &mut Vec<ImageQuad>, hovered: &mut Vec<usize>) -> Vec<CellLook> {
+fn row_looks(cx: &RowCtx, row: usize, frac: f32, images: &mut Vec<ImageQuad>, hovered: &mut Vec<usize>, looks: &mut Vec<CellLook>) {
     let RowCtx { screen, term, rect, look, draw, highlights, palette, history, display_offset, cols, block_cursor, cursor_at, cursor_text, bg_brightness, .. } = *cx;
     let (cw, ch) = cx.cell;
     // Thin Strokes on Dark Backgrounds is decided per cell: the cell's background is darker than
     // its text (`iTermTextDrawingHelper.m:3045`, `iTermMetalPerFrameState.m:2186`).
     let dark = |fg: Rgb, bg: Rgb| crate::tab_theme::hsp(bg) < crate::tab_theme::hsp(fg);
     let blank = || CellLook { ul: None, text: " ".into(), fg: palette.fg, bg: palette.bg, bold: false, italic: false, selected: false, level: cell_level(" ", draw), mask: cell_mask(" ", draw, dark(palette.fg, palette.bg)), cursor: false, wide: false, joins: false, table: None };
-    let mut looks: Vec<CellLook> = Vec::with_capacity(cols);
+    looks.clear();
+    looks.reserve(cols);
     for col in 0..cols {
         let point = alacritty_terminal::index::Point::new(alacritty_terminal::index::Line(row as i32 - display_offset), alacritty_terminal::index::Column(col));
         let c = &term.grid()[point];
@@ -1719,7 +1722,7 @@ fn row_looks(cx: &RowCtx, row: usize, frac: f32, images: &mut Vec<ImageQuad>, ho
         // (`iTermMetalPerFrameState.m:1691`); the background keeps drawing, and so do the
         // neighbors' lines, but the cell's own underline and strikethrough go with its glyph.
         let blink_off = screen.blink_allowed && c.flags.contains(Flags::BLINK) && !highlights.is_none_or(|h| h.text_blink_on);
-        let mut text = String::new();
+        let mut text = crate::cell_text::CellText::new();
         if hidden || blink_off {
             text.push(' ');
         } else if !c.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
@@ -1729,22 +1732,22 @@ fn row_looks(cx: &RowCtx, row: usize, frac: f32, images: &mut Vec<ImageQuad>, ho
             // own width, which pulls the rest of the row off the grid.
             text.push(if matches!(c.c, '\u{200B}' | '\t') { ' ' } else { c.c });
             if let Some(extra) = c.zerowidth() {
-                text.extend(extra);
+                text.extend(extra.iter().copied());
             }
         }
         // No underline under a label, a picture or a spacer's missing text; a faint cell's SGR 58
         // color is faint too (`iTermMetalPerFrameState.m:1613-1620`), nothing else touches it.
         // The cell's text in the profile's Unicode Normalization form, before anything below
         // classifies it (S1: `cell_level`, `cell_mask`, the box-glyph and ligature tests).
-        crate::encoding::normalize_in_place(&mut text, screen.normalization);
+        text.normalize(screen.normalization);
         let (style, strike) = crate::underline::style_for(c.flags, !hover && c.hyperlink().is_some(), draw.underline_hyperlinks);
         let sgr = c.underline_color().map(|u| {
             let u = palette.color(u);
             if c.flags.contains(Flags::DIM) { blend(palette.cell(c.fg, c.bg, c.flags - Flags::DIM).1, u, palette.faint_alpha) } else { u }
         });
         let ul = (!hidden && !blink_off && c.image().is_none()).then_some(Ul { style, strike, sgr });
-        let level = cell_level(&text, draw);
-        let mask = cell_mask(&text, draw, dark(fg, bg));
+        let level = cell_level(text.as_str(), draw);
+        let mask = cell_mask(text.as_str(), draw, dark(fg, bg));
         looks.push(CellLook {
             ul,
             text,
@@ -1767,7 +1770,7 @@ fn row_looks(cx: &RowCtx, row: usize, frac: f32, images: &mut Vec<ImageQuad>, ho
     // backgrounds, text pieces, colors and selection all follow (P5). Mirrored characters draw
     // as their counterparts; Arabic letters are marked so a run is shaped as one piece.
     if let Some(o) = &cx.orders[row] {
-        let mut old: Vec<Option<CellLook>> = std::mem::take(&mut looks).into_iter().map(Some).collect();
+        let mut old: Vec<Option<CellLook>> = std::mem::take(looks).into_iter().map(Some).collect();
         let mut new: Vec<CellLook> = (0..cols)
             .map(|visual| {
                 let logical = o.inverse.get(visual).map_or(visual, |&l| l as usize);
@@ -1779,21 +1782,20 @@ fn row_looks(cx: &RowCtx, row: usize, frac: f32, images: &mut Vec<ImageQuad>, ho
             let first = cell.text.chars().next();
             if o.mirrored[logical]
                 && let Some(c) = first {
-                    cell.text.replace_range(..c.len_utf8(), &crate::bidi::mirror(c).to_string());
+                    cell.text.replace_first(crate::bidi::mirror(c));
                 }
             cell.joins = o.rtl[logical] && first.is_some_and(crate::bidi::joins);
         }
-        looks = new;
+        *looks = new;
     }
 
     // Special Font Config: each cell a table entry covers takes its entry (after the display
     // order, so a mirrored character is the one looked up).
     if let Some(table) = draw.table.as_deref().filter(|t| !t.entries.is_empty()) {
         for cell in looks.iter_mut() {
-            cell.table = table_cell(table, &cell.text);
+            cell.table = table_cell(table, cell.text.as_str());
         }
     }
-    looks
 }
 
 /// One viewport row: its background runs, cursor box, text pieces, box glyphs, underlines and
@@ -1805,7 +1807,11 @@ fn build_row(cx: &RowCtx, row: usize, frac: f32) -> RowOut {
     let rect = Rect { y: frac, ..rect };
     let (cw, ch) = cell;
     let mut out = RowOut::default();
-    let cells = &row_looks(cx, row, frac, &mut out.images, &mut out.hovered);
+    let mut own = Vec::new();
+    let mut shared = cx.scratch.map(|s| s.borrow_mut());
+    let cells: &mut Vec<CellLook> = shared.as_deref_mut().unwrap_or(&mut own);
+    row_looks(cx, row, frac, &mut out.images, &mut out.hovered, cells);
+    let cells = &*cells;
     let mut scratch = Frame::default();
     let frame = &mut scratch;
     {
@@ -2128,14 +2134,19 @@ pub fn pane_with(
     // Each row's display order (right-to-left text); None draws it as it is. A row is its own
     // line of program output: nothing here moves a cell to another row.
     let display_offset = content.display_offset as i32;
-    let orders: Vec<Option<std::sync::Arc<crate::bidi::Order>>> = (0..lines).map(|row| screen.row_order(row as i32 - display_offset).filter(|o| o.lut.len() <= cols)).collect();
+    // Rows are reused only with a cache and the setting on; the cache also lends its buffers
+    // (the orders, and the looks `build_row` fills) so a frame allocates neither.
+    let mut cache = rows.filter(|_| draw.reuse_rows);
+    let mut orders = cache.as_deref_mut().map(|c| std::mem::take(&mut c.orders)).unwrap_or_default();
+    orders.clear();
+    orders.extend((0..lines).map(|row| screen.row_order(row as i32 - display_offset).filter(|o| o.lut.len() <= cols)));
+    let scratch = cache.as_deref_mut().map(|c| std::cell::RefCell::new(std::mem::take(c.scratch())));
     let visual_col = |row: usize, col: usize| orders.get(row).and_then(|o| o.as_ref()).and_then(|o| o.lut.get(col)).map_or(col, |&v| v as usize);
     let cursor = cursor_at.map(|(row, col)| (row, visual_col(row, col)));
-    let cx = RowCtx { screen, term, rect, cell, look, draw, highlights, face, palette, history, display_offset, cols, selection: content.selection.as_ref(), extra_runs: &extra_runs, block_cursor, cursor_at, cursor, wide_cursor, cursor_box, cursor_text, bg_brightness, bg_alpha, opaque_colors, orders: &orders };
-    // Rows are reused only with a cache and the setting on. These rows are always built: the
+    let cx = RowCtx { screen, term, rect, cell, look, draw, highlights, face, palette, history, display_offset, cols, selection: content.selection.as_ref(), extra_runs: &extra_runs, block_cursor, cursor_at, cursor, wide_cursor, cursor_box, cursor_text, bg_brightness, bg_alpha, opaque_colors, orders: &orders, scratch: scratch.as_ref() };
+    // These rows are always built: the
     // cursor's, the ones beside it when Smart Cursor Color looks at its neighbors, the ones under
     // the IME popup and any in a display order.
-    let mut cache = rows.filter(|_| draw.reuse_rows);
     let context = cache.is_some().then(|| row_context(&cx, focused));
     let mut fresh = vec![false; lines];
     // Rows alacritty did not touch since the last frame skip the compare.
@@ -2269,7 +2280,7 @@ pub fn pane_with(
         // on a light one (`key-light`, `key-dark`), sized to the cell (the icon font's em is
         // about the line height over 1.2).
         let r = Rect { x: rect.x + col as f32 * cw, y: rect.y + row as f32 * ch, w: cw, h: ch };
-        let bg = row_looks(&cx, row, 0.0, &mut Vec::new(), &mut Vec::new()).get(col).map_or(palette.bg, |c| c.bg);
+        let bg = { let mut v = Vec::new(); row_looks(&cx, row, 0.0, &mut Vec::new(), &mut Vec::new(), &mut v); v }.get(col).map_or(palette.bg, |c| c.bg);
         let scale = (cw * 1.2 / ch.max(1.0)).min(1.0);
         let span = Span { text: crate::pwm_prompt::KEY_GLYPH.to_string(), color: match_text(bg), bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
         frame.rows.push(TextRow { x: r.x, y: r.y + (ch - ch * scale) / 2.0, spans: vec![span].into(), clip: r, scale, face });
@@ -2421,6 +2432,14 @@ pub fn pane_with(
     // today's fade until 13y.
     if !focused && highlights.is_none() {
         frame.overlay.push(Quad { rect, color: rgba(palette.bg, DIM_ALPHA) });
+    }
+    // Hand the buffers back, emptied, for the next frame.
+    if let Some(c) = cache {
+        orders.clear();
+        c.orders = orders;
+        if let Some(buf) = scratch {
+            c.scratch = buf.into_inner();
+        }
     }
 }
 
@@ -10578,15 +10597,23 @@ pub(crate) mod agent_box_tests {
     /// The screens the baseline pins, as the frames `pane_with` draws for them (also the pixel
     /// harness's cases). `big` ones keep a hash only.
     pub(crate) fn baseline_cases() -> Vec<(String, Frame, bool)> {
+        baseline_cases_via(None)
+    }
+
+    /// `baseline_cases`, drawn through a row cache (with row reuse on) when one is given.
+    pub(crate) fn baseline_cases_via(cache: Option<&mut crate::scene_rows::RowCache>) -> Vec<(String, Frame, bool)> {
         use alacritty_terminal::index::{Column, Line, Point, Side};
         use alacritty_terminal::selection::{Selection, SelectionType};
         let rect = crate::layout::Rect { x: 4.0, y: 6.0, w: 800.0, h: 480.0 };
         let cell = (10.0, 20.0);
         let face = crate::render::DEFAULT_FACE;
         let hl = || Highlights { matches: &[], color: crate::palette::rgb(255, 255, 0), hover: None, link: crate::palette::rgb(0, 0, 255), labels: &[], notes: &[], dim: crate::dim::Dim::NONE, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[], command_region: None, shade: None, outline: [crate::palette::rgb(1, 2, 3), crate::palette::rgb(4, 5, 6)] };
+        let cache = std::cell::RefCell::new(cache);
         let draw_of = |s: &crate::screen::Screen, focused: bool, look: &CursorLook, draw: &DrawPrefs, h: Option<&Highlights>| {
             let mut f = Frame::default();
-            pane_with(&mut f, s, rect, cell, focused, look, draw, h, face, None);
+            let mut cache = cache.borrow_mut();
+            let draw = DrawPrefs { reuse_rows: cache.is_some(), ..draw.clone() };
+            pane_with(&mut f, s, rect, cell, focused, look, &draw, h, face, cache.as_deref_mut());
             f
         };
         let plain = |s: &crate::screen::Screen| draw_of(s, true, &CursorLook::shown(true), &DrawPrefs::default(), None);
@@ -11442,6 +11469,27 @@ mod row_reuse_tests {
         fn new() -> Cfg {
             Cfg { rect: Rect { x: 4.0, y: 6.0, w: 800.0, h: 480.0 }, cell: (10.0, 20.0), face: crate::render::DEFAULT_FACE, focused: true, look: CursorLook::shown(true), draw: DrawPrefs::default(), marks: None }
         }
+    }
+
+    #[test]
+    fn rows_build_the_same_frames_with_the_scratch() {
+        let plain = super::agent_box_tests::baseline_cases();
+        let mut cache = RowCache::new();
+        // The scratch is cleared and keeps its room, so a second pass reuses it.
+        assert!(cache.scratch().is_empty());
+        for pass in 0..2 {
+            let cached = super::agent_box_tests::baseline_cases_via(Some(&mut cache));
+            assert_eq!(plain.len(), cached.len());
+            for ((name, a, _), (_, b, _)) in plain.iter().zip(&cached) {
+                // Each run of the cases makes a new image, and the frame carries its id.
+                if name == "image-with-text-below" {
+                    continue;
+                }
+                assert_eq!(format!("{a:#?}"), format!("{b:#?}"), "{name} on pass {pass}");
+            }
+        }
+        assert!(cache.scratch.capacity() > 0, "the scratch is handed back with its room");
+        assert!(cache.scratch().is_empty());
     }
 
     fn draw(s: &Screen, cfg: &Cfg, reuse: bool, cache: Option<&mut RowCache>) -> Frame {

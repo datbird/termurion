@@ -131,6 +131,9 @@ pub struct RowCache {
     last: Vec<Option<(u64, u64, Arc<RowOut>)>>,
     /// The screen `last` was drawn from.
     screen: u64,
+    /// Buffers a frame takes and gives back, so building rows does not allocate them again.
+    pub(crate) orders: Vec<Option<Arc<crate::bidi::Order>>>,
+    pub(crate) scratch: Vec<crate::scene::CellLook>,
 }
 
 impl Default for RowCache {
@@ -141,7 +144,13 @@ impl Default for RowCache {
 
 impl RowCache {
     pub fn new() -> Self {
-        RowCache { rows: HashMap::default(), count: 0, frame: 0, used: 0, since: Instant::now(), hits: 0, compares: 0, damage: None, last: Vec::new(), screen: 0 }
+        RowCache { rows: HashMap::default(), count: 0, frame: 0, used: 0, since: Instant::now(), hits: 0, compares: 0, damage: None, last: Vec::new(), screen: 0, orders: Vec::new(), scratch: Vec::new() }
+    }
+
+    /// The buffer `build_row` fills with a row's looks: empty, its room kept.
+    pub(crate) fn scratch(&mut self) -> &mut Vec<crate::scene::CellLook> {
+        self.scratch.clear();
+        &mut self.scratch
     }
 
     pub fn get(&mut self, key: &RowKey) -> Option<&Arc<RowOut>> {

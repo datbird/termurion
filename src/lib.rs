@@ -272,6 +272,7 @@ pub mod bindings;
 pub mod bonjour;
 pub mod prompted;
 pub mod schema;
+pub mod cell_text;
 pub mod scene;
 pub mod scene_rows;
 pub mod alt_infer;
