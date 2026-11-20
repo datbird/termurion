@@ -520,6 +520,13 @@ fn new_auto_log_id() -> u32 {
     u32::from_le_bytes(b)
 }
 
+/// Where the tmux control mode start ends in a read, or the read's end when it holds none. A
+/// start cut by the end of the read is the tmux hook's to wait for.
+fn tmux_start_end(chunk: &[u8]) -> usize {
+    let start = crate::tmux_hook::START;
+    memchr::memmem::find(chunk, start).map_or(chunk.len(), |k| k + start.len())
+}
+
 /// A fresh session reference for a pane.
 pub fn new_session_guid() -> String {
     uuid::Uuid::new_v4().to_string().to_uppercase()
@@ -876,10 +883,9 @@ impl Pane {
     /// tmux start; the rest is tmux's. While a conductor is hooked it takes everything, a
     /// tmux start included, as iTerm2's conductor parser does.
     fn hook_output(&mut self, chunk: &[u8]) {
-        let start = crate::tmux_hook::START;
         let cut = match self.ssh_hook.active() || self.tmux_hook.active() {
             true => chunk.len(),
-            false => chunk.windows(start.len()).position(|w| w == start).map_or(chunk.len(), |k| k + start.len()),
+            false => tmux_start_end(chunk),
         };
         let (head, rest) = chunk.split_at(cut);
         for part in [head, rest].into_iter().filter(|part| !part.is_empty()) {
@@ -5688,5 +5694,44 @@ mod tests {
         let seen = logged(&mut p, crate::session_log::Style::Asciicast);
         p.resize(30, 6);
         assert!(text(&seen).contains("\"r\"") && text(&seen).contains("30x6"), "{:?}", text(&seen));
+    }
+
+    /// A small deterministic generator for the scan tests.
+    fn next_random(state: &mut u64) -> u64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        *state
+    }
+
+    /// The tmux start is found where the byte walk found it: in random chunks of 1 to 70000
+    /// bytes, with the start at every offset of the first 64, cut by a chunk boundary, and absent.
+    #[test]
+    fn hook_scan_finds_the_start_like_before() {
+        let start = crate::tmux_hook::START;
+        let old = |c: &[u8]| c.windows(start.len()).position(|w| w == start).map_or(c.len(), |k| k + start.len());
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let alphabet = b"ab \n\x1bP1000p[]0";
+        for _ in 0..200 {
+            let len = 1 + next_random(&mut seed) as usize % 70000;
+            let mut chunk: Vec<u8> = (0..len).map(|_| alphabet[next_random(&mut seed) as usize % alphabet.len()]).collect();
+            assert_eq!(tmux_start_end(&chunk), old(&chunk), "random chunk of {len}");
+            // The start planted at every one of the first 64 offsets, and at the very end.
+            for at in (0..64).chain([len.saturating_sub(start.len())]) {
+                if at + start.len() <= len {
+                    chunk[at..at + start.len()].copy_from_slice(start);
+                    assert_eq!(tmux_start_end(&chunk), old(&chunk), "start at {at} of {len}");
+                }
+            }
+        }
+        // Absent, and cut by a chunk boundary: no cut inside the chunk, as before (the tmux
+        // hook holds the partial start itself).
+        for n in 1..start.len() {
+            let mut cut = b"text".to_vec();
+            cut.extend_from_slice(&start[..n]);
+            assert_eq!(tmux_start_end(&cut), cut.len());
+            assert_eq!(tmux_start_end(&start[n..]), old(&start[n..]));
+        }
+        assert_eq!(tmux_start_end(b""), 0);
     }
 }

@@ -14,6 +14,7 @@ exclude = ["tools/protogen"]
 alacritty_terminal = "=0.26.0"
 arboard = "3"
 base64 = "0.22"
+memchr = "2"
 regex = "1"
 rustc-hash = "2"
 # AI chat history in iTerm2's chatdb.sqlite schema (m12 ruling 5).
