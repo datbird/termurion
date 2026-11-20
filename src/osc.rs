@@ -686,16 +686,7 @@ mod tests {
                         }
                         &[]
                     }
-                    VState::CsiEntry | VState::CsiParam => {
-                    let n = csi_param_run(&bytes[i..]);
-                    if n > 0 {
-                        self.parser.advance(&mut self.tap, &bytes[i..i + n]);
-                        i += n;
-                        continue;
-                    }
-                    &[]
-                }
-                VState::OscString => &[0x07, 0x18, 0x1a, 0x1b],
+                    VState::OscString => &[0x07, 0x18, 0x1a, 0x1b],
                     VState::DcsPassthrough => &[0x18, 0x1a, 0x1b, 0x9c],
                     VState::SosPmApcString => &[0x18, 0x1a, 0x1b],
                     _ => &[],

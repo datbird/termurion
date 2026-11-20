@@ -352,8 +352,27 @@ mod tests {
         assert_eq!(next(None), Next::Offer);
     }
 
-    /// The echoed report is found where the byte walk found it, in whatever chunks the output
-    /// arrives, including one split across the chunk boundary.
+    impl Detector {
+        /// `iterm2_match` as it was before it used memchr: the oracle.
+        fn iterm2_match_walk(&mut self, bytes: &[u8], now: Instant) -> bool {
+            if !self.is_armed(now) {
+                self.carry.clear();
+                return false;
+            }
+            let mut seen = std::mem::take(&mut self.carry);
+            seen.extend_from_slice(bytes);
+            if seen.windows(self.pattern.len()).any(|w| w == self.pattern.as_slice()) {
+                return true;
+            }
+            let keep = self.pattern.len() - 1;
+            let from = seen.len().saturating_sub(keep);
+            self.carry = seen[from..].to_vec();
+            false
+        }
+    }
+
+    /// The echoed report is found by the chunk the old walk found it in, with the same bytes
+    /// carried, in whatever chunks the output arrives.
     #[test]
     fn stuck_output_matches_the_byte_walk() {
         let t = Instant::now();
@@ -372,22 +391,22 @@ mod tests {
                 stream.extend_from_slice(&pattern);
                 stream.extend((0..next() as usize % 10).map(|_| b'x'));
             }
-            let mut d = Detector::default();
-            d.armed(report, t);
-            assert!(d.is_armed(t));
-            let (mut at, mut found) = (0, None);
-            while at < stream.len() && found.is_none() {
-                let take = (1 + next() as usize % 12).min(stream.len() - at);
-                at += take;
-                if d.output(&stream[at - take..at], t + ms(1)) {
-                    found = Some(at);
-                }
+            let (mut new, mut old) = (Detector::default(), Detector::default());
+            for d in [&mut new, &mut old] {
+                d.armed(report, t);
+                assert!(d.is_armed(t));
             }
-            let direct = stream.windows(pattern.len()).position(|w| w == pattern.as_slice());
-            // The match is reported by the chunk that completes it.
-            assert_eq!(found.is_some(), direct.is_some(), "round {round}");
-            if let (Some(end), Some(k)) = (found, direct) {
-                assert!(end >= k + pattern.len() && end < k + pattern.len() + 12, "round {round}: {end} vs {k}");
+            let mut at = 0;
+            while at < stream.len() {
+                let take = (1 + next() as usize % 12).min(stream.len() - at);
+                let chunk = &stream[at..at + take];
+                at += take;
+                let found = new.iterm2_match(chunk, t + ms(1));
+                assert_eq!(found, old.iterm2_match_walk(chunk, t + ms(1)), "round {round} at {at}");
+                assert_eq!(new.carry, old.carry, "round {round} at {at}");
+                if found {
+                    break;
+                }
             }
         }
     }
