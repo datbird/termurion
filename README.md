@@ -236,7 +236,7 @@ Termurion 1.1.10 is the current stable release. Get it from
 
 **Linux (x86_64)**
 
-- `Termurion-1.1.10-linux-x86_64.AppImage`. Run `chmod +x` on it, then run it. The first run adds Termurion to the app launcher with its icon.
+- `Termurion-1.1.10-x86_64.AppImage`. Run `chmod +x` on it, then run it. The first run adds Termurion to the app launcher with its icon.
 - It needs FUSE (`fusermount3`), which most desktops have. Where FUSE is missing, start it with `--appimage-extract-and-run`.
 - Tested on Ubuntu 26.04 with GNOME on Wayland. X11 also works. System-wide hotkeys work on X11 only.
 

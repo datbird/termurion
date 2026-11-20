@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds target/linux/Termurion-<version>-x86_64.AppImage from a release build.
+# Builds target/linux/Termurion-<version>-x86_64.AppImage from a release build made in an Ubuntu 22.04 container.
 # appimagetool and the type2 runtime (the first code that runs on a user's machine) are fetched once
 # to ~/.cache/termurion/ at pinned releases and used only after their SHA-256 matches; the runtime is
 # handed to appimagetool, which would otherwise fetch the moving "continuous" one.
@@ -38,15 +38,38 @@ fetch "$tool" "$tool_sha" "$tool_url" appimagetool
 fetch "$runtime" "$runtime_sha" "$runtime_url" "the AppImage runtime"
 chmod +x "$tool"
 
-~/.cargo/bin/cargo build --release --bins || die "build failed"
+# The build runs in an Ubuntu 22.04 container so the binaries need glibc 2.35 at most. A separate
+# target dir keeps the host's target/release alone; the cargo registry lives in a docker volume.
+image=termurion-appimage-builder
+docker build -q -t "$image" -f packaging/linux/appimage-builder.Dockerfile packaging/linux > /dev/null || die "builder image failed"
+tgt=target/linux-2204
+mkdir -p "$tgt"
+# Libraries a stock desktop may lack and the binaries dlopen or link. glibc, GL, Vulkan, Wayland and
+# the core X11 and xcb libraries stay out: they must come from the host.
+bundle="libxkbcommon.so.0 libxkbcommon-x11.so.0 libxcb-xkb.so.1"
+docker run --rm -i -u "$(id -u):$(id -g)" -e HOME=/tmp/home -e CARGO_TARGET_DIR="/src/$tgt" -e TGT="/src/$tgt" \
+  -e BUNDLE="$bundle" -v "$repo:/src" -v termurion-cargo-registry:/opt/cargo/registry -w /src "$image" \
+  bash -se <<'INNER' || die "build failed"
+cargo build --release --bins
+rm -rf "$TGT/lib"; mkdir -p "$TGT/lib"
+for l in $BUNDLE; do
+  cp -L "$(ldconfig -p | awk -v l="$l" '$1==l && /x86-64/ {print $NF; exit}')" "$TGT/lib/$l"
+  # Bundled libraries find each other beside themselves.
+  patchelf --set-rpath '$ORIGIN' "$TGT/lib/$l"
+done
+# The app dlopens xkbcommon; its own RUNPATH finds the bundle, so no LD_LIBRARY_PATH is needed anywhere.
+patchelf --set-rpath '$ORIGIN/../lib' "$TGT/release/termurion"
+INNER
 
 app=target/linux/AppDir
 rm -rf "$app"
 mkdir -p "$app/usr/bin" "$app/usr/share/icons/hicolor/256x256/apps"
 for b in termurion termurion-host termurion-git termurion-utils; do
-  [ -x "target/release/$b" ] && cp "target/release/$b" "$app/usr/bin/"
+  [ -x "$tgt/release/$b" ] && cp "$tgt/release/$b" "$app/usr/bin/"
 done
 [ -x "$app/usr/bin/termurion-host" ] || die "termurion-host was not built"
+mkdir -p "$app/usr/lib"
+cp "$tgt"/lib/*.so* "$app/usr/lib/"
 cp packaging/linux/AppRun "$app/AppRun"
 cp packaging/linux/dev.termurion.Termurion.desktop "$app/"
 icon=docs/assets/termurion/termurion-icon-256.png

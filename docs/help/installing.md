@@ -9,7 +9,7 @@ Silicon), and on Linux (x86_64). Download the file for your system from
 | Windows installer | `Termurion-1.1.10-win64-installer.exe` |
 | Windows portable | `Termurion-1.1.10-win64-portable.zip` |
 | macOS (Apple Silicon) | `Termurion-1.1.10-macos-arm64.zip` |
-| Linux (x86_64) | `Termurion-1.1.10-linux-x86_64.AppImage` |
+| Linux (x86_64) | `Termurion-1.1.10-x86_64.AppImage` |
 
 ## Windows
 
@@ -90,9 +90,12 @@ folders too for a clean removal.
 Termurion needs an x86_64 computer with a desktop that runs X11 or Wayland. It was tested on
 Ubuntu 26.04 with GNOME on Wayland. X11 also works.
 
-1. Download `Termurion-1.1.10-linux-x86_64.AppImage`.
-2. Make it executable: `chmod +x Termurion-1.1.10-linux-x86_64.AppImage`.
+1. Download `Termurion-1.1.10-x86_64.AppImage`.
+2. Make it executable: `chmod +x Termurion-1.1.10-x86_64.AppImage`.
 3. Run it. The first run adds Termurion to the app launcher with its icon.
+
+The AppImage is built on Ubuntu 22.04, so it runs on glibc 2.35 or newer (Ubuntu 22.04, Debian 12,
+Fedora 36 and later). It carries libxkbcommon and its X11 helper.
 
 The AppImage needs FUSE (`fusermount3`), which most desktops have. Where FUSE is missing, start it
 with `--appimage-extract-and-run`.
