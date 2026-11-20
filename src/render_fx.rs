@@ -906,6 +906,14 @@ impl Clock {
         })
     }
 
+    /// `next_frame` for a frame that was left out: with no blocking acquire or present to slow
+    /// it, a frame due at once (Full pacing) would spin the loop, so the next one waits a frame
+    /// gap (Full: 60 frames a second).
+    pub fn next_after_still(&self, animation: Animation, now: Instant, focused: bool, pacing: Pacing) -> Option<Instant> {
+        let gap = pacing.frame_gap().unwrap_or(Duration::from_micros(16_667));
+        self.next_frame(animation, now, focused, pacing).map(|t| t.max(now + gap))
+    }
+
     /// Whether another frame should be drawn now only for the animation.
     pub fn wants_frame(&self, animation: Animation, now: Instant, focused: bool) -> bool {
         match animation {
@@ -1439,6 +1447,22 @@ mod tests {
         assert!(clock.wants_frame(Animation::Always, t0 + Duration::from_secs(60), true));
         assert!(!clock.wants_frame(Animation::Always, t0, false), "always stops while unfocused");
         assert!(!clock.wants_frame(Animation::Off, t0, true));
+    }
+
+    /// A frame left out has no acquire or present to slow it: under Full the next one still waits.
+    #[test]
+    fn a_skipped_frame_waits_a_frame_before_it_asks_again() {
+        let t0 = Instant::now();
+        let mut clock = Clock::default();
+        let mut u = Uniforms::default();
+        clock.frame(&mut u, t0, (10, 10), None, true);
+        for pacing in [Pacing::Full, Pacing::Balanced, Pacing::Light] {
+            let due = clock.next_after_still(Animation::Always, t0, true, pacing).expect("an always animation");
+            assert!(due > t0, "{pacing:?} sets a due time after now");
+        }
+        assert_eq!(clock.next_after_still(Animation::Always, t0, true, Pacing::Full), Some(t0 + Duration::from_micros(16_667)));
+        assert_eq!(clock.next_after_still(Animation::Always, t0, true, Pacing::Light), Some(t0 + Duration::from_micros(66_667)));
+        assert_eq!(clock.next_after_still(Animation::Off, t0, true, Pacing::Full), None);
     }
 
     #[test]

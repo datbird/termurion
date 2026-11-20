@@ -258,6 +258,14 @@ impl FxRuntime {
         }
         self.clock.next_frame(self.animation, now, focused, pacing)
     }
+
+    /// `next_frame` after a frame that was left out (`Clock::next_after_still`).
+    pub(super) fn next_after_still(&self, now: Instant, focused: bool, pacing: render_fx::Pacing) -> Option<Instant> {
+        if !self.active() {
+            return None;
+        }
+        self.clock.next_after_still(self.animation, now, focused, pacing)
+    }
 }
 
 /// Detection runs for a pane at most this often.

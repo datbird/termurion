@@ -487,9 +487,10 @@ impl Gpu {
     }
 
     /// Sets when the animation's next frame is due, and asks for it now when it already is.
-    fn pace_fx(&mut self, now: Instant, focused: bool, pacing: crate::render_fx::Pacing) {
+    /// `still`: the frame was left out, so the next one waits a frame gap (no spin under Full).
+    fn pace_fx(&mut self, now: Instant, focused: bool, pacing: crate::render_fx::Pacing, still: bool) {
         let Some(fx) = self.fx.as_mut() else { return };
-        fx.due = fx.next_frame(now, focused, pacing);
+        fx.due = if still { fx.next_after_still(now, focused, pacing) } else { fx.next_frame(now, focused, pacing) };
         if fx.due.is_some_and(|t| t <= Instant::now()) {
             fx.due = None;
             self.redraw_fx();
@@ -7663,7 +7664,7 @@ impl App {
         if still {
             gpu.scene.keep(frame, built, size);
             self.perf_frames.entry(window_n).or_default().frame(before.map(|b| now.saturating_duration_since(b).as_secs_f64() * 1000.0), None, false, &mut self.perf, window_n);
-            gpu.pace_fx(fx_now, focused_window, fx_pacing);
+            gpu.pace_fx(fx_now, focused_window, fx_pacing, true);
             return;
         }
         let wait_start = Instant::now();
@@ -7728,7 +7729,7 @@ impl App {
         };
         // Animated effects keep the window drawing while they run, at the pace "Effects
         // animation" allows; a frame not due yet waits in the idle loop (`fx_frame_tick`).
-        gpu.pace_fx(fx_now, focused_window, fx_pacing);
+        gpu.pace_fx(fx_now, focused_window, fx_pacing, false);
         if drawn.is_ok() {
             gpu.scene.keep(frame, built, (w, h));
         } else {
