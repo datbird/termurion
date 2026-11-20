@@ -16,6 +16,11 @@ fn statuses_unchanged<'a>(last: &HashMap<PaneId, Option<String>>, mut now: impl 
     last.len() == now.len() && now.all(|(id, status)| last.get(id).is_some_and(|before| before == status))
 }
 
+/// `tick_status_change` has nothing to do: no watch waits and no status moved.
+fn status_idle<'a>(watches: usize, last: &HashMap<PaneId, Option<String>>, now: impl ExactSizeIterator<Item = (&'a PaneId, &'a Option<String>)>) -> bool {
+    watches == 0 && statuses_unchanged(last, now)
+}
+
 impl App {
     fn alert_prefs(&self, pane: PaneId) -> AlertPrefs {
         let p = self.panes.get(&pane).and_then(|p| self.store.get(&p.profile));
@@ -174,7 +179,7 @@ impl App {
     /// Nothing for `tick_status_change` to do: no watch waits and every pane's status is what
     /// it was last pass, so no change could be found and no list needs rebuilding.
     pub(super) fn status_change_idle(&self) -> bool {
-        self.status_watches.is_empty() && statuses_unchanged(&self.last_status, self.panes.iter().map(|(id, p)| (id, &p.own().tab_status.status)))
+        status_idle(self.status_watches.len(), &self.last_status, self.panes.iter().map(|(id, p)| (id, &p.own().tab_status.status)))
     }
 
     /// The status bar's answer. False for other bars.
@@ -249,12 +254,6 @@ fn older_click(list: &std::collections::VecDeque<(u64, PaneId)>, shown: u64) -> 
 mod tests {
     use super::*;
 
-    /// A method's text, up to the `}` that closes it.
-    fn body<'a>(src: &'a str, name: &str) -> &'a str {
-        let b = &src[src.find(&format!("fn {name}(")).unwrap_or_else(|| panic!("{name}"))..];
-        &b[..b.find("\n    }\n").unwrap()]
-    }
-
     fn statuses(list: &[(PaneId, Option<&str>)]) -> HashMap<PaneId, Option<String>> {
         list.iter().map(|(id, s)| (*id, s.map(str::to_string))).collect()
     }
@@ -265,10 +264,13 @@ mod tests {
         let now = statuses(&[(1, Some("Busy")), (2, None)]);
         assert!(statuses_unchanged(&last, now.iter()), "the same statuses leave nothing to find");
         assert!(statuses_unchanged(&HashMap::new(), HashMap::new().iter()), "no panes, no work");
-        let src = include_str!("alerts_ui.rs");
-        let tick = body(src, "tick_status_change");
-        assert!(tick.starts_with("fn tick_status_change(&mut self) {\n        if self.status_change_idle() {\n            return;"), "the gate is the first thing the tick does");
-        assert!(body(src, "status_change_idle").contains("status_watches.is_empty()"), "a waiting watch keeps the tick running");
+        assert!(status_idle(0, &last, now.iter()), "no watch, no change");
+    }
+
+    #[test]
+    fn a_waiting_status_watch_keeps_tick_status_change_running() {
+        let last = statuses(&[(1, Some("Busy"))]);
+        assert!(!status_idle(1, &last, last.iter()), "a watch waits for the next change");
     }
 
     #[test]

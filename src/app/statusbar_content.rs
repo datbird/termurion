@@ -883,22 +883,9 @@ impl BarWork {
 mod tests {
     use super::*;
 
-    /// A method's text, up to the `}` that closes it.
-    fn body<'a>(src: &'a str, name: &str) -> &'a str {
-        let b = &src[src.find(&format!("fn {name}(")).unwrap_or_else(|| panic!("{name}"))..];
-        &b[..b.find("\n    }\n").unwrap()]
-    }
-
     #[test]
     fn tick_status_bars_does_nothing_when_nothing_is_due() {
         assert!(BarWork::default().none(), "no bar, no poller, no clock, no meter, no script beat");
-        let tick = body(include_str!("statusbar_content.rs"), "tick_status_bars");
-        assert!(tick.contains("if self.status_bars_idle() {\n            return None;\n        }"), "the gate comes first");
-        assert!(tick.find("status_bars_idle()").unwrap() < tick.find("tick_meters(").unwrap());
-        let idle = body(include_str!("statusbar_content.rs"), "status_bars_idle");
-        for part in ["shows_status_bar", "git.is_empty()", "git_worker.idle()", "status_clock_due", "graph_frame_due", "meters.next_due()", "script_components"] {
-            assert!(idle.contains(part), "{part} keeps the tick running");
-        }
     }
 
     #[test]

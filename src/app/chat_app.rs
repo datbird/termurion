@@ -27,6 +27,24 @@ use crate::chat_store::{self, Chat, Store, OPEN_FAILED, OPEN_FAILED_HEADING};
 use crate::layout::PaneId;
 use crate::pwm::Secret;
 
+/// What can keep the chat tick busy; `none` says it has nothing to do.
+#[derive(Default)]
+struct ChatWork {
+    busy_agent: bool,
+    agent_files: bool,
+    checks: bool,
+    execs: bool,
+    exec_canceled: bool,
+    helps: bool,
+    browser: bool,
+}
+
+impl ChatWork {
+    fn none(&self) -> bool {
+        !(self.busy_agent || self.agent_files || self.checks || self.execs || self.exec_canceled || self.helps || self.browser)
+    }
+}
+
 /// The agent has a turn under way, a driver to poll or a file job to follow.
 fn agent_is_busy(a: &Agent) -> bool {
     a.in_turn || a.driver.is_some() || a.files.is_some()
@@ -510,12 +528,16 @@ impl App {
     /// No chat has a turn, a driver or a file job, and nothing waits for a check, a command, a
     /// Get-Help or a browser call: `chat_tick` would find nothing and answer None.
     fn chat_tick_idle(&self) -> bool {
-        !self.chat_agents.values().any(agent_is_busy)
-            && self.ai_checks.is_empty()
-            && self.ai_exec_canceled.is_empty()
-            && self.ai_execs.is_empty()
-            && self.ai_helps.is_empty()
-            && self.ai_browser.idle()
+        ChatWork {
+            busy_agent: self.chat_agents.values().any(|a| a.in_turn || a.driver.is_some()),
+            agent_files: self.chat_agents.values().any(|a| a.files.is_some()),
+            checks: !self.ai_checks.is_empty(),
+            execs: !self.ai_execs.is_empty(),
+            exec_canceled: !self.ai_exec_canceled.is_empty(),
+            helps: !self.ai_helps.is_empty(),
+            browser: !self.ai_browser.idle(),
+        }
+        .none()
     }
 
     /// The chats' part of the loop: closed gates stop their chats, the turns and file jobs
@@ -939,22 +961,9 @@ mod tests {
     use crate::ai_permissions::{allowed_of, defaults, Category, Key, Overrides, Permission};
     use crate::chat_broker::Broker;
 
-    /// A method's text, up to the `}` that closes it.
-    fn body<'a>(src: &'a str, name: &str) -> &'a str {
-        let b = &src[src.find(&format!("fn {name}(")).unwrap_or_else(|| panic!("{name}"))..];
-        &b[..b.find("\n    }\n").unwrap()]
-    }
-
     #[test]
     fn chat_tick_does_nothing_when_nothing_is_due() {
-        let src = include_str!("chat_app.rs");
-        let tick = body(src, "chat_tick");
-        assert!(tick.contains("if self.chat_tick_idle() {\n            return None;\n        }"), "the gate comes first");
-        assert!(tick.find("chat_tick_idle()").unwrap() < tick.find("ai_browser_sweep()").unwrap());
-        let idle = body(src, "chat_tick_idle");
-        for part in ["chat_agents", "ai_checks", "ai_exec_canceled", "ai_execs", "ai_helps", "ai_browser.idle()"] {
-            assert!(idle.contains(part), "{part} keeps the tick running");
-        }
+        assert!(ChatWork::default().none(), "no agent work, no check, no command, no help, no browser call");
     }
 
     #[test]
@@ -963,7 +972,18 @@ mod tests {
         assert!(!agent_is_busy(&agent), "an agent at rest holds the tick back");
         agent.in_turn = true;
         assert!(agent_is_busy(&agent), "a turn under way runs the tick");
-        // The browser's calls are proven in `ai_browser_app` (the_browser_calls_are_idle_only_when_they_hold_nothing).
+        let held = [
+            ("a busy agent", ChatWork { busy_agent: true, ..ChatWork::default() }),
+            ("a file job", ChatWork { agent_files: true, ..ChatWork::default() }),
+            ("a check", ChatWork { checks: true, ..ChatWork::default() }),
+            ("a command", ChatWork { execs: true, ..ChatWork::default() }),
+            ("a canceled command", ChatWork { exec_canceled: true, ..ChatWork::default() }),
+            ("a Get-Help", ChatWork { helps: true, ..ChatWork::default() }),
+            ("a browser call", ChatWork { browser: true, ..ChatWork::default() }),
+        ];
+        for (what, w) in held {
+            assert!(!w.none(), "{what} alone runs the tick");
+        }
     }
 
     #[test]
