@@ -233,13 +233,11 @@ impl FxRuntime {
         }
     }
 
-    /// Where this frame's effects can draw, with last frame's (`render_fx::frame_region`; None
-    /// runs the full pass), and whether this frame's own region is bounded, so the next frame
-    /// may shade only a region. `cell` is the focused pane's cell.
-    pub(super) fn region(&self, cell: (f32, f32), size: (u32, u32)) -> (Option<Vec<render_fx::PxRect>>, bool) {
-        let Some(terms) = self.chain.as_ref().and_then(|c| c.region_terms()) else { return (None, false) };
-        let own = render_fx::own_region(terms, &self.uniforms, cell, self.live_lines, size).is_some();
-        (render_fx::frame_region(terms, &self.uniforms, &self.last_uniforms, cell, self.live_lines, size), own)
+    /// Where this frame's effects can draw, alone and with last frame's (`render_fx::frame_rects`;
+    /// None runs the full pass). `cell` is the focused pane's cell.
+    pub(super) fn region(&self, cell: (f32, f32), size: (u32, u32)) -> render_fx::FrameRegion {
+        let Some(terms) = self.chain.as_ref().and_then(|c| c.region_terms()) else { return render_fx::FrameRegion::default() };
+        render_fx::frame_rects(terms, &self.uniforms, &self.last_uniforms, cell, self.live_lines, size)
     }
 
     /// Whether the chain's last copy writes the window's own raw view (`Chain::wants_raw_out`).

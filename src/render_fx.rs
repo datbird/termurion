@@ -127,6 +127,9 @@ pub enum RegionTerm {
     InputBox(f32),
     /// The whole window for this long after the cursor changes.
     FullAfterChange(Duration),
+    /// Looks outside the other terms that follow only the terminal's picture, never the time
+    /// (Cyber tints sent prompts anywhere): a frame with a new picture runs the full pass.
+    StillLooks,
 }
 
 fn parse_region(v: &toml::Value) -> Result<Vec<RegionTerm>, String> {
@@ -152,6 +155,7 @@ fn parse_region(v: &toml::Value) -> Result<Vec<RegionTerm>, String> {
             };
             Ok(match name {
                 "full" => RegionTerm::Full,
+                "still_looks" => RegionTerm::StillLooks,
                 "cursor" => RegionTerm::Cursor(pad()?),
                 "cursor_path" => RegionTerm::CursorPath(pad()?),
                 "prompt_mark" => RegionTerm::PromptMark(pad()?),
@@ -204,6 +208,8 @@ pub fn region_rects(terms: &[RegionTerm], u: &Uniforms, cell_h: f32, size: (u32,
     for t in terms {
         match t {
             RegionTerm::Full => return None,
+            // An animation-only frame keeps those looks from the frame before.
+            RegionTerm::StillLooks => {}
             RegionTerm::FullAfterChange(d) => {
                 if u.time - u.time_cursor_change < d.as_secs_f32() {
                     return None;
@@ -269,6 +275,20 @@ pub fn frame_region(terms: &[RegionTerm], now: &Uniforms, last: &Uniforms, cell:
     let b = own_region(terms, last, cell, live_lines, size)?;
     let boxes = a.iter().chain(&b).map(|r| [r.x as f32, r.y as f32, (r.x + r.w) as f32, (r.y + r.h) as f32]).collect();
     Some(round_and_merge(boxes, (size.0 as f32, size.1 as f32)))
+}
+
+/// The rects a frame may shade (`frame_rects`). None in either runs the full pass.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FrameRegion {
+    /// This frame's own region: a frame drawn anew shades it over its new picture.
+    pub own: Option<Vec<PxRect>>,
+    /// `own` united with last frame's (`frame_region`): an animation-only frame shades it.
+    pub with_last: Option<Vec<PxRect>>,
+}
+
+/// `own_region` and `frame_region` of one frame.
+pub fn frame_rects(terms: &[RegionTerm], now: &Uniforms, last: &Uniforms, cell: (f32, f32), live_lines: bool, size: (u32, u32)) -> FrameRegion {
+    FrameRegion { own: own_region(terms, now, cell, live_lines, size), with_last: frame_region(terms, now, last, cell, live_lines, size) }
 }
 
 /// Rounds boxes outward to whole pixels, clamps them to the window, merges overlapping ones and
@@ -1116,6 +1136,7 @@ mod tests {
         let m = region_manifest("[\"cursor:2.5\", \"cursor_path:2.5\", \"prompt_mark:1\", \"input_box:1\", \"full_after_change:600\"]");
         assert_eq!(m.region.unwrap(), [RegionTerm::Cursor(2.5), RegionTerm::CursorPath(2.5), RegionTerm::PromptMark(1.0), RegionTerm::InputBox(1.0), RegionTerm::FullAfterChange(Duration::from_millis(600))]);
         assert_eq!(region_manifest("[\"full\"]").region.unwrap(), [RegionTerm::Full]);
+        assert_eq!(region_manifest("[\"cursor\", \"still_looks\"]").region.unwrap(), [RegionTerm::Cursor(0.0), RegionTerm::StillLooks]);
         assert_eq!(region_manifest("[\"cursor\"]").region.unwrap(), [RegionTerm::Cursor(0.0)]);
     }
 
