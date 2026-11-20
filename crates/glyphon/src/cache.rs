@@ -19,6 +19,16 @@ use wgpu::{
 
 /// Termurion patch 6: the size of `RowUniform` in `row_shader.wgsl`.
 pub(crate) const ROW_UNIFORM_SIZE: u64 = 32;
+/// Termurion patch 8: the size of `RowTable` in `row_shader.wgsl`, the most a GLES 3.0 uniform
+/// block holds.
+pub(crate) const ROW_TABLE_CHUNK: u64 = 16384;
+
+/// Termurion patch 8: the row pipeline's second vertex buffer, one row id per instance.
+const ROW_ID_ATTRIBUTES: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
+    format: VertexFormat::Uint32,
+    offset: 0,
+    shader_location: 6,
+}];
 
 /// A cache to share common resources (e.g., pipelines, layouts, shaders) between multiple text
 /// renderers.
@@ -156,7 +166,8 @@ impl Cache {
             ..Default::default()
         });
 
-        // Termurion patch 6: the row pipeline adds group 2, one row entry by dynamic offset.
+        // Termurion patch 6: the row pipeline adds group 2, the row table by dynamic offset.
+        // Termurion patch 8: the binding is one 512-row chunk of the table.
         let row_shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("glyphon row shader"),
             source: ShaderSource::Wgsl(Cow::Borrowed(include_str!("row_shader.wgsl"))),
@@ -169,7 +180,7 @@ impl Cache {
                 ty: BindingType::Buffer {
                     ty: BufferBindingType::Uniform,
                     has_dynamic_offset: true,
-                    min_binding_size: NonZeroU64::new(ROW_UNIFORM_SIZE),
+                    min_binding_size: NonZeroU64::new(ROW_TABLE_CHUNK),
                 },
                 count: None,
             }],
@@ -237,7 +248,7 @@ impl Cache {
         })
     }
 
-    /// Termurion patch 6: binds one `ROW_UNIFORM_SIZE` window of the row table.
+    /// Termurion patch 8: binds one `ROW_TABLE_CHUNK` window of the row table.
     pub(crate) fn create_rows_bind_group(&self, device: &Device, buffer: &Buffer) -> BindGroup {
         device.create_bind_group(&BindGroupDescriptor {
             layout: &self.0.rows_layout,
@@ -246,7 +257,7 @@ impl Cache {
                 resource: BindingResource::Buffer(wgpu::BufferBinding {
                     buffer,
                     offset: 0,
-                    size: NonZeroU64::new(ROW_UNIFORM_SIZE),
+                    size: NonZeroU64::new(ROW_TABLE_CHUNK),
                 }),
             }],
             label: Some("glyphon rows bind group"),
@@ -268,6 +279,16 @@ impl Cache {
             ..
         } = self.0.deref();
 
+        // Termurion patch 8: the instances, then their row ids.
+        let buffers = [
+            vertex_buffers[0].clone(),
+            Some(wgpu::VertexBufferLayout {
+                array_stride: mem::size_of::<u32>() as wgpu::BufferAddress,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &ROW_ID_ATTRIBUTES,
+            }),
+        ];
+
         let mut cache = row_cache.lock().expect("Write row pipeline cache");
         if let Some((_, _, p)) = cache
             .iter()
@@ -282,7 +303,7 @@ impl Cache {
             vertex: VertexState {
                 module: row_shader,
                 entry_point: Some("vs_row"),
-                buffers: vertex_buffers,
+                buffers: &buffers,
                 compilation_options: PipelineCompilationOptions::default(),
             },
             fragment: Some(FragmentState {

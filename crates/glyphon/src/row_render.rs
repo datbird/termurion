@@ -4,7 +4,7 @@
 //! `prepare_glyph`, so the pixels match `TextRenderer` byte for byte.
 
 use crate::{
-    cache::ROW_UNIFORM_SIZE,
+    cache::{ROW_TABLE_CHUNK, ROW_UNIFORM_SIZE},
     text_render::{
         next_copy_buffer_size, prepare_glyph, text_glyph_image, zero_depth, GlyphBounds,
         GlyphMetadata, GlyphSystem, GlyphonCacheKey,
@@ -13,7 +13,7 @@ use crate::{
     RasterizedCustomGlyph, RenderError, State, SwashCache, TextAtlas, TextBounds, UploadBelt, Viewport,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     mem, slice,
 };
 use wgpu::{
@@ -42,9 +42,10 @@ pub struct RowArea<'a> {
 const MIN_SLOT: u32 = 64;
 /// The instance buffer's first size, in instances.
 const FIRST_CAPACITY: u32 = 4096;
-/// The row table's first size, in rows.
-const FIRST_TABLE_ROWS: u32 = 64;
+/// Rows in one chunk of the row table, `RowTable` in `row_shader.wgsl`.
+const TABLE_CHUNK_ROWS: u32 = (ROW_TABLE_CHUNK / ROW_UNIFORM_SIZE) as u32;
 const INSTANCE_SIZE: u64 = mem::size_of::<GlyphToRender>() as u64;
+const ROW_ID_SIZE: u64 = mem::size_of::<u32>() as u64;
 
 /// `RowUniform` in `row_shader.wgsl`.
 #[repr(C)]
@@ -82,6 +83,11 @@ struct Entry {
     keys: Vec<GlyphKey>,
     slot: Option<Slot>,
     frame: u64,
+    // Termurion patch 8: the entry's place in the row table, stable while it is kept.
+    id: u32,
+    /// What the table holds for this entry when it drew in `drawn_frame`.
+    uniform: RowUniform,
+    drawn_frame: u64,
 }
 
 impl Entry {
@@ -120,6 +126,19 @@ fn row_key(row: &RowArea) -> RowKey {
 struct Draw {
     start: u32,
     len: u32,
+    id: u32,
+    uniform: RowUniform,
+    /// Where a following row's slot must start to join this draw's batch: the slot's end when
+    /// only padding follows the drawn instances, else the drawn end (culled runs follow).
+    joins_at: u32,
+}
+
+/// Termurion patch 8: rows in adjacent slots, drawn with one call.
+struct Batch {
+    chunk: u32,
+    start: u32,
+    end: u32,
+    joins_at: u32,
 }
 
 /// Draws rows of text, keeping each row's glyph instances on the GPU between frames.
@@ -130,16 +149,21 @@ pub struct RowRenderer {
     capacity: u32,
     /// The first instance no slot has used yet.
     end: u32,
-    /// Free slot starts, one list per class.
-    free: Vec<Vec<u32>>,
+    /// Free slot starts, one set per class (lowest first, so a new screen lays out in draw order).
+    free: Vec<BTreeSet<u32>>,
+    /// The row id of each instance, a second vertex buffer beside `instances`.
+    ids: GpuBuffer,
+    /// Row ids given back by dropped entries, and the first id never given out.
+    free_ids: BTreeSet<u32>,
+    next_id: u32,
     entries: HashMap<RowKey, Vec<Entry>>,
     draws: Vec<Draw>,
+    batches: Vec<Batch>,
     table: GpuBuffer,
     table_rows: u32,
-    /// What the table holds now, one entry per drawn row.
-    table_cpu: Vec<RowUniform>,
+    /// What the table holds now, one entry per row id (`None` where unknown).
+    table_cpu: Vec<Option<RowUniform>>,
     rows_bind_group: BindGroup,
-    stride: u64,
     generation: u64,
     frame: u64,
     prepared_rows: u64,
@@ -153,9 +177,8 @@ impl RowRenderer {
         let pipeline = atlas
             .cache
             .get_or_create_row_pipeline(device, atlas.format, multisample);
-        let stride = (device.limits().min_uniform_buffer_offset_alignment as u64).max(ROW_UNIFORM_SIZE);
-        let instances = instance_buffer(device, FIRST_CAPACITY);
-        let table = table_buffer(device, FIRST_TABLE_ROWS, stride);
+        let (instances, ids) = instance_buffers(device, FIRST_CAPACITY);
+        let table = table_buffer(device, TABLE_CHUNK_ROWS);
         let rows_bind_group = atlas.cache.create_rows_bind_group(device, &table);
         Self {
             pipeline,
@@ -163,13 +186,16 @@ impl RowRenderer {
             capacity: FIRST_CAPACITY,
             end: 0,
             free: Vec::new(),
+            ids,
+            free_ids: BTreeSet::new(),
+            next_id: 0,
             entries: HashMap::new(),
             draws: Vec::new(),
+            batches: Vec::new(),
             table,
-            table_rows: FIRST_TABLE_ROWS,
-            table_cpu: Vec::new(),
+            table_rows: TABLE_CHUNK_ROWS,
+            table_cpu: vec![None; TABLE_CHUNK_ROWS as usize],
             rows_bind_group,
-            stride,
             generation: atlas.generation(),
             frame: 0,
             prepared_rows: 0,
@@ -182,6 +208,11 @@ impl RowRenderer {
         self.prepared_rows
     }
 
+    /// Draw calls `render` records for the last `prepare` (for tests).
+    pub fn draws_issued(&self) -> u64 {
+        self.batches.len() as u64
+    }
+
     /// Forgets every prepared row; the next frame prepares all of them again.
     pub fn clear(&mut self) {
         for (_, list) in self.entries.drain() {
@@ -190,8 +221,11 @@ impl RowRenderer {
             }
         }
         self.free.clear();
+        self.free_ids.clear();
+        self.next_id = 0;
         self.end = 0;
         self.draws.clear();
+        self.batches.clear();
     }
 
     /// Prepares the rows to draw, in the order they draw. Rows not given are dropped. Buffer
@@ -219,7 +253,6 @@ impl RowRenderer {
         let wanted: HashSet<RowKey> = rows.iter().map(row_key).collect();
         self.drop_entries(atlas, |key, _| !wanted.contains(key));
 
-        let mut uniforms = Vec::with_capacity(rows.len());
         let mut retried = false;
         loop {
             // A grown atlas may have moved what the kept instances point at.
@@ -229,7 +262,6 @@ impl RowRenderer {
             }
             self.frame += 1;
             self.draws.clear();
-            uniforms.clear();
             let prepared = self.prepare_rows(
                 device,
                 queue,
@@ -239,7 +271,6 @@ impl RowRenderer {
                 viewport,
                 &rows,
                 cache,
-                &mut uniforms,
                 &mut rasterize_custom_glyph,
             );
             if let Err(e) = prepared {
@@ -260,7 +291,8 @@ impl RowRenderer {
 
         let frame = self.frame;
         self.drop_entries(atlas, |_, e| e.frame != frame);
-        self.write_table(device, uploads, atlas, uniforms);
+        self.write_table(device, uploads, atlas);
+        self.batch();
         Ok(())
     }
 
@@ -275,7 +307,6 @@ impl RowRenderer {
         viewport: &Viewport,
         rows: &[RowArea],
         cache: &mut SwashCache,
-        uniforms: &mut Vec<RowUniform>,
         rasterize_custom_glyph: &mut impl FnMut(RasterizeCustomGlyphRequest) -> Option<RasterizedCustomGlyph>,
     ) -> Result<(), PrepareError> {
         let state = State { device, queue };
@@ -301,16 +332,29 @@ impl RowRenderer {
             let key = row_key(row);
 
             let frame = self.frame;
+            let uniform = |dy: i32| RowUniform {
+                offset: [0, dy],
+                _pad: [0, 0],
+                clip,
+            };
+            // Termurion patch 8: an entry holds one table entry per frame, so an entry already
+            // drawn this frame with another uniform cannot draw again; a fresh one is made.
+            let usable = |e: &Entry| {
+                let dy = e.shift_to(row.top)?;
+                (e.drawn_frame != frame || e.uniform == uniform(dy)).then_some(dy)
+            };
             let found = self.entries.get_mut(&key).and_then(|list| {
-                let exact = list.iter().position(|e| e.top.to_bits() == row.top.to_bits());
-                let i = exact.or_else(|| list.iter().position(|e| e.shift_to(row.top).is_some()))?;
+                let exact = list
+                    .iter()
+                    .position(|e| e.top.to_bits() == row.top.to_bits() && usable(e).is_some());
+                let i = exact.or_else(|| list.iter().position(|e| usable(e).is_some()))?;
                 let entry = &mut list[i];
                 entry.frame = frame;
-                let dy = entry.shift_to(row.top)?;
-                Some((dy, entry.slot.map(|s| entry.drawn(s, runs.clone()))))
+                let dy = usable(entry)?;
+                Some((i, dy, entry.slot.map(|s| entry.drawn(s, runs.clone()))))
             });
 
-            let (dy, drawn) = match found {
+            let (i, dy, drawn) = match found {
                 Some(hit) => hit,
                 None => {
                     let mut system = GlyphSystem {
@@ -320,33 +364,37 @@ impl RowRenderer {
                     };
                     let mut entry = prepare_row(&state, &mut system, row, &mut *rasterize_custom_glyph)?;
                     entry.frame = frame;
+                    entry.id = self.free_ids.pop_first().unwrap_or_else(|| {
+                        self.next_id += 1;
+                        self.next_id - 1
+                    });
                     self.prepared_rows += 1;
                     for &k in &entry.keys {
                         atlas.hold(k);
                     }
                     if !entry.instances.is_empty() {
                         let slot = self.alloc(device, uploads, entry.instances.len() as u32);
-                        uploads.write(
-                            device,
-                            &self.instances,
-                            slot.start as u64 * INSTANCE_SIZE,
-                            instance_bytes(&entry.instances),
-                        );
                         entry.slot = Some(slot);
+                        write_slot(device, uploads, &self.instances, &self.ids, &entry);
                     }
                     let drawn = entry.slot.map(|s| entry.drawn(s, runs.clone()));
-                    self.entries.entry(key).or_default().push(entry);
-                    (0, drawn)
+                    let list = self.entries.entry(key).or_default();
+                    list.push(entry);
+                    (list.len() - 1, 0, drawn)
                 }
             };
 
             if let Some((start, len)) = drawn.filter(|&(_, len)| len > 0) {
-                self.draws.push(Draw { start, len });
-                uniforms.push(RowUniform {
-                    offset: [0, dy],
-                    _pad: [0, 0],
-                    clip,
-                });
+                let entry = &mut self.entries.get_mut(&key).expect("the entry just found")[i];
+                entry.drawn_frame = frame;
+                entry.uniform = uniform(dy);
+                let slot = entry.slot.expect("a drawn entry has a slot");
+                let joins_at = if start + len == slot.start + entry.instances.len() as u32 {
+                    slot.start + (MIN_SLOT << slot.class)
+                } else {
+                    start + len
+                };
+                self.draws.push(Draw { start, len, id: entry.id, uniform: entry.uniform, joins_at });
             }
         }
         Ok(())
@@ -355,7 +403,7 @@ impl RowRenderer {
     /// Takes a slot for `len` instances, doubling the buffer when none is free.
     fn alloc(&mut self, device: &Device, uploads: &mut UploadBelt, len: u32) -> Slot {
         let class = (len.max(MIN_SLOT).next_power_of_two() / MIN_SLOT).trailing_zeros();
-        if let Some(start) = self.free.get_mut(class as usize).and_then(Vec::pop) {
+        if let Some(start) = self.free.get_mut(class as usize).and_then(BTreeSet::pop_first) {
             return Slot { start, class };
         }
         let size = MIN_SLOT << class;
@@ -364,19 +412,12 @@ impl RowRenderer {
             while self.end + size > capacity {
                 capacity *= 2;
             }
-            // Dropped, not destroyed: copies recorded this frame may still target it.
-            self.instances = instance_buffer(device, capacity);
+            // Dropped, not destroyed: copies recorded this frame may still target them.
+            (self.instances, self.ids) = instance_buffers(device, capacity);
             self.capacity = capacity;
-            // The new buffer starts empty: write every live row from its CPU copy.
-            for entry in self.entries.values().flatten() {
-                if let Some(slot) = entry.slot {
-                    uploads.write(
-                        device,
-                        &self.instances,
-                        slot.start as u64 * INSTANCE_SIZE,
-                        instance_bytes(&entry.instances),
-                    );
-                }
+            // The new buffers start empty: write every live row from its CPU copy.
+            for entry in self.entries.values().flatten().filter(|e| e.slot.is_some()) {
+                write_slot(device, uploads, &self.instances, &self.ids, entry);
             }
         }
         let start = self.end;
@@ -386,7 +427,7 @@ impl RowRenderer {
 
     /// Drops the entries `drop` picks, releasing their glyphs and freeing their slots.
     fn drop_entries(&mut self, atlas: &mut TextAtlas, drop: impl Fn(&RowKey, &Entry) -> bool) {
-        let free = &mut self.free;
+        let (free, free_ids) = (&mut self.free, &mut self.free_ids);
         self.entries.retain(|key, list| {
             list.retain_mut(|entry| {
                 if !drop(key, entry) {
@@ -398,54 +439,75 @@ impl RowRenderer {
                 if let Some(slot) = entry.slot {
                     let class = slot.class as usize;
                     if free.len() <= class {
-                        free.resize_with(class + 1, Vec::new);
+                        free.resize_with(class + 1, BTreeSet::new);
                     }
-                    free[class].push(slot.start);
+                    free[class].insert(slot.start);
                 }
+                free_ids.insert(entry.id);
                 false
             });
             !list.is_empty()
         });
     }
 
-    /// Writes the row table where an entry changed, growing it when it is too small.
-    fn write_table(
-        &mut self,
-        device: &Device,
-        uploads: &mut UploadBelt,
-        atlas: &TextAtlas,
-        uniforms: Vec<RowUniform>,
-    ) {
-        if uniforms.len() as u32 > self.table_rows {
-            let rows = (uniforms.len() as u32).next_power_of_two();
-            self.table = table_buffer(device, rows, self.stride);
+    /// Writes the table entries of the drawn rows that changed, growing the table when an id
+    /// is past its end.
+    fn write_table(&mut self, device: &Device, uploads: &mut UploadBelt, atlas: &TextAtlas) {
+        if self.next_id > self.table_rows {
+            let rows = self.next_id.div_ceil(TABLE_CHUNK_ROWS) * TABLE_CHUNK_ROWS;
+            self.table = table_buffer(device, rows);
             self.table_rows = rows;
             self.rows_bind_group = atlas.cache.create_rows_bind_group(device, &self.table);
-            self.table_cpu.clear();
+            self.table_cpu = vec![None; rows as usize];
         }
 
-        // Write each run of changed entries with one call.
-        let stride = self.stride as usize;
-        let mut i = 0;
-        while i < uniforms.len() {
-            if self.table_cpu.get(i) == Some(&uniforms[i]) {
-                i += 1;
-                continue;
+        let mut changed: Vec<(u32, RowUniform)> = Vec::new();
+        for draw in &self.draws {
+            if self.table_cpu[draw.id as usize] != Some(draw.uniform) {
+                self.table_cpu[draw.id as usize] = Some(draw.uniform);
+                changed.push((draw.id, draw.uniform));
             }
-            let first = i;
-            while i < uniforms.len() && self.table_cpu.get(i) != Some(&uniforms[i]) {
-                i += 1;
-            }
-            let mut bytes = vec![0u8; (i - first - 1) * stride + ROW_UNIFORM_SIZE as usize];
-            for (n, u) in uniforms[first..i].iter().enumerate() {
-                let raw = unsafe {
-                    slice::from_raw_parts(u as *const RowUniform as *const u8, ROW_UNIFORM_SIZE as usize)
-                };
-                bytes[n * stride..n * stride + raw.len()].copy_from_slice(raw);
-            }
-            uploads.write(device, &self.table, (first * stride) as u64, &bytes);
         }
-        self.table_cpu = uniforms;
+        changed.sort_unstable_by_key(|&(id, _)| id);
+
+        // Write each run of changed ids with one call.
+        let mut i = 0;
+        while i < changed.len() {
+            let first = i;
+            while i + 1 < changed.len() && changed[i + 1].0 == changed[i].0 + 1 {
+                i += 1;
+            }
+            i += 1;
+            let mut bytes = Vec::with_capacity((i - first) * ROW_UNIFORM_SIZE as usize);
+            for (_, u) in &changed[first..i] {
+                bytes.extend_from_slice(unsafe {
+                    slice::from_raw_parts(u as *const RowUniform as *const u8, ROW_UNIFORM_SIZE as usize)
+                });
+            }
+            uploads.write(device, &self.table, changed[first].0 as u64 * ROW_UNIFORM_SIZE, &bytes);
+        }
+    }
+
+    /// Termurion patch 8: joins the draws into batches. A draw joins the batch before it only
+    /// when its slot starts where that batch's last slot ends and its id is in the same table
+    /// chunk, so the rows draw in exactly the order they were given.
+    fn batch(&mut self) {
+        self.batches.clear();
+        for draw in &self.draws {
+            let chunk = draw.id / TABLE_CHUNK_ROWS;
+            match self.batches.last_mut() {
+                Some(b) if b.joins_at == draw.start && b.chunk == chunk => {
+                    b.end = draw.start + draw.len;
+                    b.joins_at = draw.joins_at;
+                }
+                _ => self.batches.push(Batch {
+                    chunk,
+                    start: draw.start,
+                    end: draw.start + draw.len,
+                    joins_at: draw.joins_at,
+                }),
+            }
+        }
     }
 
     /// Draws the rows given to the last `prepare`, in that order.
@@ -455,7 +517,7 @@ impl RowRenderer {
         viewport: &Viewport,
         pass: &mut RenderPass<'_>,
     ) -> Result<(), RenderError> {
-        if self.draws.is_empty() {
+        if self.batches.is_empty() {
             return Ok(());
         }
         debug_assert_eq!(
@@ -466,12 +528,16 @@ impl RowRenderer {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &atlas.bind_group, &[]);
         pass.set_bind_group(1, &viewport.bind_group, &[]);
-        for (i, draw) in self.draws.iter().enumerate() {
-            pass.set_bind_group(2, &self.rows_bind_group, &[(i as u64 * self.stride) as u32]);
-            let from = draw.start as u64 * INSTANCE_SIZE;
-            let to = from + draw.len as u64 * INSTANCE_SIZE;
-            pass.set_vertex_buffer(0, self.instances.slice(from..to));
-            pass.draw(0..4, 0..draw.len);
+        let mut bound = None;
+        for batch in &self.batches {
+            if bound != Some(batch.chunk) {
+                bound = Some(batch.chunk);
+                pass.set_bind_group(2, &self.rows_bind_group, &[(batch.chunk as u64 * ROW_TABLE_CHUNK) as u32]);
+            }
+            let (from, to) = (batch.start as u64, batch.end as u64);
+            pass.set_vertex_buffer(0, self.instances.slice(from * INSTANCE_SIZE..to * INSTANCE_SIZE));
+            pass.set_vertex_buffer(1, self.ids.slice(from * ROW_ID_SIZE..to * ROW_ID_SIZE));
+            pass.draw(0..4, 0..batch.end - batch.start);
         }
         Ok(())
     }
@@ -537,6 +603,9 @@ fn prepare_row(
         keys,
         slot: None,
         frame: 0,
+        id: 0,
+        uniform: RowUniform::default(),
+        drawn_frame: 0,
     })
 }
 
@@ -544,24 +613,40 @@ fn instance_bytes(instances: &[GlyphToRender]) -> &[u8] {
     unsafe { slice::from_raw_parts(instances.as_ptr() as *const u8, mem::size_of_val(instances)) }
 }
 
-fn instance_buffer(device: &Device, capacity: u32) -> GpuBuffer {
-    device.create_buffer(&BufferDescriptor {
-        label: Some("glyphon row instances"),
-        size: next_copy_buffer_size(capacity as u64 * INSTANCE_SIZE),
-        usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
+/// Termurion patch 8: writes the entry's whole slot, its instances then zero ones (`dim` 0,
+/// which `vs_row` culls) up to the slot's capacity, and its id for every one.
+fn write_slot(device: &Device, uploads: &mut UploadBelt, instances: &GpuBuffer, ids: &GpuBuffer, entry: &Entry) {
+    let slot = entry.slot.expect("a written entry has a slot");
+    let capacity = (MIN_SLOT << slot.class) as usize;
+    let mut bytes = vec![0u8; capacity * INSTANCE_SIZE as usize];
+    let real = instance_bytes(&entry.instances);
+    bytes[..real.len()].copy_from_slice(real);
+    uploads.write(device, instances, slot.start as u64 * INSTANCE_SIZE, &bytes);
+    let id_bytes: Vec<u8> = (0..capacity).flat_map(|_| entry.id.to_ne_bytes()).collect();
+    uploads.write(device, ids, slot.start as u64 * ROW_ID_SIZE, &id_bytes);
 }
 
-fn table_buffer(device: &Device, rows: u32, stride: u64) -> GpuBuffer {
+/// The instance buffer and its row id buffer, for `capacity` instances.
+fn instance_buffers(device: &Device, capacity: u32) -> (GpuBuffer, GpuBuffer) {
+    let buffer = |label, size| {
+        device.create_buffer(&BufferDescriptor {
+            label: Some(label),
+            size: next_copy_buffer_size(capacity as u64 * size),
+            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    };
+    (buffer("glyphon row instances", INSTANCE_SIZE), buffer("glyphon row ids", ROW_ID_SIZE))
+}
+
+fn table_buffer(device: &Device, rows: u32) -> GpuBuffer {
     device.create_buffer(&BufferDescriptor {
         label: Some("glyphon row table"),
-        size: rows as u64 * stride,
+        size: rows as u64 * ROW_UNIFORM_SIZE,
         usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -774,9 +859,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rows_draw_like_the_text_renderer() {
-        let mut rig = Rig::new();
+    /// Ten rows with mixed bounds: clipped on each side, past the viewport, fractional tops.
+    fn mixed_rows(rig: &mut Rig) -> (Vec<Buffer>, [(f32, f32, TextBounds); 10]) {
         let texts = [
             ("Clipped on the left side here", MONO),
             ("Clipped on the right side here", MONO),
@@ -802,6 +886,13 @@ mod tests {
             (12.0, 170.0, b(30, 175, 140, 184)),
             (12.0, 195.0, b(50, 200, 50, 200)),
         ];
+        (buffers, placed)
+    }
+
+    #[test]
+    fn rows_draw_like_the_text_renderer() {
+        let mut rig = Rig::new();
+        let (buffers, placed) = mixed_rows(&mut rig);
         let areas = || {
             buffers
                 .iter()
@@ -908,7 +999,6 @@ mod tests {
         };
         let rows = rig.draw_rows(areas(0));
         assert!(rig.rows.capacity > FIRST_CAPACITY, "the instance buffer did not double");
-        assert!(rig.rows.table_rows > FIRST_TABLE_ROWS, "the row table did not grow");
         let text = rig.draw_text(areas(0));
         assert_same(&rows, &text, "100 rows");
         let rows = rig.draw_rows(areas(3));
@@ -1071,5 +1161,108 @@ mod tests {
         let text = rig.draw_text(areas());
         assert_same(&rows, &text, "after the retry");
         assert_eq!(rig.atlas.generation(), 0, "the atlas grew past its cap");
+    }
+
+    /// A 56-row screen of mixed lengths (a few blank), rows overlapping so the draw order shows.
+    fn screen_rows(rig: &mut Rig) -> Vec<Buffer> {
+        (0..57)
+            .map(|n| {
+                let text = match n % 7 {
+                    3 => String::new(),
+                    5 => format!("{n:02} a longer row that runs well past the edge of the window, past sixty-four glyphs"),
+                    _ => format!("{n:02} row {}", "x".repeat(n % 11)),
+                };
+                rig.shape(&text, MONO)
+            })
+            .collect()
+    }
+
+    /// Rows `first..first + 56` of `buffers`, one serial per buffer, 4 px apart.
+    fn screen_areas(buffers: &[Buffer], first: usize) -> Vec<RowArea<'_>> {
+        (first..first + 56)
+            .map(|n| RowArea {
+                serial: n as u64 + 2000,
+                ..row(1, &buffers[n], 2.0, (n - first) as f32 * 4.0, whole())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn batched_rows_draw_like_one_draw_per_row() {
+        let mut rig = Rig::new();
+        let (buffers, placed) = mixed_rows(&mut rig);
+        let areas = || {
+            buffers
+                .iter()
+                .zip(placed)
+                .enumerate()
+                .map(|(i, (buf, (left, top, bounds)))| row(i as u64, buf, left, top, bounds))
+                .collect::<Vec<_>>()
+        };
+        let rows = rig.draw_rows(areas());
+        assert!(rig.rows.draws_issued() < 10, "the mixed rows drew one by one");
+        let text = rig.draw_text(areas());
+        assert_same(&rows, &text, "mixed bounds");
+
+        let mut rig = Rig::new();
+        let buffers = screen_rows(&mut rig);
+        let rows = rig.draw_rows(screen_areas(&buffers, 0));
+        assert_eq!(rig.rows.draws_issued(), 1, "a fresh screen is not one batch");
+        let text = rig.draw_text(screen_areas(&buffers, 0));
+        assert_same(&rows, &text, "56 rows");
+    }
+
+    #[test]
+    fn a_scrolled_screen_draws_in_few_batches() {
+        let mut rig = Rig::new();
+        let buffers = screen_rows(&mut rig);
+        rig.draw_rows(screen_areas(&buffers, 0));
+        let prepared = rig.rows.prepared_rows();
+        let rows = rig.draw_rows(screen_areas(&buffers, 1));
+        assert_eq!(rig.rows.prepared_rows(), prepared + 1, "kept rows were prepared again");
+        assert!(rig.rows.draws_issued() <= 3, "the scroll drew {} batches", rig.rows.draws_issued());
+        let text = rig.draw_text(screen_areas(&buffers, 1));
+        assert_same(&rows, &text, "scrolled one up");
+    }
+
+    /// A short row in a slot a long row left: the stale instances past its end draw nothing,
+    /// even inside one batch with its neighbors.
+    #[test]
+    fn padding_draws_nothing() {
+        let mut rig = Rig::new();
+        let above = rig.shape("The row above", MONO);
+        let long = rig.shape(&"Wgjy".repeat(15), MONO);
+        let short = rig.shape("abc", MONO);
+        let below = rig.shape("The row below", MONO);
+        rig.draw_rows([row(1, &above, 0.0, 20.0, whole()), row(2, &long, 0.0, 40.0, whole()), row(3, &below, 0.0, 60.0, whole())]);
+        let end = rig.rows.end;
+        let areas = || [row(1, &above, 0.0, 20.0, whole()), row(4, &short, 0.0, 40.0, whole()), row(3, &below, 0.0, 60.0, whole())];
+        let rows = rig.draw_rows(areas());
+        assert_eq!(rig.rows.end, end, "the short row did not take the long row's slot");
+        assert_eq!(rig.rows.draws_issued(), 1, "the three rows did not draw as one batch");
+        let text = rig.draw_text(areas());
+        assert_same(&rows, &text, "short row in a long row's slot");
+    }
+
+    #[test]
+    fn rows_past_one_table_chunk_draw_right() {
+        let mut rig = Rig::new();
+        let letters: Vec<Buffer> = (0..26).map(|n| rig.shape(&char::from(b'a' + n).to_string(), MONO)).collect();
+        let areas = || {
+            (0..600)
+                .map(|n| RowArea {
+                    serial: n as u64 + 5000,
+                    ..row(1, &letters[n % 26], (n % 30) as f32 * 10.0, (n / 30) as f32 * 12.0, whole())
+                })
+                .collect::<Vec<_>>()
+        };
+        let rows = rig.draw_rows(areas());
+        let draws = rig.rows.draws_issued();
+        assert!((2..=3).contains(&draws), "600 rows drew in {draws} batches");
+        let text = rig.draw_text(areas());
+        assert_same(&rows, &text, "600 rows");
+        // Kept rows past the first chunk draw right from the table too.
+        let rows = rig.draw_rows(areas());
+        assert_same(&rows, &text, "600 kept rows");
     }
 }

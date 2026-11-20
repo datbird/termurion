@@ -6,6 +6,8 @@ struct VertexInput {
     @location(3) color: u32,
     @location(4) content_type_with_srgb: u32,
     @location(5) depth: f32,
+    // Termurion patch 8: the row this glyph belongs to.
+    @location(6) row_id: u32,
 }
 
 struct VertexOutput {
@@ -32,7 +34,7 @@ var atlas_sampler: sampler;
 @group(1) @binding(0)
 var<uniform> params: Params;
 
-// Termurion patch 6: one entry per drawn row, picked by a dynamic offset.
+// Termurion patch 6: one entry per row.
 struct RowUniform {
     offset: vec2<i32>,
     _pad: vec2<i32>,
@@ -40,8 +42,14 @@ struct RowUniform {
     clip: vec4<i32>,
 };
 
+// Termurion patch 8: 512 rows (16384 bytes, the GLES 3.0 uniform block limit); a dynamic offset
+// picks the chunk an id falls in.
+struct RowTable {
+    rows: array<RowUniform, 512>,
+};
+
 @group(2) @binding(0)
-var<uniform> row: RowUniform;
+var<uniform> table: RowTable;
 
 fn srgb_to_linear(c: f32) -> f32 {
     if c <= 0.04045 {
@@ -54,6 +62,7 @@ fn srgb_to_linear(c: f32) -> f32 {
 // vs_main with the row offset and prepare_glyph's CPU clipping, in the same integer steps.
 @vertex
 fn vs_row(in_vert: VertexInput) -> VertexOutput {
+    let row = table.rows[in_vert.row_id % 512u];
     var x = in_vert.pos.x + row.offset.x;
     var y = in_vert.pos.y + row.offset.y;
     var width = i32(in_vert.dim & 0xffffu);
@@ -65,7 +74,8 @@ fn vs_row(in_vert: VertexInput) -> VertexOutput {
     let max_x = x + width;
     let max_y = y + height;
     // The CPU drops these glyphs; a zero-size quad draws nothing.
-    let culled = x > clip.z || max_x < clip.x || y > clip.w || max_y < clip.y;
+    // Termurion patch 8: dim 0 is a slot's padding; no real glyph is prepared with zero size.
+    let culled = in_vert.dim == 0u || x > clip.z || max_x < clip.x || y > clip.w || max_y < clip.y;
 
     if x < clip.x {
         uv.x = uv.x + u32(clip.x - x);

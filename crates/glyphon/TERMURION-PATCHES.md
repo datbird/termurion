@@ -57,5 +57,18 @@ through `[patch.crates-io]` in Termurion's Cargo.toml. The `examples/`, `benches
    vertices through it (the upstream `prepare*` methods still use the queue). A grown buffer is
    dropped, not destroyed, since a copy recorded in the same frame may target it. Tests:
    `row_render::tests` (the rig submits the belt after each prepare).
+8. Batched row draws (`row_render.rs`, `row_shader.wgsl`, `cache.rs`). Each kept row has a stable
+   id (a free list, lowest first) and the row table holds one `RowUniform` per id, in 512-row
+   chunks of 16384 bytes (`RowTable`, the GLES 3.0 uniform block limit) picked by a dynamic offset;
+   an id's entry is written only when its offset or clip changed. A second instance-rate vertex
+   buffer gives every instance its row id (`@location(6)`, read as `rows[id % 512]`). Taking a
+   slot writes the whole slot: the row's instances, then zero instances (`dim` 0, which `vs_row`
+   culls) with the row's id, so a short row in a long row's old slot draws nothing past its end.
+   `render` walks the rows in `prepare` order and joins a row to the current draw only when its
+   slot starts where the last one ends (only padding between) and its id is in the same chunk, so
+   the draw order and the pixels are unchanged. Free slots are taken lowest first per class, so a
+   new screen lays out in draw order. An entry drawn twice in one frame with another offset or clip
+   is prepared again as its own entry (one table entry per id). `draws_issued()` counts the draws
+   of the last `prepare`. Tests: `row_render::tests`.
 
 To update glyphon, copy the new version here and apply these changes again.
