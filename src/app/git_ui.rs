@@ -441,6 +441,11 @@ impl GitWorker {
         out
     }
 
+    /// Nothing in flight, abandoned, queued or ready: `take` would answer nothing.
+    pub(super) fn idle(&self) -> bool {
+        self.flights.is_empty() && self.abandoned.is_empty() && self.queue.is_empty() && self.ready.is_empty()
+    }
+
     /// When `take` next has an answer: now with one ready, else a flight's or a queued
     /// request's deadline. Finished threads wake the loop themselves.
     pub(super) fn next_due(&self) -> Option<Instant> {
@@ -1084,6 +1089,24 @@ Basic cache: none\nRich cache: none\nPending calls: 0\n"
 
     fn states(replies: &[GitReply]) -> Vec<(String, Fetched)> {
         replies.iter().filter_map(|r| if let GitReply::State { path, fetched } = r { Some((path.clone(), fetched.clone())) } else { None }).collect()
+    }
+
+    #[test]
+    fn the_worker_is_idle_only_when_it_holds_nothing() {
+        let gate = Arc::new(Gate { open: Mutex::new(false), cv: Condvar::new(), only: None });
+        let mut w = GitWorker::new(gate.clone(), Arc::new(|| {}));
+        assert!(w.idle(), "a new worker holds nothing");
+        let (_td, paths) = repos("idle", 1);
+        w.request(paths[0].clone(), String::new(), Duration::from_secs(5));
+        assert!(!w.idle(), "a request in flight");
+        *gate.open.lock().unwrap() = true;
+        gate.cv.notify_all();
+        let end = Instant::now() + Duration::from_secs(5);
+        while !w.idle() && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(10));
+            w.take();
+        }
+        assert!(w.idle(), "its answer was taken");
     }
 
     /// Requests for one path join the one thread; at most `MAX_THREADS` run, the rest

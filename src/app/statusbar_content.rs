@@ -811,10 +811,28 @@ impl App {
             }
     }
 
+    /// No pane shows a bar and nothing the bars started is left (a poller, a git answer on its
+    /// way, a clock, a graph, a meter, a script beat): `tick_status_bars` would answer None.
+    pub(super) fn status_bars_idle(&self) -> bool {
+        BarWork {
+            a_bar_shows: self.panes.keys().any(|&id| self.shows_status_bar(id)),
+            git_pollers: !self.git.is_empty(),
+            git_worker_busy: !self.git_worker.idle(),
+            clock_due: self.status_clock_due.is_some(),
+            graph_frame_due: self.graph_frame_due.is_some(),
+            meter_due: self.meters.next_due().is_some(),
+            script_beat: self.script_components.values().any(|c| c.due.is_some()),
+        }
+        .none()
+    }
+
     /// The status bars' clocks: the Clock's, the graphs' (`tick_meters`), the git
     /// pollers' (`tick_git`, which also drains the git worker's answers) and the script
     /// components' cadences (`tick_script_components`). When to come back.
     pub(super) fn tick_status_bars(&mut self) -> Option<Instant> {
+        if self.status_bars_idle() {
+            return None;
+        }
         let now = Instant::now();
         let meters = self.tick_meters(now);
         let git = self.tick_git(now);
@@ -843,9 +861,61 @@ impl App {
     }
 }
 
+/// What can keep the status bars' tick busy; `none` says it has nothing to do.
+#[derive(Default)]
+struct BarWork {
+    a_bar_shows: bool,
+    git_pollers: bool,
+    git_worker_busy: bool,
+    clock_due: bool,
+    graph_frame_due: bool,
+    meter_due: bool,
+    script_beat: bool,
+}
+
+impl BarWork {
+    fn none(&self) -> bool {
+        !(self.a_bar_shows || self.git_pollers || self.git_worker_busy || self.clock_due || self.graph_frame_due || self.meter_due || self.script_beat)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A method's text, up to the `}` that closes it.
+    fn body<'a>(src: &'a str, name: &str) -> &'a str {
+        let b = &src[src.find(&format!("fn {name}(")).unwrap_or_else(|| panic!("{name}"))..];
+        &b[..b.find("\n    }\n").unwrap()]
+    }
+
+    #[test]
+    fn tick_status_bars_does_nothing_when_nothing_is_due() {
+        assert!(BarWork::default().none(), "no bar, no poller, no clock, no meter, no script beat");
+        let tick = body(include_str!("statusbar_content.rs"), "tick_status_bars");
+        assert!(tick.contains("if self.status_bars_idle() {\n            return None;\n        }"), "the gate comes first");
+        assert!(tick.find("status_bars_idle()").unwrap() < tick.find("tick_meters(").unwrap());
+        let idle = body(include_str!("statusbar_content.rs"), "status_bars_idle");
+        for part in ["shows_status_bar", "git.is_empty()", "git_worker.idle()", "status_clock_due", "graph_frame_due", "meters.next_due()", "script_components"] {
+            assert!(idle.contains(part), "{part} keeps the tick running");
+        }
+    }
+
+    #[test]
+    fn tick_status_bars_still_acts_when_due() {
+        let held = [
+            BarWork { a_bar_shows: true, ..BarWork::default() },
+            BarWork { git_pollers: true, ..BarWork::default() },
+            BarWork { git_worker_busy: true, ..BarWork::default() },
+            BarWork { clock_due: true, ..BarWork::default() },
+            BarWork { graph_frame_due: true, ..BarWork::default() },
+            BarWork { meter_due: true, ..BarWork::default() },
+            BarWork { script_beat: true, ..BarWork::default() },
+        ];
+        for (i, w) in held.iter().enumerate() {
+            assert!(!w.none(), "reason {i} alone runs the tick");
+        }
+    }
 
     /// R3: iTerm2 has one answer to "is this session on this computer" (the token-aware frozen
     /// locality). No production code outside the one function reads a host name alone.
