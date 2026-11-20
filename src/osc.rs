@@ -263,6 +263,19 @@ fn could_be_wanted(buf: &[u8]) -> bool {
     WANTED.iter().any(|w| buf.starts_with(w) || w.starts_with(buf))
 }
 
+/// How many bytes at the front of `bytes` the parser can take in one step while it is between
+/// sequences: all up to the first ESC or ENQ, the only bytes that begin something the scanner
+/// reports (every other byte is text or a control the parser acts on by itself).
+fn ground_run(bytes: &[u8]) -> usize {
+    memchr::memchr2(0x1b, 0x05, bytes).unwrap_or(bytes.len())
+}
+
+/// How many bytes at the front of `bytes` are the digits, `;` and `:` of a control sequence's
+/// parameters: they only add to the parameters, whatever state the parser is in.
+fn csi_param_run(bytes: &[u8]) -> usize {
+    bytes.iter().take_while(|b| (0x30..=0x3b).contains(*b)).count()
+}
+
 impl Scanner {
     /// Whether an OSC 1337 `File` or `MultipartFile` string is open and still being read: the
     /// terminal is receiving a file (`terminalReceivingFile`, `VT100Terminal.m:4071`).
@@ -312,7 +325,16 @@ impl Scanner {
             // byte that ends them, so it never holds a string's text.
             let stop: &[u8] = match before {
                 VState::Ground => {
-                    let n = bytes[i..].iter().take_while(|c| (0x20..=0x7e).contains(*c)).count();
+                    let n = ground_run(&bytes[i..]);
+                    if n > 0 {
+                        self.parser.advance(&mut self.tap, &bytes[i..i + n]);
+                        i += n;
+                        continue;
+                    }
+                    &[]
+                }
+                VState::CsiEntry | VState::CsiParam => {
+                    let n = csi_param_run(&bytes[i..]);
                     if n > 0 {
                         self.parser.advance(&mut self.tap, &bytes[i..i + n]);
                         i += n;
@@ -614,6 +636,71 @@ pub fn parse(payload: &str) -> Option<Osc> {
 mod tests {
     use super::*;
 
+    impl Scanner {
+        /// The scan as it was before the ground run was found by memchr: kept as the oracle.
+        fn scan_spans_walk(&mut self, bytes: &[u8]) -> Vec<(usize, usize, Osc)> {
+            let mut out = Vec::new();
+            // Where the escape sequence being read began (0 when it began in an earlier read).
+            let mut began = 0;
+            let mut i = 0;
+            while i < bytes.len() {
+                let b = bytes[i];
+                if let Some(d) = self.deferred.take()
+                    && b == b'\\' {
+                        out.push((d.began, i + 1, d.ev));
+                    }
+                let before = self.parser.state();
+                // Runs the parser would only buffer or print are taken at once; the parser sees the
+                // byte that ends them, so it never holds a string's text.
+                let stop: &[u8] = match before {
+                    VState::Ground => {
+                        let n = bytes[i..].iter().take_while(|c| (0x20..=0x7e).contains(*c)).count();
+                        if n > 0 {
+                            self.parser.advance(&mut self.tap, &bytes[i..i + n]);
+                            i += n;
+                            continue;
+                        }
+                        &[]
+                    }
+                    VState::CsiEntry | VState::CsiParam => {
+                    let n = csi_param_run(&bytes[i..]);
+                    if n > 0 {
+                        self.parser.advance(&mut self.tap, &bytes[i..i + n]);
+                        i += n;
+                        continue;
+                    }
+                    &[]
+                }
+                VState::OscString => &[0x07, 0x18, 0x1a, 0x1b],
+                    VState::DcsPassthrough => &[0x18, 0x1a, 0x1b, 0x9c],
+                    VState::SosPmApcString => &[0x18, 0x1a, 0x1b],
+                    _ => &[],
+                };
+                if !stop.is_empty() {
+                    let n = bytes[i..].iter().position(|c| stop.contains(c)).unwrap_or(bytes.len() - i);
+                    if n > 0 {
+                        self.string_run(i, &bytes[i..i + n], &mut out);
+                        i += n;
+                        continue;
+                    }
+                }
+                if b == 0x1b {
+                    began = i;
+                }
+                self.parser.advance(&mut self.tap, &bytes[i..=i]);
+                let after = self.parser.state();
+                self.react(before, after, b, i, began, &mut out);
+                i += 1;
+            }
+            self.pending = (self.parser.state() != VState::Ground).then_some(began);
+            self.sbegan = 0;
+            if let Some(d) = &mut self.deferred {
+                d.began = 0;
+            }
+            out
+        }
+    }
+
     /// 13p (R3): a bare `9;4` means "stopped" (`TDEL:1655-1657`); it was read as a ConEmu
     /// subcommand and dropped, leaving a bar up.
     #[test]
@@ -888,5 +975,53 @@ mod tests {
         long.extend(std::iter::repeat_n(b'x', 70 * 1024));
         long.push(7);
         assert_eq!(Scanner::default().scan(&long).len(), 1);
+    }
+
+    /// A random stream of terminal output: text, UTF-8 and bad bytes, control bytes, CSI, OSC,
+    /// DCS and APC sequences, and ENQ.
+    fn random_output(seed: &mut u64) -> Vec<u8> {
+        let mut next = || {
+            *seed ^= *seed << 13;
+            *seed ^= *seed >> 7;
+            *seed ^= *seed << 17;
+            *seed
+        };
+        const PIECES: &[&[u8]] = &[
+            b"plain text here", b"\n", b"\r\n", b"\t", b"caf\xc3\xa9 \xe3\x81\x82", b"\xc3", b"\x80", b"\x9b", b"\xff", b"\x05", b"\x07", b"\x18", b"\x1a",
+            b"\x1b[38;2;10;20;30m", b"\x1b[0m", b"\x1b[3J", b"\x1b[5n", b"\x1b[20t", b"\x1b[?1049h", b"\x1b[3;4H", b"\x1b[2b", b"\x1b[c", b"\x1b[", b"\x1b", b"\x7f", b"\x1b[1;2;3:4m", b"\x1b[?25l", b"\x1b[38:2::1:2:3m", b"\x1b[99999999999;1m", b"\x1b[;;;;m", b"\x1b[1\x18", b"\x1b[1\x1b[2m", b"\x1b[1?2m", b"\x1b[12", b";34",
+            b"\x1b]0;a title\x07", b"\x1b]7;file://h/dir\x1b\\", b"\x1b]1337;SetMark\x07", b"\x1b]52;c;aGk=\x07", b"\x1b]", b"\x1bP$qm\x1b\\", b"\x1bP1000p", b"\x1b_Gi=1;AAAA\x1b\\", b"\x1bX junk \x1b\\", b"\x1b\\",
+        ];
+        let mut out = Vec::new();
+        for _ in 0..1 + next() % 60 {
+            out.extend_from_slice(PIECES[next() as usize % PIECES.len()]);
+        }
+        out
+    }
+
+    /// The scanner takes a run of ground bytes in one step: it ends at the first ESC or ENQ, and
+    /// finds every event, at the same offsets, as the byte at a time walk did, with the same
+    /// unfinished sequence left over, for any cut of the stream.
+    #[test]
+    fn osc_prescan_matches_the_byte_walk() {
+        assert_eq!(ground_run(b"abc\n\x1b[m"), 4);
+        assert_eq!(ground_run(b"ab\x05"), 2);
+        assert_eq!(ground_run(b"\x1b"), 0);
+        assert_eq!(ground_run(b"plain"), 5);
+        let mut seed = 0x1234_5678_9abc_def1u64;
+        for round in 0..3000 {
+            let stream = random_output(&mut seed);
+            let (mut new, mut old) = (Scanner::default(), Scanner::default());
+            new.cup_armed = round % 2 == 0;
+            old.cup_armed = new.cup_armed;
+            let mut at = 0;
+            while at < stream.len() {
+                let take = (1 + (seed.rotate_left(17) ^ at as u64) as usize % 37).min(stream.len() - at);
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                let chunk = &stream[at..at + take];
+                assert_eq!(new.scan_spans(chunk), old.scan_spans_walk(chunk), "round {round} at {at} of {:?}", String::from_utf8_lossy(&stream));
+                assert_eq!(new.pending, old.pending, "round {round} at {at}");
+                at += take;
+            }
+        }
     }
 }
