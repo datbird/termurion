@@ -944,7 +944,7 @@ impl Pane {
     /// it unless output is dropped, and its reports go back to the session.
     fn route_output(&mut self, bytes: Vec<u8>) {
         let dropping = self.suppress_output || self.coprocess.as_ref().is_some_and(|c| c.mute);
-        for out in self.tmux_hook.feed(&bytes) {
+        for out in self.tmux_hook.feed_vec(bytes) {
             match out {
                 crate::tmux_hook::Out::Screen(_) if dropping => {}
                 crate::tmux_hook::Out::Screen(bytes) if self.tmux_q.is_empty() => {

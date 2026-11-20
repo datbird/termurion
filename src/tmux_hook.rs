@@ -59,18 +59,28 @@ impl Hook {
     }
 
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Out> {
+        self.feed_vec(bytes.to_vec())
+    }
+
+    /// `feed` for a read the caller hands over: plain output comes back as the same allocation,
+    /// not a copy.
+    pub fn feed_vec(&mut self, bytes: Vec<u8>) -> Vec<Out> {
         if self.sealed {
             return Vec::new();
         }
         let mut data = std::mem::take(&mut self.held);
-        data.extend_from_slice(bytes);
+        if data.is_empty() {
+            data = bytes;
+        } else {
+            data.extend_from_slice(&bytes);
+        }
         let mut out = Vec::new();
         let mut screen = Vec::new();
         let mut i = 0;
         while i < data.len() {
             let rest = &data[i..];
             if !self.control {
-                match rest.windows(START.len()).position(|w| w == START) {
+                match memchr::memmem::find(rest, START) {
                     Some(k) => {
                         screen.extend_from_slice(&rest[..k]);
                         if !screen.is_empty() {
@@ -84,16 +94,22 @@ impl Hook {
                     None => {
                         // A tail that may begin the start sequence waits for the next read.
                         let keep = (1..START.len()).rev().find(|n| *n <= rest.len() && rest.ends_with(&START[..*n])).unwrap_or(0);
-                        screen.extend_from_slice(&rest[..rest.len() - keep]);
-                        self.held = rest[rest.len() - keep..].to_vec();
-                        i = data.len();
+                        let end = data.len() - keep;
+                        self.held = data[end..].to_vec();
+                        if i == 0 && screen.is_empty() {
+                            data.truncate(end);
+                            screen = data;
+                        } else {
+                            screen.extend_from_slice(&data[i..end]);
+                        }
+                        break;
                     }
                 }
                 continue;
             }
-            match rest.iter().position(|b| *b == b'\n') {
+            match memchr::memchr(b'\n', rest) {
                 None => {
-                    self.line.extend(rest.iter().filter(|b| **b != b'\r'));
+                    push_without_cr(&mut self.line, rest);
                     i = data.len();
                     // psmux ends a `detach` reply with `%exit` and no newline.
                     if split_glued_exit(&self.line).is_some() {
@@ -102,7 +118,7 @@ impl Hook {
                     }
                 }
                 Some(k) => {
-                    self.line.extend(rest[..k].iter().filter(|b| **b != b'\r'));
+                    push_without_cr(&mut self.line, &rest[..k]);
                     i += k + 1;
                     let line = std::mem::take(&mut self.line);
                     self.finish_line(line, &mut out);
@@ -160,6 +176,16 @@ impl Hook {
     }
 }
 
+/// Appends `bytes` to `line` without its carriage returns.
+fn push_without_cr(line: &mut Vec<u8>, bytes: &[u8]) {
+    let mut rest = bytes;
+    while let Some(k) = memchr::memchr(b'\r', rest) {
+        line.extend_from_slice(&rest[..k]);
+        rest = &rest[k + 1..];
+    }
+    line.extend_from_slice(rest);
+}
+
 /// A `%begin` line with `%exit` glued to its end (psmux ends control mode this way after
 /// `detach`): the `%begin` part and the `%exit`. Real tmux never prints this line.
 fn split_glued_exit(line: &[u8]) -> Option<(&[u8], &[u8])> {
@@ -170,6 +196,66 @@ fn split_glued_exit(line: &[u8]) -> Option<(&[u8], &[u8])> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl Hook {
+        /// `feed` as it was before its scans used memchr: the oracle.
+        fn feed_walk(&mut self, bytes: &[u8]) -> Vec<Out> {
+            if self.sealed {
+                return Vec::new();
+            }
+            let mut data = std::mem::take(&mut self.held);
+            data.extend_from_slice(bytes);
+            let mut out = Vec::new();
+            let mut screen = Vec::new();
+            let mut i = 0;
+            while i < data.len() {
+                let rest = &data[i..];
+                if !self.control {
+                    match rest.windows(START.len()).position(|w| w == START) {
+                        Some(k) => {
+                            screen.extend_from_slice(&rest[..k]);
+                            if !screen.is_empty() {
+                                out.push(Out::Screen(std::mem::take(&mut screen)));
+                            }
+                            out.push(Out::Enter);
+                            self.control = true;
+                            self.block = None;
+                            i += k + START.len();
+                        }
+                        None => {
+                            // A tail that may begin the start sequence waits for the next read.
+                            let keep = (1..START.len()).rev().find(|n| *n <= rest.len() && rest.ends_with(&START[..*n])).unwrap_or(0);
+                            screen.extend_from_slice(&rest[..rest.len() - keep]);
+                            self.held = rest[rest.len() - keep..].to_vec();
+                            i = data.len();
+                        }
+                    }
+                    continue;
+                }
+                match rest.iter().position(|b| *b == b'\n') {
+                    None => {
+                        self.line.extend(rest.iter().filter(|b| **b != b'\r'));
+                        i = data.len();
+                        // psmux ends a `detach` reply with `%exit` and no newline.
+                        if split_glued_exit(&self.line).is_some() {
+                            let line = std::mem::take(&mut self.line);
+                            self.finish_line(line, &mut out);
+                        }
+                    }
+                    Some(k) => {
+                        self.line.extend(rest[..k].iter().filter(|b| **b != b'\r'));
+                        i += k + 1;
+                        let line = std::mem::take(&mut self.line);
+                        self.finish_line(line, &mut out);
+                    }
+                }
+            }
+            if !screen.is_empty() {
+                out.push(Out::Screen(screen));
+            }
+            out
+        }
+    }
 
     fn s(b: &[u8]) -> Out {
         Out::Screen(b.to_vec())
@@ -314,5 +400,38 @@ mod tests {
             _ => None,
         });
         assert_eq!(session.as_deref(), Some("%session-changed $335 termurion-test-rec"));
+    }
+
+    /// A read comes out as the byte walk made it, with the same bytes held at its end, at every
+    /// split of a stream (control mode lines with carriage returns, a glued `%exit`, a start cut
+    /// by the end of a read); a plain read is moved, not copied.
+    #[test]
+    fn tmux_hook_feed_matches_the_byte_walk() {
+        let streams: [&[u8]; 3] = [
+            b"plain text \x1b[1mbold\x1b[m\r\n\x1bP1000p%begin 1 2 0\r\n%end 1 2 0\r\n%output %1 hi\r\n%exit\ntail \x1bP10",
+            b"a\x1bP1000p%begin 1 2 0\r\n%end 1 2 0\r\n%begin 3 4 0%exit",
+            b"\x1bP10\x1bP1000p%output %2 a\r\rb\r\n\r%exit\n\x1bP1000",
+        ];
+        for stream in streams {
+            for cut in 0..=stream.len() {
+                let (mut walk, mut fast, mut owned) = (Hook::default(), Hook::default(), Hook::default());
+                let mut a = walk.feed_walk(&stream[..cut]);
+                a.extend(walk.feed_walk(&stream[cut..]));
+                let mut b = fast.feed(&stream[..cut]);
+                b.extend(fast.feed(&stream[cut..]));
+                let mut c = owned.feed_vec(stream[..cut].to_vec());
+                c.extend(owned.feed_vec(stream[cut..].to_vec()));
+                assert_eq!(a, b, "split at {cut}");
+                assert_eq!(a, c, "split at {cut}");
+                assert_eq!((walk.held.clone(), walk.line.clone(), walk.control), (owned.held.clone(), owned.line.clone(), owned.control));
+            }
+        }
+        let mut h = Hook::default();
+        let plain = vec![b'x'; 5000];
+        let at = plain.as_ptr();
+        match &h.feed_vec(plain)[..] {
+            [Out::Screen(bytes)] => assert_eq!(bytes.as_ptr(), at, "moved"),
+            other => panic!("{other:?}"),
+        }
     }
 }
