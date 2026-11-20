@@ -7631,11 +7631,13 @@ impl App {
         });
         // The in-window menu bar (Linux): what it needs, read before the surface is borrowed.
         let bar_on = self.bar_strip().is_some();
-        let bar_dark = self.dark();
         let bar_scale = self.scale();
         if let (Some(p), Some(g)) = (self.view().and_then(crate::platform::chrome::take_popup), self.gpu.as_mut()) {
             g.bar.queue(p);
         }
+        // The menu bar's theme and view are read only when the bar draws.
+        let bar_draws = bar_on || self.gpu.as_ref().is_some_and(|g| g.bar.busy());
+        let bar_dark = bar_draws && self.dark();
         let Some(gpu) = self.gpu.as_mut() else { return };
         // Only a changed title goes out: the compositor hears every set_title (H2).
         if let Some(title) = &title {
@@ -7742,7 +7744,7 @@ impl App {
         // The menu bar and any open menu go over the terminal, on the same frame.
         let mut chosen = None;
         if let Some(gpu) = self.gpu.as_mut()
-            && (bar_on || gpu.bar.busy())
+            && bar_draws
         {
             let (device, queue) = (gpu.render_device().clone(), gpu.render_queue().clone());
             let frame = menu_bar_ui::BarFrame { device: &device, queue: &queue, target: &view, format: gpu.config.format, size: (w, h), scale: bar_scale, dark: bar_dark };
