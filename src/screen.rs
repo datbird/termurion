@@ -288,6 +288,8 @@ pub struct Screen {
     pub(crate) folds: std::collections::HashMap<u32, Vec<Row<Cell>>>,
     next_fold: u32,
     feeds: u32,
+    /// Raised by `feed` when output moved something a menu shows (`menu_facts`).
+    menu_epoch: u64,
     /// Whether any byte has been fed: iTerm2's tab width applies to a new session only.
     fed: bool,
     /// The Advanced emulation rules this screen follows (`set_rules`).
@@ -653,6 +655,11 @@ impl PendingColors {
     pub(crate) fn preset_pending(&self) -> bool {
         self.preset.is_some()
     }
+
+    /// Anything waits for the app (a tab color, a badge color, a preset or a named color).
+    fn any(&self) -> bool {
+        self.preset.is_some() || self.tab_before.is_some() || self.tab_after.is_some() || self.badge_before.is_some() || self.badge_after.is_some() || self.colors.iter().any(Option::is_some)
+    }
 }
 
 impl Screen {
@@ -750,6 +757,7 @@ impl Screen {
             folds: std::collections::HashMap::new(),
             next_fold: 0,
             feeds: 0,
+            menu_epoch: 0,
             fed: false,
             rules: crate::emu::Rules::default(),
             term_name: "xterm-256color".to_string(),
@@ -1448,9 +1456,52 @@ impl Screen {
         self.term.echo_armed = true;
     }
 
+    /// What the menu bar reads from this screen and output can change. Cheap on purpose: it
+    /// runs twice per read, so lists are counted or hashed, never copied.
+    pub fn menu_facts(&self) -> MenuFacts {
+        use std::hash::{Hash, Hasher};
+        let mode = self.term.mode();
+        let mut modes = 0u8;
+        for (i, (.., flag)) in crate::marks::TOGGLES.iter().enumerate() {
+            if mode.intersects(*flag) {
+                modes |= 1 << i;
+            }
+        }
+        let mut place = std::collections::hash_map::DefaultHasher::new();
+        self.title.hash(&mut place);
+        self.shell.cwd.hash(&mut place);
+        self.shell.host.hash(&mut place);
+        self.shell.user.hash(&mut place);
+        MenuFacts {
+            modes,
+            keyboard: self.keyboard(),
+            level: self.level(),
+            literal: self.keys.literal,
+            place: place.finish(),
+            marks: (self.marks.records.len(), self.marks.serial(), self.marks.last_command, self.marks.alert_next),
+            notes: self.notes.by_id.len(),
+            downloads: (self.downloads.len(), self.file_aborted),
+            queued: (self.requests.len(), self.pending.any()),
+        }
+    }
+
+    /// Moves when `feed` changed a `menu_facts` value, never otherwise.
+    pub fn menu_epoch(&self) -> u64 {
+        self.menu_epoch
+    }
+
     /// Feeds app output. Returns the bytes the terminal must send back, such as
     /// answers to device, color, and size queries. An app that gets no answer may hang.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
+        let before = self.menu_facts();
+        let reply = self.feed_timed(bytes);
+        if self.menu_facts() != before {
+            self.menu_epoch = self.menu_epoch.wrapping_add(1);
+        }
+        reply
+    }
+
+    fn feed_timed(&mut self, bytes: &[u8]) -> Vec<u8> {
         if self.triggers.list.is_empty() || self.triggers.busy {
             return self.feed_untimed(bytes);
         }
@@ -2997,9 +3048,78 @@ impl crate::seltext::Cells for Screen {
     }
 }
 
+/// The screen state the menu bar's check marks and enabled items follow (`Screen::menu_facts`).
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct MenuFacts {
+    /// Terminal State's DEC modes, one bit per `marks::TOGGLES` row.
+    modes: u8,
+    keyboard: crate::keyproto::Keyboard,
+    level: u16,
+    literal: bool,
+    /// Title, current directory, host and user, hashed together.
+    place: u64,
+    /// Marks kept, marks ever made, the last command mark, Alert on Next Mark.
+    marks: (usize, u32, Option<u32>, bool),
+    notes: usize,
+    downloads: (usize, bool),
+    /// Window requests and queued colors (a tab color) the app has not taken yet.
+    queued: (usize, bool),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn menu_screen() -> Screen {
+        let mut s = Screen::new(80, 24);
+        s.feed(b"plain text\r\n");
+        s
+    }
+
+    /// Every fact a menu shows moves the epoch once when it arrives inside plain text.
+    #[test]
+    fn every_menu_fact_moves_the_epoch() {
+        let seqs: &[&[u8]] = &[
+            b"\x1b]0;title\x07",
+            b"\x1b]7;file://h/tmp\x07",
+            b"\x1b[?1h",
+            b"\x1b[?2004h",
+            b"\x1b[>1u",
+            b"\x1b]1337;SetMark\x07",
+            b"\x1b]133;A\x07\x1b]133;C\x07\x1b]133;D;0\x07",
+            b"\x1b]1337;File=name=eA==;size=1:eA==\x07",
+            b"\x1b]1337;SetColors=tab=ff0000\x07",
+            b"\x1b]1337;AddAnnotation=note\x07",
+            b"\x1b[?1049h",
+            b"\x1b[?1004h",
+            b"\x1b[?1000h",
+            b"\x1b=",
+            b"\x1b]1337;RemoteHost=me@host\x07",
+        ];
+        for seq in seqs {
+            let mut s = menu_screen();
+            let before = s.menu_epoch();
+            let mut bytes = b"abc".to_vec();
+            bytes.extend_from_slice(seq);
+            bytes.extend_from_slice(b"def");
+            s.feed(&bytes);
+            assert_eq!(s.menu_epoch(), before + 1, "{:?}", String::from_utf8_lossy(seq));
+        }
+    }
+
+    #[test]
+    fn plain_output_keeps_the_epoch() {
+        let mut s = menu_screen();
+        let before = s.menu_epoch();
+        for i in 0..1000 {
+            s.feed(format!("\x1b[3{}mline {i}\x1b[0m\r\x1b[K\x1b[2;5Hx\x1b[A\x1b[B\x1b[3C\r\n", i % 8).as_bytes());
+        }
+        // No menu reads a user variable (the audit: workgroup rows follow the pane's workgroup).
+        s.feed(b"\x1b]1337;SetUserVar=a=Yg==\x07");
+        // The emulation level changes only from its menu, never from output.
+        s.feed(b"\x1b[62;1\"p");
+        assert_eq!(s.menu_epoch(), before);
+    }
 
     /// Grid writes that may skip the render marking, as (file under `src`, function, count, why).
     /// Anything else writes through `edit_grid`, `edit_primary_grid` or `term_mut`.

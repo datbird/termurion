@@ -63,6 +63,7 @@ const WHEEL_LINES: f32 = 3.0;
 const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 mod actions;
+mod menu_inputs;
 mod fx_ui;
 mod scene_cache;
 mod frame_settings;
@@ -556,8 +557,10 @@ impl App {
         if !order.is_empty() {
             self.pump_from = next_pump_start(order.len(), start, first_more);
         }
-        changed |= self.ssh_pump();
-        changed |= self.tmux_pump(event_loop);
+        let (ssh, tmux) = (self.ssh_pump(), self.tmux_pump(event_loop));
+        changed |= ssh | tmux;
+        // A tmux or ssh pump can add, drop or retitle sessions and windows.
+        self.menus_dirty |= ssh | tmux;
         // Panes a tmux or ssh pump fed got output too (`feed_output`); they draw through the pacer.
         for (id, p) in self.panes.iter() {
             if p.got_output && !outputs.contains(id) {
@@ -578,6 +581,7 @@ impl App {
         // A pane whose shell exited stays and follows its end action, once its output drained.
         let (exited_now, _) = self.handle_ended(event_loop);
         changed |= !exited_now.is_empty();
+        self.menus_dirty |= !exited_now.is_empty();
         self.check_coprocesses();
         if changed {
             // An exit shows in the tab bar: a held pane's end draws through the pacer too.
@@ -1023,6 +1027,8 @@ pub struct App {
     /// changed).
     arrange_prompt: Option<(crate::prompt_ui::PromptWindow, arrange_ui::SaveWhat)>,
     menus_dirty: bool,
+    /// The key the menu check marks were last synced under (`after_output`).
+    menu_key: Option<menu_inputs::OutputMenuKey>,
     /// The folder the next pane starts in, for a restored arrangement's session.
     start_dir_override: Option<crate::arrangement::Folder>,
     /// The command the next pane runs instead of its profile's (a git menu command's
@@ -2724,6 +2730,7 @@ pub fn run() {
         group_prompt: None,
         arrange_prompt: None,
         menus_dirty: false,
+        menu_key: None,
         start_dir_override: None,
         start_command_override: None,
         param_prompts: Vec::new(),
@@ -5835,7 +5842,10 @@ impl App {
         self.take_requests();
         self.composer_output(outputs);
         self.check_marks();
-        self.sync_checks();
+        // The check marks follow output only when it moved something a menu shows.
+        if Some(self.output_menu_key()) != self.menu_key {
+            self.sync_checks();
+        }
         self.paced_redraw(outputs, now);
     }
 

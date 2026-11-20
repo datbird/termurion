@@ -84,6 +84,8 @@ impl App {
             return self.banners.set("aps", format!("Can't switch to profile {guid}: it no longer exists."));
         };
         self.remarry(pane, &guid);
+        // The new profile's triggers are the Triggers menu's rows.
+        self.menus_dirty = true;
         // Re-applied after it, to the new profile's font, through the size change's own path.
         if zoom != 0.0 {
             self.write_font_size(pane, zoom);

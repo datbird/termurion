@@ -301,7 +301,10 @@ impl App {
             if let Some((_, m)) = screen.marks_in_order().last() {
                 self.mark_pos.insert(*id, m.id);
             }
-            if std::mem::take(&mut screen.marks.alert_next) || (offscreen && !active.contains(id)) {
+            let was_alert_next = std::mem::take(&mut screen.marks.alert_next);
+            // Alert on Next Mark is spent: its check mark clears.
+            self.menus_dirty |= was_alert_next;
+            if was_alert_next || (offscreen && !active.contains(id)) {
                 let title = screen.title().unwrap_or("Shell").to_string();
                 alerts.push((title, screen.previous_code().unwrap_or(0) != 0));
             }

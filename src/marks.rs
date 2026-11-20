@@ -352,6 +352,11 @@ pub fn toggle_off(label: &str) -> &'static [u8] {
 }
 
 impl Marks {
+    /// Marks made so far; any new mark moves it.
+    pub(crate) fn serial(&self) -> u32 {
+        self.next_id
+    }
+
     /// The program ended: no command is typed or running any more (13q).
     pub(crate) fn program_ended(&mut self) {
         self.in_command = false;

@@ -323,6 +323,7 @@ pub struct Transfers {
     /// of its kind starts, and it stays (`downloadsMenu`, `uploadsMenu`).
     pub downloads_menu: bool,
     pub uploads_menu: bool,
+    generation: u64,
 }
 
 impl Transfers {
@@ -335,6 +336,7 @@ impl Transfers {
             Dir::Upload => self.uploads_menu = true,
         }
         self.items.push(t);
+        self.generation += 1;
         self.next
     }
 
@@ -342,7 +344,13 @@ impl Transfers {
         self.items.iter().find(|t| t.id == id)
     }
 
+    /// Raised by every change to the rows (a progress step, a status, a row added or dropped).
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     fn get_mut(&mut self, id: u64) -> Option<&mut Transfer> {
+        self.generation += 1;
         self.items.iter_mut().find(|t| t.id == id)
     }
 
@@ -420,6 +428,7 @@ impl Transfers {
     pub fn remove(&mut self, id: u64) -> bool {
         let before = self.items.len();
         self.items.retain(|t| !(t.id == id && t.status.removable()));
+        self.generation += 1;
         self.items.len() != before
     }
 
@@ -427,11 +436,16 @@ impl Transfers {
     /// ones of one menu.
     pub fn clear_all(&mut self, dir: Dir) {
         self.items.retain(|t| !(t.dir == dir && t.status.removable()));
+        self.generation += 1;
     }
 
     /// `cleanUpMenus`: finished items older than a day go.
     pub fn prune(&mut self, now: Instant) {
+        let before = self.items.len();
         self.items.retain(|t| t.status.running() || now.saturating_duration_since(t.changed) <= KEEP_FINISHED);
+        if self.items.len() != before {
+            self.generation += 1;
+        }
     }
 
     /// Whether any transfer of this kind is running (not over, not cancelled).

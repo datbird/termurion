@@ -195,6 +195,7 @@ impl App {
     pub(super) fn take_downloads(&mut self) {
         self.tell_oversize();
         let waiting: Vec<(PaneId, crate::inline_file::Download)> = self.panes.iter_mut().flat_map(|(id, p)| std::mem::take(&mut p.own_mut().downloads).into_iter().map(move |d| (*id, d))).collect();
+        self.menus_dirty |= !waiting.is_empty();
         for (pane, d) in waiting {
             if self.alert_waits(|then| download_ask_of(then) == Some(pane)) {
                 continue;

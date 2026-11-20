@@ -774,8 +774,14 @@ impl App {
         !commands::status(item).unavailable() && !commands::DISABLED_IN_SESSION.contains(&sel) && !commands::DISABLED_UNDER_UV.contains(&sel)
     }
 
-    /// Check marks follow the focused pane's terminal modes.
+    /// Check marks follow the focused pane's terminal modes. The key they were synced under is
+    /// kept, so `after_output` can tell when output moved something.
     pub(super) fn sync_checks(&mut self) {
+        self.sync_check_marks();
+        self.menu_key = Some(self.output_menu_key());
+    }
+
+    fn sync_check_marks(&mut self) {
         // Engage AI follows the administrator's switch in every window's bar (`PTA:169-171`).
         let ai_allowed = self.globals.bool(crate::ai_settings::ADMIN);
         // Explain Output follows the focused pane's selection and command marks, not the gate.
