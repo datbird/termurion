@@ -121,6 +121,8 @@ pub struct Chain {
     /// The last run drew the window's picture (`skip_if_still`).
     ran: bool,
     skipped: u64,
+    /// What `skip_if_still` packed for this frame's uniforms: `run_with` writes these instead of packing again.
+    staged: Option<Vec<Option<Vec<u8>>>>,
     /// Where the effects can draw (`set_region_terms`); None runs every frame full screen.
     region_terms: Option<Vec<RegionTerm>>,
     /// With region terms: the last pass's output, kept so a frame can shade only its region,
@@ -218,7 +220,7 @@ impl Chain {
             passes.push(Pass { pipeline, uniforms, layout });
         }
         let last_packed = vec![Vec::new(); passes.len()];
-        Ok(Chain { passes, bind_layout, sampler, format, size: (0, 0), targets: Vec::new(), blits: None, plain: None, keep_alpha, frame_drawn: false, binds: Vec::new(), copy_binds: Vec::new(), last_packed, binds_made: 0, uniform_writes: 0, ran: false, skipped: 0, region_terms: None, kept: None, kept_ok: false, kept_made: 0, keep_next: true, shaded_region: false })
+        Ok(Chain { passes, bind_layout, sampler, format, size: (0, 0), targets: Vec::new(), blits: None, plain: None, keep_alpha, frame_drawn: false, binds: Vec::new(), copy_binds: Vec::new(), last_packed, binds_made: 0, uniform_writes: 0, ran: false, skipped: 0, staged: None, region_terms: None, kept: None, kept_ok: false, kept_made: 0, keep_next: true, shaded_region: false })
     }
 
     /// For a card that cannot view a texture in a second format (`view_formats_supported` false):
@@ -394,12 +396,20 @@ impl Chain {
 
     /// Whether a frame with `uniforms` would show what the window already shows: the passes
     /// last ran on this window's picture at `size`, and every pass packs the bytes its buffer
-    /// holds. The caller asks only when the scene and everything drawn over it are unchanged.
-    /// Counts the frame it answers yes to (`skips`).
-    pub fn skip_if_still(&mut self, uniforms: &Uniforms, size: (u32, u32)) -> bool {
-        let still = self.ran && self.frame_kept() && self.size == size && self.passes.iter().zip(&self.last_packed).all(|(pass, last)| pass.layout.as_ref().is_none_or(|l| uniforms.pack(l) == *last));
+    /// holds. `eligible` is the caller's word that the scene and everything drawn over it are
+    /// unchanged; without it the answer is no. Counts the frame it answers yes to (`skips`).
+    /// The packed bytes wait for the `run_with` of this frame, so a drawn frame packs once.
+    pub fn skip_if_still(&mut self, uniforms: &Uniforms, size: (u32, u32), eligible: bool) -> bool {
+        let staged: Vec<Option<Vec<u8>>> = self.passes.iter().map(|p| p.layout.as_ref().map(|l| uniforms.pack(l))).collect();
+        let still = eligible && self.ran && self.frame_kept() && self.size == size && staged.iter().zip(&self.last_packed).all(|(now, last)| now.as_ref().is_none_or(|n| n == last));
+        self.staged = Some(staged);
         self.skipped += u64::from(still);
         still
+    }
+
+    /// Forgets the bytes `skip_if_still` staged (a draw that is not that frame's).
+    pub fn unstage(&mut self) {
+        self.staged = None;
     }
 
     /// How many frames `skip_if_still` let the window keep.
@@ -524,9 +534,10 @@ impl Chain {
         }
         let rects = rects.filter(|_| self.kept.is_some() && self.kept_ok);
         // The uniform buffers hold what the last frame packed; only a change is written.
+        let mut staged = self.staged.take();
         for (i, pass) in self.passes.iter().enumerate() {
             if let Some(layout) = &pass.layout {
-                let packed = uniforms.pack(layout);
+                let packed = staged.as_mut().and_then(|s| s.get_mut(i)?.take()).unwrap_or_else(|| uniforms.pack(layout));
                 if self.last_packed[i] != packed {
                     match uploads.as_deref_mut() {
                         Some(up) => up.write(device, &pass.uniforms, 0, &packed),

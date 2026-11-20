@@ -7667,7 +7667,8 @@ impl App {
         // as an app request, so a merged expose and animation frame can be left out like any
         // equal frame (`skip_gpu` makes the same assumption); every compositor in use keeps the
         // last presented picture.
-        let still = same_scene && shown && !skip.bar_busy && !alpha_changed && frame.fade >= 1.0 && gpu.fx.as_mut().and_then(|f| f.chain_mut()).is_some_and(|(chain, u)| chain.skip_if_still(u, (w, h)));
+        let eligible = same_scene && shown && !skip.bar_busy && !alpha_changed && frame.fade >= 1.0;
+        let still = gpu.fx.as_mut().and_then(|f| f.chain_mut()).is_some_and(|(chain, u)| chain.skip_if_still(u, (w, h), eligible));
         if still {
             gpu.scene.keep(frame, built, size);
             self.perf_frames.entry(window_n).or_default().frame(before.map(|b| now.saturating_duration_since(b).as_secs_f64() * 1000.0), None, false, &mut self.perf, window_n);

@@ -1482,6 +1482,7 @@ impl Renderer {
     /// Draws `frame` through the render plugin chain: the frame goes into the chain's
     /// offscreen texture, then the passes write `out`, a non-sRGB view of the target.
     pub fn draw_fx(&mut self, frame: &Frame, chain: &mut crate::render_fx_gpu::Chain, uniforms: &crate::render_fx::Uniforms, out: &wgpu::TextureView, w: u32, h: u32) -> Result<(), String> {
+        chain.unstage();
         self.draw_fx_for(frame, chain, uniforms, out, w, h, false, None)
     }
 
@@ -5044,19 +5045,20 @@ pub(crate) mod tests {
         });
         let out = window.create_view(&wgpu::TextureViewDescriptor { format: Some(format.remove_srgb_suffix()), ..Default::default() });
         let mut chain = crate::render_fx_gpu::Chain::new(&device, format, lightning().compile().unwrap(), false).unwrap();
-        assert!(!chain.skip_if_still(&u, (96, 48)), "a chain that never ran has drawn nothing");
+        assert!(!chain.skip_if_still(&u, (96, 48), true), "a chain that never ran has drawn nothing");
         r.draw_fx_for(&frame, &mut chain, &u, &out, 96, 48, false, None).unwrap();
-        assert!(chain.skip_if_still(&u, (96, 48)), "the same bytes show the same window");
+        assert!(chain.skip_if_still(&u, (96, 48), true), "the same bytes show the same window");
         assert_eq!(chain.skips(), 1);
         u.time += 0.033;
-        assert!(!chain.skip_if_still(&u, (96, 48)), "a new time draws");
+        assert!(!chain.skip_if_still(&u, (96, 48), true), "a new time draws");
         assert_eq!(chain.skips(), 1);
         r.draw_fx_for(&frame, &mut chain, &u, &out, 96, 48, true, None).unwrap();
-        assert!(chain.skip_if_still(&u, (96, 48)));
-        assert!(!chain.skip_if_still(&u, (80, 40)), "another size draws");
+        assert!(chain.skip_if_still(&u, (96, 48), true));
+        assert!(!chain.skip_if_still(&u, (96, 48), false), "the caller's scene changed");
+        assert!(!chain.skip_if_still(&u, (80, 40), true), "another size draws");
         // A screenshot fills the frame texture with something else.
         r.draw_offscreen_fx(&frame, Some((&mut chain, &u)), 96, 48).unwrap();
-        assert!(!chain.skip_if_still(&u, (96, 48)), "the window's picture is gone");
+        assert!(!chain.skip_if_still(&u, (96, 48), true), "the window's picture is gone");
         assert_eq!(chain.skips(), 2);
     }
 
