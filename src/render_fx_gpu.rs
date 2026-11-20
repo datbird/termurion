@@ -118,6 +118,9 @@ pub struct Chain {
     last_packed: Vec<Vec<u8>>,
     binds_made: u64,
     uniform_writes: u64,
+    /// The last run drew the window's picture (`skip_if_still`).
+    ran: bool,
+    skipped: u64,
     /// Where the effects can draw (`set_region_terms`); None runs every frame full screen.
     region_terms: Option<Vec<RegionTerm>>,
     /// With region terms: the last pass's output, kept so a frame can shade only its region,
@@ -215,7 +218,7 @@ impl Chain {
             passes.push(Pass { pipeline, uniforms, layout });
         }
         let last_packed = vec![Vec::new(); passes.len()];
-        Ok(Chain { passes, bind_layout, sampler, format, size: (0, 0), targets: Vec::new(), blits: None, plain: None, keep_alpha, frame_drawn: false, binds: Vec::new(), copy_binds: Vec::new(), last_packed, binds_made: 0, uniform_writes: 0, region_terms: None, kept: None, kept_ok: false, kept_made: 0, keep_next: true, shaded_region: false })
+        Ok(Chain { passes, bind_layout, sampler, format, size: (0, 0), targets: Vec::new(), blits: None, plain: None, keep_alpha, frame_drawn: false, binds: Vec::new(), copy_binds: Vec::new(), last_packed, binds_made: 0, uniform_writes: 0, ran: false, skipped: 0, region_terms: None, kept: None, kept_ok: false, kept_made: 0, keep_next: true, shaded_region: false })
     }
 
     /// For a card that cannot view a texture in a second format (`view_formats_supported` false):
@@ -385,7 +388,23 @@ impl Chain {
         // Whatever replaced the frame also ran the passes: the kept output is not the window's.
         if !drawn {
             self.kept_ok = false;
+            self.ran = false;
         }
+    }
+
+    /// Whether a frame with `uniforms` would show what the window already shows: the passes
+    /// last ran on this window's picture at `size`, and every pass packs the bytes its buffer
+    /// holds. The caller asks only when the scene and everything drawn over it are unchanged.
+    /// Counts the frame it answers yes to (`skips`).
+    pub fn skip_if_still(&mut self, uniforms: &Uniforms, size: (u32, u32)) -> bool {
+        let still = self.ran && self.frame_kept() && self.size == size && self.passes.iter().zip(&self.last_packed).all(|(pass, last)| pass.layout.as_ref().is_none_or(|l| uniforms.pack(l) == *last));
+        self.skipped += u64::from(still);
+        still
+    }
+
+    /// How many frames `skip_if_still` let the window keep.
+    pub fn skips(&self) -> u64 {
+        self.skipped
     }
 
     /// Makes the kept output at the chain's size, when the chain has region terms.
@@ -586,6 +605,7 @@ impl Chain {
         }
         self.kept_ok = self.kept.is_some() && !skip_kept;
         self.shaded_region = rects.is_some();
+        self.ran = true;
     }
 }
 

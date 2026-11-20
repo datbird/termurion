@@ -70,6 +70,12 @@ impl<F> SceneCache<F> {
         self.fx_asked = true;
     }
 
+    /// The screen shows the kept frame exactly: it was drawn in the current epoch, and
+    /// nothing has been drawn over it or reconfigured since (`invalidate`).
+    pub(super) fn shown(&self) -> bool {
+        self.kept.as_ref().is_some_and(|k| k.epoch == self.epoch.get())
+    }
+
     /// Whether `take` at this size and time would answer `Reuse`, using nothing up.
     pub(super) fn would_reuse(&self, size: (u32, u32), now: Instant) -> bool {
         self.fx_asked && !self.changed.get() && self.kept.as_ref().is_some_and(|k| k.size == size && now.saturating_duration_since(k.built) < MAX_AGE)
@@ -117,6 +123,19 @@ mod tests {
         let mut c = kept(t0);
         c.fx_asked();
         assert_eq!(c.take((800, 600), t0 + Duration::from_millis(33)), Take::Reuse(7, t0));
+    }
+
+    #[test]
+    fn a_frame_is_shown_until_something_invalidates_it() {
+        let t0 = Instant::now();
+        let mut c = SceneCache::<u32>::default();
+        assert!(!c.shown(), "nothing drawn");
+        c.keep(7, t0, (800, 600));
+        assert!(c.shown());
+        c.invalidate();
+        assert!(!c.shown(), "the screen may differ from it");
+        c.keep(7, t0, (800, 600));
+        assert!(c.shown(), "drawn again");
     }
 
     #[test]
@@ -287,6 +306,23 @@ mod tests {
             let guard = head.rfind("if !will_reuse {").into_iter().chain(head.rfind("if let Some(title) = &title {")).max();
             let guard = guard.unwrap_or_else(|| panic!("{call} sits in no guard"));
             assert!(!head[guard..].contains("\n        }\n"), "{call} is inside the guard, not after it");
+        }
+    }
+
+    /// A still effect frame leaves the surface alone: the check comes before the drawable is
+    /// asked for, after the effects' uniforms are packed, and every input that can change the
+    /// picture without changing them is part of it.
+    #[test]
+    fn a_still_effect_frame_asks_for_no_drawable() {
+        let src = include_str!("mod.rs");
+        let body = &src[src.find("fn render_frame(").unwrap()..];
+        let body = &body[..body.find("\n/// iTerm2's button numbers").unwrap()];
+        let at = |what: &str| body.find(what).unwrap_or_else(|| panic!("{what} in render_frame"));
+        let (prepare, still, acquire) = (at("fx.prepare("), at("skip_if_still("), at("get_current_texture()"));
+        assert!(prepare < still && still < acquire, "prepare, then the still check, then the drawable");
+        let check = &body[still.saturating_sub(300)..still];
+        for input in ["same_scene", "shown", "bar_busy", "alpha_changed", "frame.fade"] {
+            assert!(check.contains(input), "the still check reads {input}");
         }
     }
 }

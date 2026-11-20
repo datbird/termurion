@@ -486,6 +486,16 @@ impl Gpu {
         self.scene.invalidate();
     }
 
+    /// Sets when the animation's next frame is due, and asks for it now when it already is.
+    fn pace_fx(&mut self, now: Instant, focused: bool, pacing: crate::render_fx::Pacing) {
+        let Some(fx) = self.fx.as_mut() else { return };
+        fx.due = fx.next_frame(now, focused, pacing);
+        if fx.due.is_some_and(|t| t <= Instant::now()) {
+            fx.due = None;
+            self.redraw_fx();
+        }
+    }
+
     /// Asks the window for a frame only the effects' animation wants: it may draw the kept one.
     fn redraw_fx(&mut self) {
         self.scene.fx_asked();
@@ -7572,6 +7582,8 @@ impl App {
         if let Some(g) = self.gpu.as_ref() {
             g.scene.sync_look(g.renderer.look_epoch());
         }
+        // Read before `take` uses the kept frame up: does the screen show it exactly?
+        let shown = self.gpu.as_ref().is_some_and(|g| g.scene.shown());
         let taken = self.gpu.as_mut().map_or(scene_cache::Take::Build { last: None }, |g| g.scene.take(size, now));
         let same_scene = matches!(taken, scene_cache::Take::Reuse(..));
         let (frame, built, last) = match taken {
@@ -7636,6 +7648,22 @@ impl App {
             self.perf_frames.entry(window_n).or_default().frame(before.map(|b| now.saturating_duration_since(b).as_secs_f64() * 1000.0), None, false, &mut self.perf, window_n);
             return;
         }
+        // The effects' uniforms are packed before the surface is asked for: a frame of the same
+        // scene whose passes would write the bytes they wrote last time shows what the window
+        // already shows (`Chain::skip_if_still`). Anything drawn over or around the picture
+        // since, a surface change or a fade says otherwise, and the frame draws.
+        let (w, h) = (gpu.config.width, gpu.config.height);
+        let fx_now = Instant::now();
+        if let Some(fx) = gpu.fx.as_mut().filter(|f| f.active()) {
+            fx.prepare(frame.fx.as_ref(), fx_signals.as_ref(), (w, h), focused_window, fx_now);
+        }
+        let still = same_scene && shown && !skip.bar_busy && !alpha_changed && frame.fade >= 1.0 && gpu.fx.as_mut().and_then(|f| f.chain_mut()).is_some_and(|(chain, u)| chain.skip_if_still(u, (w, h)));
+        if still {
+            gpu.scene.keep(frame, built, size);
+            self.perf_frames.entry(window_n).or_default().frame(before.map(|b| now.saturating_duration_since(b).as_secs_f64() * 1000.0), None, false, &mut self.perf, window_n);
+            gpu.pace_fx(fx_now, focused_window, fx_pacing);
+            return;
+        }
         let wait_start = Instant::now();
         let acquired = gpu.surface.get_current_texture();
         // The renderer's timings for Copy Performance Stats: counters and milliseconds only.
@@ -7675,17 +7703,14 @@ impl App {
             }
         };
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let (w, h) = (gpu.config.width, gpu.config.height);
         // The non-sRGB view a fade needs on an sRGB target; no fade, no view.
         let raw = gpu.config.view_formats.first().filter(|_| frame.fade < 1.0).map(|f| texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(*f), ..Default::default() }));
         #[cfg(debug_assertions)]
         let capturing = gpu_capture::begin(gpu.render_device());
         let draw_start = timing.then(Instant::now);
-        let fx_now = Instant::now();
         let drawn = match gpu.fx.as_mut().filter(|f| f.active()) {
             Some(fx) => {
                 // The passes write the window through its non-sRGB view (fx_sync made sure it has one).
-                fx.prepare(frame.fx.as_ref(), fx_signals.as_ref(), (w, h), focused_window, fx_now);
                 // Only an animation frame shades the region (`draw_fx_for`); a frame whose own
                 // region is full tells the chain no next frame can, so it skips the kept output.
                 let (region, bounded) = fx.region(fx_cell, (w, h));
@@ -7699,13 +7724,7 @@ impl App {
         };
         // Animated effects keep the window drawing while they run, at the pace "Effects
         // animation" allows; a frame not due yet waits in the idle loop (`fx_frame_tick`).
-        if let Some(fx) = gpu.fx.as_mut() {
-            fx.due = fx.next_frame(fx_now, focused_window, fx_pacing);
-            if fx.due.is_some_and(|t| t <= Instant::now()) {
-                fx.due = None;
-                gpu.redraw_fx();
-            }
-        }
+        gpu.pace_fx(fx_now, focused_window, fx_pacing);
         if drawn.is_ok() {
             gpu.scene.keep(frame, built, (w, h));
         } else {

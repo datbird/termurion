@@ -5024,6 +5024,42 @@ pub(crate) mod tests {
         assert_eq!(chain.uniform_writes(), with_layout * 2, "a new time writes every pass with a layout");
     }
 
+    /// A frame of the same scene whose passes pack the bytes they packed last time shows what
+    /// the window shows: the chain says so (`skip_if_still`), and a changed `time`, a new size
+    /// or a picture a screenshot drew into the frame texture says no.
+    #[test]
+    fn a_still_effect_frame_is_not_drawn() {
+        let (device, queue, frame, mut u) = fx_bench();
+        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        let window = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: 96, height: 48, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[format.remove_srgb_suffix()],
+        });
+        let out = window.create_view(&wgpu::TextureViewDescriptor { format: Some(format.remove_srgb_suffix()), ..Default::default() });
+        let mut chain = crate::render_fx_gpu::Chain::new(&device, format, lightning().compile().unwrap(), false).unwrap();
+        assert!(!chain.skip_if_still(&u, (96, 48)), "a chain that never ran has drawn nothing");
+        r.draw_fx_for(&frame, &mut chain, &u, &out, 96, 48, false, None).unwrap();
+        assert!(chain.skip_if_still(&u, (96, 48)), "the same bytes show the same window");
+        assert_eq!(chain.skips(), 1);
+        u.time += 0.033;
+        assert!(!chain.skip_if_still(&u, (96, 48)), "a new time draws");
+        assert_eq!(chain.skips(), 1);
+        r.draw_fx_for(&frame, &mut chain, &u, &out, 96, 48, true, None).unwrap();
+        assert!(chain.skip_if_still(&u, (96, 48)));
+        assert!(!chain.skip_if_still(&u, (80, 40)), "another size draws");
+        // A screenshot fills the frame texture with something else.
+        r.draw_offscreen_fx(&frame, Some((&mut chain, &u)), 96, 48).unwrap();
+        assert!(!chain.skip_if_still(&u, (96, 48)), "the window's picture is gone");
+        assert_eq!(chain.skips(), 2);
+    }
+
     /// Ten animation frames through one chain, with its kept bind groups and skipped writes,
     /// give the bytes a fresh chain gives each frame.
     #[test]
