@@ -126,12 +126,20 @@ impl Detector {
             self.carry.clear();
             return false;
         }
+        let keep = self.pattern.len() - 1;
+        // Nothing carried over: the read is searched where it is, not copied.
+        if self.carry.is_empty() {
+            if memchr::memmem::find(bytes, &self.pattern).is_some() {
+                return true;
+            }
+            self.carry = bytes[bytes.len().saturating_sub(keep)..].to_vec();
+            return false;
+        }
         let mut seen = std::mem::take(&mut self.carry);
         seen.extend_from_slice(bytes);
-        if seen.windows(self.pattern.len()).any(|w| w == self.pattern.as_slice()) {
+        if memchr::memmem::find(&seen, &self.pattern).is_some() {
             return true;
         }
-        let keep = self.pattern.len() - 1;
         let from = seen.len().saturating_sub(keep);
         self.carry = seen[from..].to_vec();
         false
@@ -342,5 +350,45 @@ mod tests {
         assert_eq!(next(Some(true)), Next::TurnOff);
         assert_eq!(next(Some(false)), Next::Nothing);
         assert_eq!(next(None), Next::Offer);
+    }
+
+    /// The echoed report is found where the byte walk found it, in whatever chunks the output
+    /// arrives, including one split across the chunk boundary.
+    #[test]
+    fn stuck_output_matches_the_byte_walk() {
+        let t = Instant::now();
+        let mut seed = 0x0123_4567_89ab_cdefu64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let report = b"\x1b[<0;123;45M";
+        let pattern = printable(report);
+        for round in 0..2000 {
+            let mut stream: Vec<u8> = (0..next() as usize % 60).map(|_| b"0;123;45M ab\n"[next() as usize % 13]).collect();
+            if round % 2 == 0 {
+                stream.extend_from_slice(&pattern);
+                stream.extend((0..next() as usize % 10).map(|_| b'x'));
+            }
+            let mut d = Detector::default();
+            d.armed(report, t);
+            assert!(d.is_armed(t));
+            let (mut at, mut found) = (0, None);
+            while at < stream.len() && found.is_none() {
+                let take = (1 + next() as usize % 12).min(stream.len() - at);
+                at += take;
+                if d.output(&stream[at - take..at], t + ms(1)) {
+                    found = Some(at);
+                }
+            }
+            let direct = stream.windows(pattern.len()).position(|w| w == pattern.as_slice());
+            // The match is reported by the chunk that completes it.
+            assert_eq!(found.is_some(), direct.is_some(), "round {round}");
+            if let (Some(end), Some(k)) = (found, direct) {
+                assert!(end >= k + pattern.len() && end < k + pattern.len() + 12, "round {round}: {end} vs {k}");
+            }
+        }
     }
 }
