@@ -82,6 +82,12 @@ impl Decoder {
         self.cp
     }
 
+    /// Whether `bytes` come out of `feed` exactly as they are: plain ASCII, with no half
+    /// character held from the last read, in a code page that is not UTF-16.
+    pub fn passes_unchanged(&self, bytes: &[u8]) -> bool {
+        self.held.is_empty() && self.cp != UTF16 && bytes.is_ascii()
+    }
+
     /// `bytes` as UTF-8. UTF-16 pairs the bytes; every other code page decodes runs of
     /// non-ASCII bytes, with a lead byte kept for the next read when its second byte has not
     /// come. A lead followed by a byte that cannot continue it is replaced by U+FFFD.

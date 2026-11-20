@@ -812,7 +812,7 @@ impl Pane {
             self.throughput.add(Instant::now(), chunk.len());
             // SSH integration, then tmux control mode, are found before anything can drop output.
             self.log_raw(&chunk);
-            self.hook_output(&chunk);
+            self.hook_output(chunk);
             if Instant::now() >= deadline {
                 more = true;
                 break;
@@ -882,26 +882,37 @@ impl Pane {
     /// (`DP:513-538`). A read that starts control mode goes to the SSH hook only through the
     /// tmux start; the rest is tmux's. While a conductor is hooked it takes everything, a
     /// tmux start included, as iTerm2's conductor parser does.
-    fn hook_output(&mut self, chunk: &[u8]) {
+    fn hook_output(&mut self, mut chunk: Vec<u8>) {
         let cut = match self.ssh_hook.active() || self.tmux_hook.active() {
             true => chunk.len(),
-            false => tmux_start_end(chunk),
+            false => tmux_start_end(&chunk),
         };
-        let (head, rest) = chunk.split_at(cut);
-        for part in [head, rest].into_iter().filter(|part| !part.is_empty()) {
+        // A read with no tmux start (nearly all of them) is one part, moved on whole.
+        let rest = if cut < chunk.len() { chunk.split_off(cut) } else { Vec::new() };
+        for part in [chunk, rest].into_iter().filter(|part| !part.is_empty()) {
             if self.tmux_hook.active() && !self.ssh_hook.active() && self.ssh_q.is_empty() {
-                self.tee_raw(part);
+                self.tee_raw(&part);
                 let mut bytes = self.ssh_hook.take_held();
-                bytes.extend_from_slice(part);
+                if bytes.is_empty() {
+                    bytes = part;
+                } else {
+                    bytes.extend_from_slice(&part);
+                }
                 self.route_output(bytes);
             } else {
-                let outs = self.ssh_hook.feed(part);
                 // The coprocess gets the raw read while SSH integration plays no part in it
                 // (iTerm2 tees the raw read, `PK:900`); with a conductor only its depth 0
                 // output (`Out::Raw`) goes, and a level 1 session's coprocess gets nothing.
-                if outs.iter().all(|o| matches!(o, crate::ssh_hook::Out::Screen(_))) {
-                    self.tee_raw(part);
-                }
+                // Without a coprocess nothing needs the read after the hook has had it.
+                let outs = if self.coprocess.is_some() {
+                    let outs = self.ssh_hook.feed(&part);
+                    if outs.iter().all(|o| matches!(o, crate::ssh_hook::Out::Screen(_))) {
+                        self.tee_raw(&part);
+                    }
+                    outs
+                } else {
+                    self.ssh_hook.feed_vec(part)
+                };
                 for out in outs {
                     match out {
                         // At once, not behind `ssh_q`: it is the coprocess's own copy.
@@ -1062,6 +1073,9 @@ impl Pane {
             return bytes;
         }
         match self.decoder.as_mut() {
+            // ASCII reads the same in every code page the decoder handles, so a read of it with
+            // nothing held back goes on as it is.
+            Some(d) if d.passes_unchanged(&bytes) => bytes,
             Some(d) => d.feed(&bytes, crate::encoding::system()),
             None => bytes,
         }
@@ -2034,6 +2048,10 @@ impl Pane {
     /// What the program wrote, as read: Raw and asciicast logs take it (`TK:888-893`). A tmux
     /// client's reads are `%output` and only a Raw log takes them (`PS:10983-10985`).
     fn log_raw(&mut self, bytes: &[u8]) {
+        // No log is the usual case: nothing else is looked at.
+        if self.log.is_none() {
+            return;
+        }
         let tmux = self.tmux_io().is_some();
         let (Some(log), Some(started)) = (self.log.as_mut(), self.log_started) else { return };
         if tmux && log.style() != crate::session_log::Style::Raw {
@@ -3680,9 +3698,9 @@ mod tests {
         // PK:900: with SSH integration in play the raw read never feeds the coprocess.
         let mut p = Pane::tmux(5, 1, 3, 20, 4);
         assert!(p.coprocess_gets_raw(), "plain output");
-        p.hook_output(b"hello");
+        p.hook_output(b"hello".to_vec());
         assert!(p.coprocess_gets_raw());
-        p.hook_output(b"\x1bP2000pnone 1 YQ== - Yg==\n");
+        p.hook_output(b"\x1bP2000pnone 1 YQ== - Yg==\n".to_vec());
         assert!(!p.coprocess_gets_raw(), "a hook is active");
         p.take_ssh();
         assert!(!p.coprocess_gets_raw(), "still hooked");
@@ -5733,5 +5751,31 @@ mod tests {
             assert_eq!(tmux_start_end(&start[n..]), old(&start[n..]));
         }
         assert_eq!(tmux_start_end(b""), 0);
+    }
+
+    /// A UTF-8 session's output is the same allocation going in and out of the decode step, and
+    /// so is plain ASCII output of a code page (nothing in it changes).
+    #[test]
+    fn utf8_decode_moves_the_bytes() {
+        let mut p = Pane::recording(1, 20, 3);
+        let text = "plain \u{e9} text".as_bytes().to_vec();
+        let (at, len) = (text.as_ptr(), text.len());
+        let out = p.decode_output(text);
+        assert_eq!((out.as_ptr(), out.len()), (at, len));
+        // A code page: ASCII passes by the same move, other bytes are decoded as before.
+        p.set_encoding(5);
+        let ascii = b"plain \x1b[1mtext\r\n".to_vec();
+        let (at, copy) = (ascii.as_ptr(), ascii.clone());
+        let out = p.decode_output(ascii);
+        assert_eq!((out.as_ptr(), &out), (at, &copy));
+        // Only Windows has code pages to decode with.
+        #[cfg(windows)]
+        {
+            assert_eq!(p.decode_output(b"caf\xe9".to_vec()), "caf\u{e9}".as_bytes());
+            // A byte held from the last read still comes out first.
+            p.set_encoding(8);
+            assert_eq!(p.decode_output(b"a\x82".to_vec()), b"a");
+            assert_eq!(p.decode_output(b"\xa0b".to_vec()), "\u{3042}b".as_bytes());
+        }
     }
 }
