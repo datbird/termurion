@@ -362,16 +362,25 @@ impl Client {
     /// Takes over a running session: its output from `since` on. Returns the pty, the offset
     /// the output starts at, and whether bytes before it were dropped.
     pub fn attach(&self, id: u64, pid: u32, since: u64, notify: Notify) -> Result<(HostedPty, u64, bool), String> {
+        self.attach_within(id, pid, since, notify, REPLY_WAIT)
+    }
+
+    fn attach_within(&self, id: u64, pid: u32, since: u64, notify: Notify, wait: Duration) -> Result<(HostedPty, u64, bool), String> {
         let slot: Slot = Arc::new(Mutex::new(Incoming { notify: Some(notify), end: since, taken: since, acked: since, ..Default::default() }));
         self.inner.sessions.lock().unwrap().insert(id, slot.clone());
         let (tx, rx) = mpsc::channel();
         self.inner.attaches.lock().unwrap().insert(id, tx);
         let pty = HostedPty { inner: self.inner.clone(), id, pid, slot, detached: false };
         self.inner.send(&Msg::Attach { id, since })?;
-        match rx.recv_timeout(REPLY_WAIT) {
+        match rx.recv_timeout(wait) {
             Ok((from, dropped)) => Ok((pty, from, dropped)),
             Err(_) => {
-                // The shell keeps running in the host (a later launch adopts it).
+                // The shell keeps running in the host (a later launch adopts it). A late attach
+                // there would hold it at the window with nobody here to ack: say so.
+                self.inner.attaches.lock().unwrap().remove(&id);
+                if self.inner.version.load(Ordering::Acquire) >= FLOW_VERSION {
+                    let _ = self.inner.send(&Msg::Detach { id });
+                }
                 let mut pty = pty;
                 pty.detach();
                 Err("the session host did not hand over the session".into())
@@ -749,6 +758,39 @@ mod tests {
         }
     }
 
+    /// An attach the host answers too late leaves nothing attached there: the client says it
+    /// gave up, so the host never holds a session nobody here reads.
+    #[test]
+    fn a_timed_out_attach_tells_the_host() {
+        use crate::host_proto::{Decoder, FLOW_VERSION};
+        let name = crate::platform::ipc::test_name("slowhost");
+        let mut listener = crate::platform::ipc::Listener::bind(&name).unwrap();
+        let host = std::thread::spawn(move || {
+            let conn = listener.accept(Duration::from_secs(10)).unwrap().expect("a connection");
+            let (mut d, mut buf, mut got) = (Decoder::default(), vec![0u8; 4096], Vec::new());
+            while got.len() < 3 {
+                match d.next() {
+                    Some(m) => {
+                        let m = m.unwrap();
+                        if matches!(m, Msg::Hello { .. }) {
+                            conn.write_all(&encode(&Msg::Welcome { version: FLOW_VERSION, host_pid: 1, instance: "slow".into(), sessions: vec![] })).unwrap();
+                        }
+                        got.push(m);
+                    }
+                    None => {
+                        let n = conn.read(&mut buf).unwrap();
+                        d.push(&buf[..n]);
+                    }
+                }
+            }
+            got
+        });
+        let (c, _) = Client::connect(&name, Duration::from_secs(5)).unwrap().expect("the host answers");
+        assert!(c.attach_within(5, 0, 7, quiet(), Duration::from_millis(200)).is_err());
+        assert_eq!(host.join().unwrap(), vec![Msg::Hello { version: VERSION }, Msg::Attach { id: 5, since: 7 }, Msg::Detach { id: 5 }]);
+        c.close();
+    }
+
     #[test]
     fn taking_output_acks_every_256k() {
         use crate::host_proto::{ACK_EVERY, WINDOW};
@@ -778,7 +820,8 @@ mod tests {
         let p = c.launch(flood(), None, &[], 80, 24, quiet()).unwrap();
         take(&p, 1 << 20);
         let end = Instant::now() + Duration::from_secs(5);
-        while p.slot.lock().unwrap().end <= WINDOW {
+        // A held session stops at WINDOW plus one read.
+        while p.slot.lock().unwrap().end <= 2 * WINDOW {
             assert!(Instant::now() < end, "a version 5 host held its output at the window");
             std::thread::sleep(Duration::from_millis(10));
         }

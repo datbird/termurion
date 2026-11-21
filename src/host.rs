@@ -122,13 +122,16 @@ impl Host {
     /// one paused for Undo Close (or otherwise not attached): nothing drains its output, so
     /// once its pipe fills OpenConsole blocks every console call on it, and an attach there
     /// would hold `pty::CONSOLE` for good (and every later close with it). Each comes with its
-    /// pause flag, checked again under that lock.
+    /// pause flag, checked again under that lock. Never one held at the window or with a full
+    /// output budget either: it is mid-flood, not at a prompt, and every attach lets the readers
+    /// read past their budgets while nothing takes the output.
     fn prompt_targets(&self) -> Vec<(u64, u32, Arc<std::sync::atomic::AtomicBool>)> {
+        let flow = self.client.as_ref().is_some_and(|c| c.version >= FLOW_VERSION);
         let mut out: Vec<_> = self
             .sessions
             .iter()
-            .filter(|(_, s)| s.attached && s.exited.is_none())
-            .filter_map(|(id, s)| s.pty.as_ref().filter(|p| !p.is_paused()).map(|p| (*id, s.pid, p.pause_flag())))
+            .filter(|(_, s)| s.attached && s.exited.is_none() && !held(s, flow))
+            .filter_map(|(id, s)| s.pty.as_ref().filter(|p| !p.is_paused() && p.queued() < crate::pty_budget::PTY_BUDGET).map(|p| (*id, s.pid, p.pause_flag())))
             .collect();
         out.sort_by_key(|t| t.0);
         out
@@ -488,6 +491,15 @@ fn handle(host: &Shared, m: Msg, api: &PtyApi, wake: &mpsc::Sender<u64>) {
             }
         }
         Msg::Write { id, bytes } => with_pty(host, id, |p| p.write(&bytes)),
+        // Version 6: an attach the app gave up on. Its reader may wait for room: pump it.
+        Msg::Detach { id } => {
+            let mut h = host.lock().unwrap();
+            if let Some(s) = h.sessions.get_mut(&id) {
+                s.attached = false;
+                drop(h);
+                let _ = wake.send(id);
+            }
+        }
         // Version 6. The held session's reader waits for room and will not notify: pump it.
         Msg::Consumed { id, offset } => {
             let mut h = host.lock().unwrap();
@@ -796,10 +808,13 @@ pub(crate) mod tests {
             Msg::LaunchFailed { error, .. } => panic!("{error}"),
             _ => None,
         });
-        let (mut end, mut acked) = (0u64, 0u64);
-        let stop = Instant::now() + Duration::from_secs(30);
+        // cmd writes slower than a client that acks every ACK_EVERY takes, so on Windows the
+        // client acks only once the window is full (the host is held then) and waits first.
+        let (step, pause) = if cfg!(windows) { (crate::host_proto::WINDOW, 100) } else { (ACK_EVERY, 20) };
+        let (mut end, mut acked, mut holds) = (0u64, 0u64, 0);
+        let stop = Instant::now() + Duration::from_secs(60);
         loop {
-            let m = c.rx.recv_timeout(stop.saturating_duration_since(Instant::now())).expect("no Exited in 30 s");
+            let m = c.rx.recv_timeout(stop.saturating_duration_since(Instant::now())).expect("no Exited in 60 s");
             match m {
                 Msg::Output { id: i, offset, bytes } if i == id => end = offset + bytes.len() as u64,
                 Msg::Exited { id: i, code } if i == id => {
@@ -809,11 +824,15 @@ pub(crate) mod tests {
                 }
                 _ => {}
             }
-            if end - acked >= ACK_EVERY {
-                std::thread::sleep(Duration::from_millis(20));
+            if end - acked >= step {
+                holds += (end - acked >= crate::host_proto::WINDOW) as u32;
+                std::thread::sleep(Duration::from_millis(pause));
                 c.send(&Msg::Consumed { id, offset: end });
                 acked = end;
             }
+        }
+        if cfg!(windows) {
+            assert!(holds >= 2, "the host was held only {holds} times");
         }
         c.send(&Msg::KillAll);
     }
@@ -860,6 +879,27 @@ pub(crate) mod tests {
         let live = c.hello_as(FLOW_VERSION);
         let s = live.iter().find(|l| l.id == id).expect("the session is still there");
         assert!(s.end > WINDOW + crate::pty_budget::PTY_BUDGET as u64, "a session nobody shows stopped reading: {}", s.end);
+        c.send(&Msg::KillAll);
+    }
+
+    #[test]
+    fn a_detached_attach_reads_into_the_ring() {
+        use crate::host_proto::FLOW_VERSION;
+        let (name, _host) = start_host(Duration::from_secs(1));
+        let c = Conn::open(&name);
+        c.hello_as(FLOW_VERSION);
+        let id = c.launch(flood());
+        let (_, at) = c.output_until_quiet(id, Duration::from_millis(500), Duration::from_secs(5));
+        assert!(at > 0);
+        c.send(&Msg::Detach { id });
+        std::thread::sleep(Duration::from_secs(2));
+        c.send(&Msg::Attach { id, since: at });
+        let (from, bytes) = c.wait(|m| match m {
+            Msg::Output { id: i, offset, bytes } if *i == id => Some((*offset, bytes.len() as u64)),
+            _ => None,
+        });
+        // Past what its reader had queued when it was held: it read again.
+        assert!(from + bytes > at + crate::pty_budget::PTY_BUDGET as u64 + 64 * 1024, "a detached session stopped reading: {} after {at}", from + bytes);
         c.send(&Msg::KillAll);
     }
 
@@ -1008,6 +1048,36 @@ pub(crate) mod tests {
         assert_eq!(crate::platform::pty::console_mode_unless(*pid, paused), Err("the console is paused".to_string()));
         h.sessions[&2].pty.as_ref().unwrap().set_paused(false);
         assert_eq!(ids(&h), vec![2], "an undone close is read again");
+        for s in h.sessions.drain().map(|(_, s)| s) {
+            drop(s.pty);
+        }
+    }
+
+    #[test]
+    fn the_prompt_watch_skips_held_and_flooding_sessions() {
+        let api = api();
+        let session = |cmd: &str| {
+            let pty = crate::platform::pty::spawn(&api, cmd, 80, 24).unwrap();
+            let pid = pty.pid();
+            Session { pty: Some(pty), ring: Ring::new(RING), pid, cmdline: String::new(), cwd: String::new(), cols: 80, rows: 24, exited: None, attached: true, pending: 0, prompt: Default::default(), acked: 0, exit_seen: None }
+        };
+        let idle = crate::platform::by_os("cmd.exe /d /k", "env PS1=> ENV= /bin/sh -i");
+        let client = |version| Some(Client { conn: 1, out: mpsc::channel().0, version });
+        let mut h = Host { sessions: HashMap::new(), next_id: 4, client: client(crate::host_proto::FLOW_VERSION), instance: "t".into(), prompt_debounce: Some(0.2), events: Vec::new() };
+        h.sessions.insert(1, session(idle));
+        let mut held = session(idle);
+        held.ring.push(&vec![b'x'; crate::host_proto::WINDOW as usize]);
+        h.sessions.insert(2, held);
+        h.sessions.insert(3, session(flood()));
+        let end = Instant::now() + Duration::from_secs(10);
+        while h.sessions[&3].pty.as_ref().unwrap().queued() < crate::pty_budget::PTY_BUDGET {
+            assert!(Instant::now() < end, "the flood never filled its budget");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let ids = |h: &Host| h.prompt_targets().into_iter().map(|t| t.0).collect::<Vec<_>>();
+        assert_eq!(ids(&h), vec![1], "a held session and one with a full budget are not read");
+        h.client = client(5);
+        assert_eq!(ids(&h), vec![1, 2], "a version 5 client's session is never held");
         for s in h.sessions.drain().map(|(_, s)| s) {
             drop(s.pty);
         }

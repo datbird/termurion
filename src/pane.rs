@@ -2184,6 +2184,15 @@ impl Pane {
         }
     }
 
+    /// A local pane's output budget, which a console reader checks (`jobwatch::console_targets`);
+    /// None for other panes.
+    pub fn console_budget(&self) -> Option<std::sync::Arc<crate::pty_budget::Budget>> {
+        match &self.pty {
+            Some(Io::Local(p)) => Some(p.budget()),
+            _ => None,
+        }
+    }
+
     /// Send Signal's Ctrl+C (or Ctrl+Break) to a hosted pane's console, through termurion-host;
     /// None for other panes (a local pane's goes from Termurion).
     pub fn hosted_signal(&self, ctrl_break: bool) -> Option<Result<(), String>> {

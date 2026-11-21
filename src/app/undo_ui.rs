@@ -130,8 +130,8 @@ impl App {
     fn put_back(&mut self, mut pane: Pane) {
         if let Some(pid) = pane.shell_pid() {
             self.jobs.watch(pid);
-            if let Some(paused) = pane.console_pause_flag() {
-                self.jobs.watch_console(pid, paused);
+            if let (Some(paused), Some(budget)) = (pane.console_pause_flag(), pane.console_budget()) {
+                self.jobs.watch_console(pid, paused, budget);
             }
         }
         // An inline file's question keeps it paused, asked again if it went meanwhile.

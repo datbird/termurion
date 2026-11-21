@@ -4975,8 +4975,8 @@ impl App {
         }
         if let Some(pid) = pane.shell_pid() {
             self.jobs.watch(pid);
-            if let Some(paused) = pane.console_pause_flag() {
-                self.jobs.watch_console(pid, paused);
+            if let (Some(paused), Some(budget)) = (pane.console_pause_flag(), pane.console_budget()) {
+                self.jobs.watch_console(pid, paused, budget);
             }
         }
         // Read once, as iTerm2 does ("will not affect existing sessions until you restart").

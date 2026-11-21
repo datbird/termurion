@@ -10,7 +10,8 @@ use std::collections::VecDeque;
 /// always on the wire, and older hosts ignore it. Version 4 adds `LaunchWith` (a session on an
 /// SSH transport, `ssh_transport::HOST_VERSION`). Version 5 adds `Goodbye`: a client that leaves
 /// on purpose says so, so the host can tell it from a client that vanished. Version 6 adds
-/// `Consumed`: flow control, so a flood waits on the app instead of piling up in memory.
+/// `Consumed` and `Detach`: flow control, so a flood waits on the app instead of piling up in
+/// memory.
 pub const VERSION: u32 = 6;
 pub const MIN_VERSION: u32 = 1;
 /// The first version whose client acks output and whose host holds a session at `WINDOW`.
@@ -19,6 +20,8 @@ pub const FLOW_VERSION: u32 = 6;
 pub const WINDOW: u64 = 2 << 20;
 /// The client acks once it has taken this many bytes past its last ack.
 pub const ACK_EVERY: u64 = 256 << 10;
+// An ack must come before the window fills, or a held session never resumes.
+const _: () = assert!(WINDOW > ACK_EVERY);
 /// A frame longer than this is refused (a broken or hostile peer).
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 
@@ -78,6 +81,9 @@ pub enum Msg {
     Goodbye,
     /// Version 6, Termurion to the host: the session's output up to `offset` was taken.
     Consumed { id: u64, offset: u64 },
+    /// Version 6, Termurion to the host: nothing here shows the session any more (an attach
+    /// that timed out). It runs on into its ring, never held.
+    Detach { id: u64 },
 }
 
 /// Field writers: integers little-endian, byte strings with a u32 length.
@@ -207,6 +213,7 @@ pub fn encode(m: &Msg) -> Vec<u8> {
         }
         Msg::Goodbye => w.u8(22),
         Msg::Consumed { id, offset } => w.u8(23).u64(*id).u64(*offset),
+        Msg::Detach { id } => w.u8(24).u64(*id),
     };
     let mut out = (w.0.len() as u32).to_le_bytes().to_vec();
     out.extend(w.0);
@@ -260,6 +267,7 @@ fn decode(payload: &[u8]) -> Result<Msg, String> {
         }
         22 => Msg::Goodbye,
         23 => Msg::Consumed { id: r.u64()?, offset: r.u64()? },
+        24 => Msg::Detach { id: r.u64()? },
         t => return Err(format!("unknown message {t}")),
     };
     if !r.0.is_empty() {
@@ -379,10 +387,10 @@ mod tests {
             Msg::LaunchWith { tag: 8, cmdline: "ssh.exe host".into(), cwd: String::new(), env: vec![], cols: 100, rows: 30, transport: 1 },
             Msg::Goodbye,
             Msg::Consumed { id: 9, offset: 1 << 40 },
+            Msg::Detach { id: 9 },
         ]
     }
 
-    const _: () = assert!(WINDOW > ACK_EVERY);
 
     #[test]
     fn messages_round_trip() {

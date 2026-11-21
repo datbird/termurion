@@ -185,17 +185,25 @@ struct Shared {
     /// look. None: off, nothing is attached to.
     read_debounce: Option<f64>,
     /// The shells whose consoles Termurion owns (local panes; termurion-host reads its own), each
-    /// with its pane's pause flag: a paused console is never read.
-    consoles: HashMap<u32, Arc<std::sync::atomic::AtomicBool>>,
+    /// with its pane's pause flag (a paused console is never read) and output budget.
+    consoles: HashMap<u32, Console>,
     /// Each local shell's samples, debounced. A console whose mode could not be read is not
     /// at a prompt.
     prompts: HashMap<u32, crate::pwm_prompt::Debounce>,
 }
 
+/// A local pane's console as the watcher sees it: its pause flag and its output budget.
+pub(crate) type Console = (Arc<std::sync::atomic::AtomicBool>, Arc<crate::pty_budget::Budget>);
+
 /// The consoles a look reads: those not paused (Undo Close, an inline file question), each
-/// with its flag for the check under `CONSOLE`.
-pub(crate) fn console_targets(consoles: &HashMap<u32, Arc<std::sync::atomic::AtomicBool>>) -> Vec<(u32, Arc<std::sync::atomic::AtomicBool>)> {
-    consoles.iter().filter(|(_, p)| !p.load(std::sync::atomic::Ordering::Acquire)).map(|(pid, p)| (*pid, p.clone())).collect()
+/// with its flag for the check under `CONSOLE`. Never one with a full output budget: it is
+/// mid-flood, not at a prompt, and every attach lets the readers read past their budgets.
+pub(crate) fn console_targets(consoles: &HashMap<u32, Console>) -> Vec<(u32, Arc<std::sync::atomic::AtomicBool>)> {
+    consoles
+        .iter()
+        .filter(|(_, (p, b))| !p.load(std::sync::atomic::Ordering::Acquire) && b.queued() < crate::pty_budget::PTY_BUDGET)
+        .map(|(pid, (p, _))| (*pid, p.clone()))
+        .collect()
 }
 
 /// The watcher: a thread that looks at the registered shells' trees and calls `notify`
@@ -343,8 +351,8 @@ impl JobWatch {
     /// A local pane's shell: Termurion owns its console (and every close of it), so the watcher
     /// may read its input mode while `paused` (its pane's pause flag) is clear. A hosted
     /// shell's console is never attached to here.
-    pub fn watch_console(&self, shell: u32, paused: Arc<std::sync::atomic::AtomicBool>) {
-        self.lock().consoles.insert(shell, paused);
+    pub fn watch_console(&self, shell: u32, paused: Arc<std::sync::atomic::AtomicBool>, budget: Arc<crate::pty_budget::Budget>) {
+        self.lock().consoles.insert(shell, (paused, budget));
     }
 
     /// Password prompt detection on with its debounce (seconds), or off (None): off, no
@@ -393,6 +401,24 @@ impl JobWatch {
 mod tests {
     use super::*;
     use crate::proctree::Job;
+
+    /// A console whose output budget is full is mid-flood: never attached to, so no attach
+    /// lets the readers read past their budgets while nothing takes the output.
+    #[test]
+    fn a_console_with_a_full_budget_is_not_read() {
+        use crate::pty_budget::{Budget, PTY_BUDGET};
+        let flag = || Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (full, room) = (Budget::new(), Budget::new());
+        full.add(PTY_BUDGET);
+        room.add(PTY_BUDGET - 1);
+        let consoles: HashMap<u32, Console> = [(1, (flag(), full.clone())), (2, (flag(), room))].into_iter().collect();
+        let ids = |c: &HashMap<u32, Console>| console_targets(c).into_iter().map(|t| t.0).collect::<Vec<_>>();
+        assert_eq!(ids(&consoles), vec![2]);
+        full.take(1);
+        let mut got = ids(&consoles);
+        got.sort();
+        assert_eq!(got, vec![1, 2], "read again once the pane takes its output");
+    }
 
     /// `PC:479-500`: the names that vanished from a shrinking ancestry, and the one log line.
     #[test]

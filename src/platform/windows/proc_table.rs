@@ -177,8 +177,9 @@ mod tests {
     fn a_paused_console_is_not_read() {
         use std::sync::atomic::{AtomicBool, Ordering};
         let (running, paused) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(true)));
-        let consoles: HashMap<u32, Arc<AtomicBool>> = [(1, running.clone()), (2, paused)].into_iter().collect();
-        let ids = |c: &HashMap<u32, Arc<AtomicBool>>| console_targets(c).into_iter().map(|t| t.0).collect::<Vec<_>>();
+        let budget = crate::pty_budget::Budget::new;
+        let consoles: HashMap<u32, crate::jobwatch::Console> = [(1, (running.clone(), budget())), (2, (paused, budget()))].into_iter().collect();
+        let ids = |c: &HashMap<u32, crate::jobwatch::Console>| console_targets(c).into_iter().map(|t| t.0).collect::<Vec<_>>();
         assert_eq!(ids(&consoles), vec![1]);
         let targets = console_targets(&consoles);
         running.store(true, Ordering::Release);
