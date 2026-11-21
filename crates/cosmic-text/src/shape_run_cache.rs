@@ -4,13 +4,17 @@ use core::ops::Range;
 
 use crate::{AttrsOwned, HashMap, ShapeGlyph};
 
-// Termurion patch 3: the caps. About 4.4 MB at most (entries about 300 bytes, glyphs 96).
+// Termurion patch 3: the caps. About 7.7 MB at most: entries about 300 bytes, glyphs 96,
+// attribute spans about 200 (patch 6).
 /// Most runs the cache holds.
 pub const MAX_ENTRIES: usize = 4096;
 /// Most glyphs the cache holds across all its runs.
 pub const MAX_GLYPHS: usize = 32768;
 /// A longer run is shaped and never stored (long unique tokens, base64, URLs).
 pub const MAX_RUN_BYTES: usize = 256;
+// Termurion patch 6: a run colored per character (lolcat) holds a span per character.
+/// Most attribute spans the cache holds across all its run keys.
+pub const MAX_SPANS: usize = 16384;
 
 /// Key for caching shape runs.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -32,6 +36,12 @@ pub struct ShapeRunCache {
     enabled: bool,
     hits: u64,
     misses: u64,
+    // Termurion patch 6: attribute spans held, and the age at which an eviction pass freed
+    // nothing (every run was used this frame), so later misses skip the pass until a trim.
+    spans: usize,
+    full_at: Option<u64>,
+    #[cfg(test)]
+    passes: usize,
 }
 
 impl Default for ShapeRunCache {
@@ -43,6 +53,10 @@ impl Default for ShapeRunCache {
             enabled: true,
             hits: 0,
             misses: 0,
+            spans: 0,
+            full_at: None,
+            #[cfg(test)]
+            passes: 0,
         }
     }
 }
@@ -63,47 +77,65 @@ impl ShapeRunCache {
         }
     }
 
+    // Termurion patch 3: whether one more run of `glyphs` glyphs and `spans` spans passes a cap.
+    fn over(&self, glyphs: usize, spans: usize) -> bool {
+        self.cache.len() >= MAX_ENTRIES
+            || self.glyphs + glyphs > MAX_GLYPHS
+            || self.spans + spans > MAX_SPANS
+    }
+
+    // Termurion patch 3: keeps the runs `keep` says, recounting glyphs and spans.
+    fn retain(&mut self, keep: impl Fn(u64) -> bool) {
+        let (mut glyphs, mut spans) = (0, 0);
+        self.cache.retain(|key, (age, held)| {
+            let kept = keep(*age);
+            if kept {
+                glyphs += held.len();
+                spans += key.attrs_spans.len();
+            }
+            kept
+        });
+        (self.glyphs, self.spans) = (glyphs, spans);
+    }
+
     /// Insert cache item with current age
     pub fn insert(&mut self, key: ShapeRunKey, glyphs: Vec<ShapeGlyph>) {
         // Termurion patch 3: a full cache first drops what was not used since the last trim,
         // and stores nothing when that is not enough.
-        if let Some((_, old)) = self.cache.remove(&key) {
+        if let Some((old_key, (_, old))) = self.cache.remove_entry(&key) {
             self.glyphs -= old.len();
+            self.spans -= old_key.attrs_spans.len();
         }
-        let n = glyphs.len();
-        if n > MAX_GLYPHS {
+        let (n, spans) = (glyphs.len(), key.attrs_spans.len());
+        if n > MAX_GLYPHS || spans > MAX_SPANS {
             return;
         }
-        if self.cache.len() >= MAX_ENTRIES || self.glyphs + n > MAX_GLYPHS {
+        if self.over(n, spans) {
+            // Patch 6: the pass already freed nothing this frame.
+            if self.full_at == Some(self.age) {
+                return;
+            }
+            #[cfg(test)]
+            {
+                self.passes += 1;
+            }
             let now = self.age;
-            let mut held = 0;
-            self.cache.retain(|_key, (age, glyphs)| {
-                let keep = *age >= now;
-                if keep {
-                    held += glyphs.len();
-                }
-                keep
-            });
-            self.glyphs = held;
-            if self.cache.len() >= MAX_ENTRIES || self.glyphs + n > MAX_GLYPHS {
+            self.retain(|age| age >= now);
+            if self.over(n, spans) {
+                self.full_at = Some(now);
                 return;
             }
         }
         self.glyphs += n;
+        self.spans += spans;
         self.cache.insert(key, (self.age, glyphs));
     }
 
     /// Remove anything in the cache with an age older than `keep_ages`
     pub fn trim(&mut self, keep_ages: u64) {
-        let mut held = 0;
-        self.cache.retain(|_key, (age, glyphs)| {
-            let keep = *age + keep_ages >= self.age;
-            if keep {
-                held += glyphs.len();
-            }
-            keep
-        });
-        self.glyphs = held;
+        let now = self.age;
+        self.retain(|age| age + keep_ages >= now);
+        self.full_at = None;
         // Increase age
         self.age += 1;
     }
@@ -114,6 +146,8 @@ impl ShapeRunCache {
     pub fn clear(&mut self) {
         self.cache.clear();
         self.glyphs = 0;
+        self.spans = 0;
+        self.full_at = None;
         self.hits = 0;
         self.misses = 0;
     }
@@ -130,6 +164,11 @@ impl ShapeRunCache {
     /// Glyphs held across all runs.
     pub fn glyph_count(&self) -> usize {
         self.glyphs
+    }
+
+    /// Attribute spans held across all run keys (patch 6).
+    pub fn span_count(&self) -> usize {
+        self.spans
     }
 
     /// Hits and misses since creation or the last `clear`.
@@ -213,9 +252,60 @@ mod tests {
             assert!(c.len() <= MAX_ENTRIES);
             assert!(c.glyph_count() <= MAX_GLYPHS, "{} glyphs", c.glyph_count());
         }
-        // The count matches what is held.
+        // A lolcat flood: every character of a run has its own color, so a span each.
+        for i in 10300..14300 {
+            c.insert(colored_key(i, 8), glyphs(8));
+            assert!(c.len() <= MAX_ENTRIES);
+            assert!(c.glyph_count() <= MAX_GLYPHS, "{} glyphs", c.glyph_count());
+            assert!(c.span_count() <= MAX_SPANS, "{} spans", c.span_count());
+            if i % 100 == 99 {
+                c.trim(60);
+            }
+        }
+        assert!(c.span_count() > MAX_SPANS / 2, "the flood filled the span cap: {}", c.span_count());
+        // The counts match what is held.
         let held: usize = c.cache.values().map(|(_, g)| g.len()).sum();
         assert_eq!(c.glyph_count(), held);
+        let spans: usize = c.cache.keys().map(|k| k.attrs_spans.len()).sum();
+        assert_eq!(c.span_count(), spans);
+    }
+
+    /// A key whose `n` characters each have their own color.
+    fn colored_key(i: usize, n: usize) -> ShapeRunKey {
+        let mut k = key(i);
+        k.attrs_spans = (0..n).map(|c| (c..c + 1, AttrsOwned::new(&Attrs::new().color(crate::Color(c as u32))))).collect();
+        k
+    }
+
+    #[test]
+    fn a_full_cache_skips_the_eviction_pass_until_the_next_trim() {
+        let mut c = ShapeRunCache::default();
+        for i in 0..MAX_ENTRIES {
+            c.insert(key(i), glyphs(4));
+        }
+        // Every run is from this frame: the first miss scans once and frees nothing; the
+        // rest of the frame's misses do not scan again.
+        for i in 0..1000 {
+            c.insert(key(MAX_ENTRIES + i), glyphs(4));
+        }
+        assert_eq!(c.passes, 1);
+        assert_eq!(c.len(), MAX_ENTRIES);
+        // After a trim the pass runs again, and frees the runs the new frame did not use.
+        c.trim(60);
+        c.insert(key(MAX_ENTRIES + 1000), glyphs(4));
+        assert_eq!(c.passes, 2);
+        assert_eq!(c.len(), 1);
+        // A clear also forgets that the cache was full.
+        for i in 0..MAX_ENTRIES {
+            c.insert(key(20000 + i), glyphs(4));
+        }
+        c.insert(key(30000), glyphs(4));
+        assert_eq!(c.passes, 3);
+        c.clear();
+        for i in 0..=MAX_ENTRIES {
+            c.insert(key(40000 + i), glyphs(4));
+        }
+        assert_eq!(c.passes, 4);
     }
 
     #[test]

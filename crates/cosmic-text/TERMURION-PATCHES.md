@@ -30,3 +30,10 @@ and `shape.rs` had an em dash, now a colon. Changes:
    `syntect`, `cosmic_undo_2`), the docs.rs metadata that enabled it, and `src/edit/vi.rs` and
    `src/edit/syntect.rs` with their `cfg` lines are left out. Termurion never uses the editor, and
    a workspace member's optional dependencies are otherwise locked in `Cargo.lock`.
+6. `shape_run_cache.rs`: two more limits on patch 3. `MAX_SPANS` (16384 attribute spans across all
+   keys, `span_count()`): a run colored per character (lolcat, character-level highlighting) holds
+   a span per character in its key, about 200 bytes each, so the spans have their own cap; at all
+   caps the cache holds about 7.7 MB. And an eviction pass that frees nothing (every run was used
+   this frame) remembers the age, so later misses in the same frame store nothing without scanning
+   the map again; `trim` and `clear` forget it. Tests: `the_cache_never_passes_its_caps`,
+   `a_full_cache_skips_the_eviction_pass_until_the_next_trim`.
