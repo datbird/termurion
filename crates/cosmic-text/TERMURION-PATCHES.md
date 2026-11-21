@@ -34,6 +34,6 @@ and `shape.rs` had an em dash, now a colon. Changes:
    keys, `span_count()`): a run colored per character (lolcat, character-level highlighting) holds
    a span per character in its key, about 200 bytes each, so the spans have their own cap; at all
    caps the cache holds about 7.7 MB. And an eviction pass that frees nothing (every run was used
-   this frame) remembers the age, so later misses in the same frame store nothing without scanning
+   this frame) remembers the age, so later misses in the same frame that do not fit are skipped without scanning
    the map again; `trim` and `clear` forget it. Tests: `the_cache_never_passes_its_caps`,
    `a_full_cache_skips_the_eviction_pass_until_the_next_trim`.
