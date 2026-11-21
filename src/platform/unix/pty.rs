@@ -19,7 +19,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crate::platform::pty::{Notify, Read};
+use crate::platform::pty::{EdgeWake, Notify, Read};
 use crate::pty_budget::Budget;
 use crate::ssh_transport::Transport;
 
@@ -88,6 +88,8 @@ pub struct Pty {
     output: Receiver<Vec<u8>>,
     /// Output read and not yet taken: the reader stops at the budget.
     budget: Arc<Budget>,
+    /// Whether a chunk notifies (`set_edge_notify`).
+    edge: Arc<EdgeWake>,
     /// Writing to it wakes the reader out of its poll.
     wake: OwnedFd,
     exit: Arc<Exit>,
@@ -190,11 +192,12 @@ fn spawn_with_env(inherited: Vec<(OsString, OsString)>, t: Transport, cmdline: &
         Source::Pipe(fd) => (Arc::new(fd), None),
     };
     let budget = Budget::new();
-    let (output, _reader) = start_reader(read_fd, wake_r, notify.clone(), paused.clone(), budget.clone());
+    let edge = Arc::new(EdgeWake::default());
+    let (output, _reader) = start_reader(read_fd, wake_r, notify.clone(), paused.clone(), budget.clone(), edge.clone());
     let pending = Arc::new(AtomicUsize::new(0));
     let (writer, write_error) = start_writer(input, pending.clone(), notify.clone());
     start_waiter(child, exit.clone(), notify);
-    Ok(Pty { pid, tty, writer: Some(writer), write_error, pending, paused, output, budget, wake, exit, held: None })
+    Ok(Pty { pid, tty, writer: Some(writer), write_error, pending, paused, output, budget, edge, wake, exit, held: None })
 }
 
 enum Source {
@@ -417,7 +420,7 @@ fn poll(fds: &mut [libc::pollfd], ms: i32) -> bool {
 /// Drains the child's output on its own thread. While paused, or while `budget` is full, it
 /// reads nothing, so the child blocks once the pty's buffer is full (as on Windows). EOF, EIO
 /// or a write to `wake` ends it.
-fn start_reader(fd: Arc<OwnedFd>, wake: OwnedFd, notify: Notify, paused: Arc<AtomicBool>, budget: Arc<Budget>) -> (Receiver<Vec<u8>>, JoinHandle<()>) {
+fn start_reader(fd: Arc<OwnedFd>, wake: OwnedFd, notify: Notify, paused: Arc<AtomicBool>, budget: Arc<Budget>, edge: Arc<EdgeWake>) -> (Receiver<Vec<u8>>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
     let reader = std::thread::spawn(move || {
         let mut buf = vec![0u8; 64 * 1024];
@@ -459,7 +462,9 @@ fn start_reader(fd: Arc<OwnedFd>, wake: OwnedFd, notify: Notify, paused: Arc<Ato
             if tx.send(buf[..n as usize].to_vec()).is_err() {
                 break;
             }
-            notify();
+            if edge.queued() {
+                notify();
+            }
         }
         drop(tx);
         notify();
@@ -630,6 +635,18 @@ impl Pty {
             Err(TryRecvError::Empty) => Read::Empty,
             Err(TryRecvError::Disconnected) => Read::Closed,
         }
+    }
+
+    /// On (the session host): a chunk notifies only when the consumer was idle, that is the
+    /// first since its last `rearm_notify`. Off (the default): every chunk notifies.
+    pub fn set_edge_notify(&self, on: bool) {
+        self.edge.set_on(on);
+    }
+
+    /// With edge notify on, the consumer found `try_read` empty: the next chunk notifies. Call
+    /// `try_read` once more after it: a chunk that came just before did not notify.
+    pub fn rearm_notify(&self) {
+        self.edge.rearm();
     }
 
     /// The shell's process id.
@@ -946,6 +963,109 @@ mod tests {
         p.read_until(b"NO-TTY", secs(5)).unwrap_or_else(|got| panic!("{:?}", text(&got)));
         assert_eq!(p.resize(90, 20), Ok(()));
         assert_eq!(p.clear(), Ok(()));
+    }
+
+    /// A `cat` on pipes with edge notify on, counting its notifies.
+    fn edge_cat() -> (Pty, Arc<crate::platform::pty::tests::Bell>) {
+        let bell = Arc::new(crate::platform::pty::tests::Bell::default());
+        let b = bell.clone();
+        let p = spawn_transport(&PtyApi, Transport::Pipes, "cat", None, &[], 80, 24, Arc::new(move || b.ring())).unwrap();
+        p.set_edge_notify(true);
+        (p, bell)
+    }
+
+    #[test]
+    fn edge_notify_fires_once_per_drain() {
+        let (p, bell) = edge_cat();
+        let chunk = vec![b'x'; 4096];
+        let echoed = |n: usize| {
+            let end = std::time::Instant::now() + secs(5);
+            while p.queued() < n {
+                assert!(std::time::Instant::now() < end, "cat echoed {} of {n}", p.queued());
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        // One echo at a time, so each is a chunk of its own.
+        for i in 1..=100 {
+            p.write(&chunk).unwrap();
+            echoed(i * chunk.len());
+        }
+        assert_eq!(bell.count(), 1, "100 chunks queued without a drain");
+        let mut chunks = 0;
+        while let Read::Data(_) = p.try_read() {
+            chunks += 1;
+        }
+        assert_eq!(chunks, 100);
+        p.rearm_notify();
+        assert!(matches!(p.try_read(), Read::Empty));
+        p.write(&chunk).unwrap();
+        echoed(chunk.len());
+        assert_eq!(bell.count(), 2, "a rearm and one more chunk");
+    }
+
+    /// The host's pump against a live reader: drain, rearm, read again, then wait for a wake.
+    /// Bursts of writes, each waited out before the next, so every burst's last echo is a
+    /// chance to be lost; the pump lingers before its rearm so the reader often lands there.
+    #[test]
+    fn no_chunk_is_left_unnotified() {
+        const ROUNDS: usize = 10_000;
+        let (p, bell) = edge_cat();
+        let p = Arc::new(Mutex::new(p));
+        let mut x = 1u32;
+        let sizes: Vec<usize> = (0..ROUNDS)
+            .map(|_| {
+                x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                1 + (x >> 16) as usize % 3000
+            })
+            .collect();
+        let want: Vec<u8> = sizes.iter().enumerate().flat_map(|(i, n)| std::iter::repeat_n(b'a' + (i % 26) as u8, *n)).collect();
+        let taken = Arc::new(AtomicUsize::new(0));
+        let (p2, t2) = (p.clone(), taken.clone());
+        let writer = std::thread::spawn(move || {
+            let mut sent = 0;
+            for (i, n) in sizes.into_iter().enumerate() {
+                p2.lock().unwrap().write(&vec![b'a' + (i % 26) as u8; n]).unwrap();
+                sent += n;
+                if i % 5 == 4 {
+                    let at = std::time::Instant::now();
+                    while t2.load(Ordering::Acquire) < sent && at.elapsed() < secs(3) {
+                        std::thread::yield_now();
+                    }
+                }
+            }
+        });
+        let (mut got, mut seen) = (Vec::with_capacity(want.len()), 0u64);
+        let end = std::time::Instant::now() + secs(60);
+        while got.len() < want.len() {
+            assert!(std::time::Instant::now() < end, "read {} of {} bytes in 60 s", got.len(), want.len());
+            let now = bell.wait(seen, secs(1));
+            let p = p.lock().unwrap();
+            if now == seen {
+                assert_eq!(p.queued(), 0, "no wake for a second with output queued");
+                continue;
+            }
+            seen = now;
+            loop {
+                match p.try_read() {
+                    Read::Data(c) => got.extend(c),
+                    Read::Empty => {
+                        for _ in 0..got.len() % 2000 {
+                            std::hint::spin_loop();
+                        }
+                        p.rearm_notify();
+                        match p.try_read() {
+                            Read::Data(c) => got.extend(c),
+                            _ => break,
+                        }
+                    }
+                    Read::Closed => panic!("cat ended"),
+                }
+                taken.store(got.len(), Ordering::Release);
+            }
+        }
+        writer.join().unwrap();
+        assert!(got == want, "every byte, in order");
+        assert!(bell.count() < ROUNDS as u64, "fewer wakes than writes: {}", bell.count());
     }
 
     #[test]

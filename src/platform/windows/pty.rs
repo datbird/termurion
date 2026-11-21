@@ -27,7 +27,7 @@ use windows_sys::Win32::System::Threading::{
 };
 
 use super::conpty::Api;
-use crate::platform::pty::{Notify, Read};
+use crate::platform::pty::{EdgeWake, Notify, Read};
 use crate::pty_budget::Budget;
 use crate::ssh_transport::Transport;
 
@@ -232,6 +232,8 @@ pub struct Pty {
     output: Receiver<Vec<u8>>,
     /// Output read and not yet taken: the reader stops at the budget.
     budget: Arc<Budget>,
+    /// Whether a chunk notifies (`set_edge_notify`).
+    edge: Arc<EdgeWake>,
     reader: Option<JoinHandle<()>>,
     reader_done: Receiver<()>,
     /// Something kept alive as long as the pty (a handed-off console's slot in the live count).
@@ -315,10 +317,11 @@ fn assemble(api: &Api, hpc: HPCON, input: HANDLE, output: HANDLE, process: HANDL
     let paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let budget = Budget::new();
     let pid = unsafe { windows_sys::Win32::System::Threading::GetProcessId(process) };
-    let (rx, reader_done, reader) = start_reader(output, pid, notify.clone(), paused.clone(), budget.clone());
+    let edge = Arc::new(EdgeWake::default());
+    let (rx, reader_done, reader) = start_reader(output, pid, notify.clone(), paused.clone(), budget.clone(), edge.clone());
     let pending = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (writer, write_error) = start_writer(input, pending.clone(), notify.clone());
-    let pty = Pty { api: api.clone(), hpc, writer: Some(writer), write_error, pending, paused, process, output: rx, budget, reader: Some(reader), reader_done, held: None };
+    let pty = Pty { api: api.clone(), hpc, writer: Some(writer), write_error, pending, paused, process, output: rx, budget, edge, reader: Some(reader), reader_done, held: None };
     watch_exit(pty.process, notify)?;
     Ok(pty)
 }
@@ -591,7 +594,7 @@ pub(crate) fn start_writer(input: HANDLE, pending: Arc<std::sync::atomic::Atomic
 /// Drains ConPTY output on its own thread. It stops at a full `budget` (so the program waits on
 /// the pipe), except while an attach wants this shell's console (or a console no reader owns):
 /// ConPTY must never block one then.
-fn start_reader(output: HANDLE, pid: u32, notify: Notify, paused: Arc<std::sync::atomic::AtomicBool>, budget: Arc<Budget>) -> (Receiver<Vec<u8>>, Receiver<()>, JoinHandle<()>) {
+fn start_reader(output: HANDLE, pid: u32, notify: Notify, paused: Arc<std::sync::atomic::AtomicBool>, budget: Arc<Budget>, edge: Arc<EdgeWake>) -> (Receiver<Vec<u8>>, Receiver<()>, JoinHandle<()>) {
     // Known before the first read, so an attach to this shell from now on lifts this reader.
     wanted(|w| count(&mut w.readers, pid, true));
     /// Forgets the reader when its thread ends, a panic included.
@@ -624,7 +627,9 @@ fn start_reader(output: HANDLE, pid: u32, notify: Notify, paused: Arc<std::sync:
             if tx.send(buf[..n as usize].to_vec()).is_err() {
                 break;
             }
-            notify();
+            if edge.queued() {
+                notify();
+            }
         }
         unsafe { CloseHandle(output) };
         let _ = done_tx.send(());
@@ -695,6 +700,18 @@ impl Pty {
             Err(TryRecvError::Empty) => Read::Empty,
             Err(TryRecvError::Disconnected) => Read::Closed,
         }
+    }
+
+    /// On (the session host): a chunk notifies only when the consumer was idle, that is the
+    /// first since its last `rearm_notify`. Off (the default): every chunk notifies.
+    pub fn set_edge_notify(&self, on: bool) {
+        self.edge.set_on(on);
+    }
+
+    /// With edge notify on, the consumer found `try_read` empty: the next chunk notifies. Call
+    /// `try_read` once more after it: a chunk that came just before did not notify.
+    pub fn rearm_notify(&self) {
+        self.edge.rearm();
     }
 
     /// The shell's process id (the root of its job tree).
@@ -1161,7 +1178,7 @@ pub(crate) mod tests {
     fn reader_survives_a_zero_byte_write() {
         let (mut r, mut w): (HANDLE, HANDLE) = (null_mut(), null_mut());
         assert_ne!(unsafe { CreatePipe(&mut r, &mut w, null(), 0) }, 0);
-        let (rx, _done, reader) = start_reader(r, 0, Arc::new(|| {}), Arc::new(std::sync::atomic::AtomicBool::new(false)), Budget::new());
+        let (rx, _done, reader) = start_reader(r, 0, Arc::new(|| {}), Arc::new(std::sync::atomic::AtomicBool::new(false)), Budget::new(), Default::default());
         let mut n = 0u32;
         unsafe {
             WriteFile(w, b"".as_ptr(), 0, &mut n, null_mut());
@@ -1180,7 +1197,7 @@ pub(crate) mod tests {
         let pid = 0xFFFF_FF01;
         let (mut r, mut w): (HANDLE, HANDLE) = (null_mut(), null_mut());
         assert_ne!(unsafe { CreatePipe(&mut r, &mut w, null(), 0) }, 0);
-        let (_rx, _done, reader) = start_reader(r, pid, Arc::new(|| {}), Arc::new(std::sync::atomic::AtomicBool::new(false)), Budget::new());
+        let (_rx, _done, reader) = start_reader(r, pid, Arc::new(|| {}), Arc::new(std::sync::atomic::AtomicBool::new(false)), Budget::new(), Default::default());
         assert!(wanted(|w| w.readers.contains_key(&pid)));
         unsafe { CloseHandle(w) };
         reader.join().unwrap();
@@ -1571,6 +1588,35 @@ pub(crate) mod tests {
         assert_eq!(p.resize(100, 30), Ok(()));
         assert_eq!(p.clear(), Ok(()));
         assert!(p.pid() > 0);
+    }
+
+    /// A burst after a second's wait, then a line two seconds on: the burst's many chunks
+    /// notify once, and the line once more after a rearm.
+    #[test]
+    fn edge_notify_fires_once_per_drain() {
+        let bell = Arc::new(crate::platform::pty::tests::Bell::default());
+        let b = bell.clone();
+        let line = "x".repeat(60);
+        let cmd = format!("cmd.exe /d /c \"ping -n 2 127.0.0.1 >nul & (for /l %i in (1,1,3000) do @echo {line}) & ping -n 3 127.0.0.1 >nul & echo more & ping -n 30 127.0.0.1 >nul\"");
+        let p = spawn_transport(&shipped(), crate::ssh_transport::Transport::Pipes, &cmd, None, &[], 80, 24, Arc::new(move || b.ring())).unwrap();
+        p.set_edge_notify(true);
+        let burst = 3000 * (line.len() + 2);
+        let end = Instant::now() + secs(20);
+        while p.queued() < burst {
+            assert!(Instant::now() < end, "the burst came only to {} of {burst}", p.queued());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(bell.count(), 1, "the burst queued without a drain");
+        let mut chunks = 0;
+        while let Read::Data(_) = p.try_read() {
+            chunks += 1;
+        }
+        assert!(chunks >= 2, "the burst came in {chunks} chunk");
+        p.rearm_notify();
+        assert!(matches!(p.try_read(), Read::Empty));
+        assert_eq!(bell.wait(1, secs(10)), 2, "the line after the rearm notifies");
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(bell.count(), 2);
     }
 
     #[test]

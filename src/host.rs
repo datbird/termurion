@@ -334,9 +334,24 @@ fn pump(host: &Shared, id: u64) {
     if let Some(p) = &s.pty {
         let mut drained = false;
         while !held(s, flow) {
-            let Read::Data(chunk) = p.try_read() else {
-                drained = true;
-                break;
+            let chunk = match p.try_read() {
+                Read::Data(c) => c,
+                Read::Closed => {
+                    drained = true;
+                    break;
+                }
+                // The reader wakes us again only after a rearm, and a chunk that came just before
+                // it did not: read once more. A held pump never rearms (the ack's wake pumps it).
+                Read::Empty => {
+                    p.rearm_notify();
+                    match p.try_read() {
+                        Read::Data(c) => c,
+                        _ => {
+                            drained = true;
+                            break;
+                        }
+                    }
+                }
             };
             let offset = s.ring.end();
             s.ring.push(&chunk);
@@ -462,6 +477,8 @@ fn launch(host: &Shared, api: &PtyApi, wake: &mpsc::Sender<u64>, t: Transport, t
     let dir = (!cwd.is_empty()).then(|| std::path::PathBuf::from(&cwd));
     match crate::platform::pty::spawn_transport(api, t, &cmdline, dir.as_deref(), &env, cols.max(1), rows.max(1), notify) {
         Ok(pty) => {
+            // One wake per drain, not per read: `pump` rearms when it finds the output empty.
+            pty.set_edge_notify(true);
             let pid = pty.pid();
             let mut h = host.lock().unwrap();
             h.sessions.insert(id, Session { pty: Some(pty), ring: Ring::new(RING), pid, cmdline, cwd, cols, rows, exited: None, attached: true, pending: 0, prompt: Default::default(), acked: 0, exit_seen: None });
@@ -1248,5 +1265,47 @@ pub(crate) mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         host.join().unwrap().unwrap();
+    }
+
+    /// This process's user plus system CPU so far.
+    #[cfg(unix)]
+    fn cpu() -> Duration {
+        let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+        unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) };
+        let t = |v: libc::timeval| Duration::from_secs(v.tv_sec as u64) + Duration::from_micros(v.tv_usec as u64);
+        t(u.ru_utime) + t(u.ru_stime)
+    }
+
+    /// The relay's cost, for a before and after: 256 MiB of a pty flood through the host to a
+    /// client that acks as the app does. Run in release with
+    /// `cargo test --release --lib host::tests::relay_bench -- --ignored --nocapture`.
+    #[cfg(unix)]
+    #[test]
+    #[ignore]
+    fn relay_bench() {
+        use crate::host_proto::{ACK_EVERY, FLOW_VERSION};
+        const N: u64 = 256 << 20;
+        let (name, _host) = start_host(Duration::from_secs(1));
+        let c = Conn::open(&name);
+        c.hello_as(FLOW_VERSION);
+        let (cpu0, t0) = (cpu(), Instant::now());
+        let id = c.launch(&format!("/bin/sh -c 'head -c {N} /dev/zero; sleep 2'"));
+        let (mut end, mut acked, mut frames) = (0u64, 0u64, 0u64);
+        while end < N {
+            match c.rx.recv_timeout(Duration::from_secs(10)).expect("the flood stalled") {
+                Msg::Output { id: i, offset, bytes } if i == id => {
+                    frames += 1;
+                    end = offset + bytes.len() as u64;
+                }
+                _ => {}
+            }
+            if end - acked >= ACK_EVERY {
+                c.send(&Msg::Consumed { id, offset: end });
+                acked = end;
+            }
+        }
+        let (took, used) = (t0.elapsed(), cpu() - cpu0);
+        println!("relay: {:.0} MB/s, {frames} frames ({} KiB each), CPU {:.2} s = {:.0}% over {:.2} s", N as f64 / 1e6 / took.as_secs_f64(), N / frames / 1024, used.as_secs_f64(), 100.0 * used.as_secs_f64() / took.as_secs_f64(), took.as_secs_f64());
+        c.send(&Msg::KillAll);
     }
 }
