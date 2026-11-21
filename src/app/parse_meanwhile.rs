@@ -268,10 +268,13 @@ mod tests {
         pane.hold_exit_cap_for_test();
         let mut panes: HashMap<PaneId, Pane> = HashMap::from([(1, pane)]);
         let mut rounds = 0;
+        let mut cut_short = 0;
         loop {
             rounds += 1;
             assert!(rounds < 100_000, "the worker never caught up");
-            let stop = AtomicBool::new(false);
+            // The first stop comes before the worker starts, so at least one turn ends with
+            // output unread whatever the machine's speed; later ones come mid-parse or not at all.
+            let stop = AtomicBool::new(rounds == 1);
             let parsed = std::thread::scope(|s| {
                 let w = s.spawn(|| parse_meanwhile(&mut panes, &ids, &PREP, &stop));
                 std::thread::sleep(Duration::from_micros(200));
@@ -280,6 +283,7 @@ mod tests {
             });
             let p = &panes[&1];
             if p.waiting_chunks_for_test() > 0 {
+                cut_short += 1;
                 assert!(parsed.owed, "unread output is owed");
                 assert_eq!(p.exited, None, "no exit while output is unread");
             }
@@ -287,7 +291,7 @@ mod tests {
                 break;
             }
         }
-        assert!(rounds > 1, "the stop came before the end at least once");
+        assert!(cut_short >= 1, "the stop came before the end at least once");
         let p = &panes[&1];
         assert_eq!(p.waiting_chunks_for_test(), 0);
         assert_eq!(p.exited, Some(0), "seen once everything was read");
