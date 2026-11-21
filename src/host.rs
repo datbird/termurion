@@ -566,8 +566,14 @@ fn handle(host: &Shared, m: Msg, api: &PtyApi, wake: &mpsc::Sender<u64>) {
             if !bytes.is_empty() {
                 h.send(&Msg::Output { id, offset: from, bytes });
             }
-            if let Some(code) = exited {
-                h.send(&Msg::Exited { id, code });
+            match exited {
+                Some(code) => h.send(&Msg::Exited { id, code }),
+                // A held session's reader waits for room and will not notify, and this attach
+                // may have lowered the gap below the window: pump it.
+                None => {
+                    drop(h);
+                    let _ = wake.send(id);
+                }
             }
         }
         Msg::Write { id, bytes } => with_pty(host, id, |p| p.write(&bytes)),
@@ -1056,6 +1062,23 @@ pub(crate) mod tests {
         });
         // Past what its reader had queued when it was held: it read again.
         assert!(from + bytes > at + crate::pty_budget::PTY_BUDGET as u64 + 64 * 1024, "a detached session stopped reading: {} after {at}", from + bytes);
+        c.send(&Msg::KillAll);
+    }
+
+    /// A session held at the window and attached again near its end (the gap now below the
+    /// window) reads on, with no ack: its reader will not notify, so the attach must pump it.
+    #[test]
+    fn a_reattach_below_the_window_unholds() {
+        use crate::host_proto::FLOW_VERSION;
+        let (name, _host) = start_host(Duration::from_secs(1));
+        let c = Conn::open(&name);
+        c.hello_as(FLOW_VERSION);
+        let id = c.launch(flood());
+        let (_, at) = c.output_until_quiet(id, Duration::from_millis(500), Duration::from_secs(5));
+        assert!(at > 0);
+        c.send(&Msg::Attach { id, since: at });
+        let (more, _) = c.output_until_quiet(id, Duration::from_secs(1), Duration::from_secs(3));
+        assert!(more > 0, "the attach did not unhold the session");
         c.send(&Msg::KillAll);
     }
 
