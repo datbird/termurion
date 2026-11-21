@@ -51,6 +51,7 @@ impl App {
     fn read_panes(&mut self, panes: &[PaneId], changed: &[PaneId], active: bool, now: Instant, with_output: bool) -> Reading {
         let low_power = self.power_saving(now);
         let last_key = self.last_keystroke;
+        let display_hz = self.gpu.as_ref().and_then(|g| g.display_hz);
         let mut reading = Reading { states: Vec::new(), typing: false };
         for id in panes {
             let last_output = self.activity.get(id).and_then(|a| a.last_output());
@@ -60,7 +61,7 @@ impl App {
             // A tick with no new output does not run the estimator again (it mutates).
             let throughput = if with_output { p.throughput.estimate(now) } else { 0 };
             reading.typing |= output && cadence::typing_now(throughput, last_key, now);
-            reading.states.push(State { active, idle, visible: true, alt_screen: p.own().alt_screen(), throughput, low_power, worker_parses: p.parses_alone() });
+            reading.states.push(State { active, idle, visible: true, alt_screen: p.own().alt_screen(), throughput, low_power, worker_parses: p.parses_alone(), display_hz });
         }
         reading
     }

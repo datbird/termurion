@@ -455,6 +455,8 @@ struct Gpu {
     scene: scene_cache::SceneCache<Frame>,
     /// `App::waits` at this window's last paint.
     painted_at: u64,
+    /// The refresh rate of the monitor the window is on (`display_hz`), None when the OS does not say.
+    display_hz: Option<f64>,
     // Dropped last, after the surface.
     window: Arc<Window>,
 }
@@ -5007,7 +5009,7 @@ impl App {
         let prefs = self.cadence_prefs();
         // No gap is shorter than this: a pane that captured within it cannot record yet, so
         // nothing about it is worked out (and no pane at all most of the time).
-        let floor = crate::cadence::shortest_interval(&prefs);
+        let floor = crate::cadence::shortest_interval(&prefs, None);
         if self.panes.values().all(|p| p.replay_waits(now, floor)) {
             return;
         }
@@ -8765,6 +8767,7 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::CloseRequested => self.close_window(id, event_loop),
             // tmux keeps where Termurion's windows are (@origins).
             WindowEvent::Moved(_) => {
+                self.refresh_display_hz();
                 self.tmux_save_all_windows();
                 // A move may start a drag's modal loop, where `about_to_wait` stops. Count this
                 // window as painted now, so its next paint parses unless `about_to_wait` runs first.
@@ -8777,6 +8780,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::Resized(size) => {
+                self.refresh_display_hz();
                 // Off Windows a size request applies at once (`adopt_requested_size`), so a Resized
                 // queued from before it is stale: the window's size now is the one to lay out for,
                 // or the panes bounce back to the old size and their shells redraw.
@@ -8812,6 +8816,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.sync_menu_hidden();
             }
             WindowEvent::ScaleFactorChanged { mut inner_size_writer, .. } => {
+                self.refresh_display_hz();
                 // winit is about to size the window for a title bar the caption subclass removes:
                 // the size it sets is corrected here, before it does (`crate::platform::caption::dpi_size`).
                 if let Some(size) = self.hwnd().and_then(crate::platform::caption::dpi_size) {
@@ -9077,7 +9082,13 @@ fn init_gpu_on(window: Arc<Window>, display: &winit::event_loop::OwnedDisplayHan
     surface.configure(&device, &config);
     let mut renderer = Renderer::new(&device, &queue, format, &first_font(), FONT_PX * window.scale_factor() as f32);
     renderer.set_view_formats(crate::render_fx_gpu::view_formats_supported(&adapter));
-    Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, alpha: None, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), scene: Default::default(), painted_at: 0, window })
+    Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, alpha: None, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), scene: Default::default(), painted_at: 0, display_hz: display_hz_of(&window), window })
+}
+
+/// The refresh rate of the monitor `window` is on, in Hz; None when the OS does not report it.
+fn display_hz_of(window: &Window) -> Option<f64> {
+    let mhz = window.current_monitor()?.refresh_rate_millihertz()?;
+    (mhz > 0).then(|| f64::from(mhz) / 1000.0)
 }
 
 /// Set when the event loop returns, so a confirmed quit's backstop leaves the teardown alone.
@@ -9657,6 +9668,18 @@ mod tests {
         let moved = &src[src.find("WindowEvent::Moved(_) => {").unwrap()..];
         let moved = &moved[..moved.find("WindowEvent::Resized").unwrap()];
         assert!(moved.contains("redraw_parses(self.parse_owed, false)") && moved.contains("g.painted_at = waits") && moved.contains("self.redraw_here()"));
+    }
+
+    /// A window's refresh rate is read again whenever it may have changed monitors.
+    #[test]
+    fn the_display_rate_is_read_on_a_move_a_scale_change_and_a_resize() {
+        let src = include_str!("mod.rs");
+        for arm in ["WindowEvent::Moved(_) => {", "WindowEvent::Resized(size) => {", "WindowEvent::ScaleFactorChanged { mut inner_size_writer, .. } => {"] {
+            let body = &src[src.find(arm).unwrap()..];
+            let body = &body[..body.find("\n            }\n").unwrap()];
+            assert!(body.contains("self.refresh_display_hz()"), "{arm} reads the display rate");
+        }
+        assert!(include_str!("windows_ui.rs").contains("g.display_hz = display_hz_of(&g.window)"));
     }
 
     #[test]

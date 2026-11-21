@@ -37,7 +37,7 @@ pub fn idle_time(seconds: Option<f64>) -> Duration {
 /// Replay's tests were written against.
 #[allow(dead_code)]
 pub fn frame_gap(visible: bool, idle: bool, alt_screen: bool, throughput: i64) -> Duration {
-    interval(State { active: false, idle, visible, alt_screen, throughput, low_power: false, worker_parses: false }, &Prefs::default())
+    interval(State { active: false, idle, visible, alt_screen, throughput, low_power: false, worker_parses: false, display_hz: None }, &Prefs::default())
 }
 
 /// The update cadence settings (`iTermAdvancedSettingsModel`, `iTermPreferences`). The two
@@ -61,11 +61,14 @@ pub struct Prefs {
     /// draws at `maximum_frame_rate` instead of `metal_slow_frame_rate`. Off in `default()`,
     /// which is iTerm2's cadence; the setting itself is on by default.
     pub parse_while_drawing: bool,
+    /// Termurion's `MatchDisplayRefreshRate`: the 60 fps rates follow the display. Off in
+    /// `default()` (iTerm2's cadence); the setting itself is on by default.
+    pub match_display: bool,
 }
 
 impl Default for Prefs {
     fn default() -> Prefs {
-        Prefs { maximize_throughput: true, active_update_cadence: 60.0, maximum_frame_rate: 60.0, metal_slow_frame_rate: 30.0, threshold: THROUGHPUT_LIMIT, low_power_frame_rate: 30.0, parse_while_drawing: false }
+        Prefs { maximize_throughput: true, active_update_cadence: 60.0, maximum_frame_rate: 60.0, metal_slow_frame_rate: 30.0, threshold: THROUGHPUT_LIMIT, low_power_frame_rate: 30.0, parse_while_drawing: false, match_display: false }
     }
 }
 
@@ -82,12 +85,13 @@ impl Prefs {
             threshold: g.get("AdaptiveFrameRateThroughputThreshold").and_then(|v| v.as_integer()).unwrap_or(d.threshold),
             low_power_frame_rate: num("LowPowerModeFrameRate", d.low_power_frame_rate),
             parse_while_drawing: g.bool("ParseWhileDrawing"),
+            match_display: g.bool("MatchDisplayRefreshRate"),
         }
     }
 }
 
 /// `iTermUpdateCadenceState` for one pane.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct State {
     /// Needs periodic redraws (a cursor blinking or sliding).
     pub active: bool,
@@ -104,6 +108,18 @@ pub struct State {
     /// draw at the full rate. A tmux, SSH integration or coprocess pane, and Instant Replay's
     /// capture, keep the slow rate.
     pub worker_parses: bool,
+    /// The refresh rate of the monitor the window is on, when the OS says. Instant Replay's
+    /// capture leaves it `None`: it records at the cadence, not the display's rate.
+    pub display_hz: Option<f64>,
+}
+
+/// The rate a 60 fps setting draws at: the display's (30 to 240) while the setting still has
+/// its default of 60 and Match Display Refresh Rate is on. A value set by hand wins.
+fn matched(setting: f64, display_hz: Option<f64>, p: &Prefs) -> f64 {
+    match display_hz {
+        Some(hz) if p.match_display && setting == 60.0 && hz.is_finite() => hz.clamp(30.0, 240.0),
+        _ => setting,
+    }
 }
 
 /// Typed echoes draw at once under this many bytes a second (`UC:84`).
@@ -119,7 +135,7 @@ pub fn typing_now(throughput: i64, last_key: Option<Instant>, now: Instant) -> b
 /// `changeCadenceIfNeeded:` (`UC:124-181`) on the GPU path, with `PS:22107-22140`'s state and
 /// the millisecond knocked off at `UC:239-243`.
 pub fn interval(s: State, p: &Prefs) -> Duration {
-    let rate = |fps: f64| 1.0 / fps.max(1.0);
+    let rate = |fps: f64| 1.0 / matched(fps, s.display_hz, p).max(1.0);
     let low_power = |secs: f64| if s.low_power { secs.max(rate(p.low_power_frame_rate)) } else { secs };
     let secs = if !(s.active || !s.idle) || !s.visible {
         1.0
@@ -135,9 +151,10 @@ pub fn interval(s: State, p: &Prefs) -> Duration {
     Duration::from_secs_f64(secs.max(0.002) - 0.001)
 }
 
-/// The shortest gap `interval` gives any state under `p` (low power only lengthens it).
-pub fn shortest_interval(p: &Prefs) -> Duration {
-    let rate = |fps: f64| 1.0 / fps.max(1.0);
+/// The shortest gap `interval` gives any state under `p` on a display of `display_hz` (low power
+/// only lengthens it).
+pub fn shortest_interval(p: &Prefs, display_hz: Option<f64>) -> Duration {
+    let rate = |fps: f64| 1.0 / matched(fps, display_hz, p).max(1.0);
     // Each branch's gap as `interval` finishes it, so an odd setting (NaN) floors the same way.
     // The adaptive rates only count with Maximize Throughput on.
     // Parse While Drawing gives heavy output `maximum_frame_rate`, already counted, but only in
@@ -154,7 +171,7 @@ pub fn shortest_interval(p: &Prefs) -> Duration {
 /// A window has one surface, so it draws at the fastest rate any of its visible panes asks for
 /// (none: the background period).
 pub fn window_interval(states: &[State], p: &Prefs) -> Duration {
-    states.iter().map(|s| interval(*s, p)).min().unwrap_or_else(|| interval(State { active: false, idle: true, visible: false, alt_screen: false, throughput: 0, low_power: false, worker_parses: false }, p))
+    states.iter().map(|s| interval(*s, p)).min().unwrap_or_else(|| interval(State { active: false, idle: true, visible: false, alt_screen: false, throughput: 0, low_power: false, worker_parses: false, display_hz: None }, p))
 }
 
 /// When a window may draw again after pane output: iTerm2 updates the display on a timer at
@@ -287,7 +304,7 @@ mod tests {
     }
 
     fn state() -> State {
-        State { active: false, idle: false, visible: true, alt_screen: false, throughput: 500, low_power: false, worker_parses: true }
+        State { active: false, idle: false, visible: true, alt_screen: false, throughput: 500, low_power: false, worker_parses: true, display_hz: None }
     }
 
     #[test]
@@ -327,13 +344,15 @@ mod tests {
             Prefs { maximum_frame_rate: 100_000.0, maximize_throughput: false, ..base },
             Prefs { active_update_cadence: 0.0, maximum_frame_rate: 0.5, metal_slow_frame_rate: 2.0, ..base },
             Prefs { metal_slow_frame_rate: 500.0, parse_while_drawing: true, ..base },
+            Prefs { match_display: true, ..base },
+            Prefs { match_display: true, parse_while_drawing: true, ..base },
         ];
-        for p in prefs {
-            let floor = shortest_interval(&p);
+        for (p, hz) in prefs.into_iter().flat_map(|p| [None, Some(120.0), Some(1000.0)].map(|hz| (p, hz))) {
+            let floor = shortest_interval(&p, hz);
             let mut fastest = Duration::MAX;
             for bits in 0..64u32 {
                 for throughput in [0, 500, 10_000, 50_000] {
-                    let s = State { active: bits & 1 != 0, idle: bits & 2 != 0, visible: bits & 4 != 0, alt_screen: bits & 8 != 0, throughput, low_power: bits & 16 != 0, worker_parses: bits & 32 != 0 };
+                    let s = State { active: bits & 1 != 0, idle: bits & 2 != 0, visible: bits & 4 != 0, alt_screen: bits & 8 != 0, throughput, low_power: bits & 16 != 0, worker_parses: bits & 32 != 0, display_hz: hz };
                     fastest = fastest.min(interval(s, &p));
                 }
             }
@@ -358,6 +377,73 @@ mod tests {
         assert!(!Prefs::from_globals(&g).parse_while_drawing);
     }
 
+    fn on(hz: Option<f64>) -> (Prefs, State) {
+        (Prefs { match_display: true, ..Prefs::default() }, State { display_hz: hz, ..state() })
+    }
+
+    #[test]
+    fn a_120_hz_display_draws_at_120() {
+        let (p, s) = on(Some(120.0));
+        assert_eq!(us(interval(s, &p)), 7_333, "1/120 s minus 1 ms");
+        let alt = State { alt_screen: true, ..s };
+        assert_eq!(us(interval(alt, &p)), 7_333, "ActiveUpdateCadence follows too");
+        assert_eq!(us(interval(State { display_hz: Some(1000.0), ..s }, &p)), 3_167, "clamped to 240");
+        assert_eq!(us(interval(State { display_hz: Some(10.0), ..s }, &p)), 32_333, "clamped to 30");
+        assert_eq!(shortest_interval(&p, Some(120.0)), interval(s, &p));
+    }
+
+    #[test]
+    fn a_flood_on_120_hz_draws_at_120_with_parse_while_drawing() {
+        let (p, s) = on(Some(120.0));
+        let flood = State { throughput: 50_000, ..s };
+        assert_eq!(us(interval(flood, &p)), 32_333, "without the switch a flood stays at 30");
+        let p = Prefs { parse_while_drawing: true, ..p };
+        assert_eq!(us(interval(flood, &p)), 7_333);
+        assert_eq!(us(interval(State { worker_parses: false, ..flood }, &p)), 32_333, "a pane the worker cannot parse");
+        let slow = Prefs { metal_slow_frame_rate: 20.0, ..p };
+        assert_eq!(us(interval(State { worker_parses: false, ..flood }, &slow)), 49_000, "MetalSlowFrameRate never follows");
+    }
+
+    #[test]
+    fn battery_saver_keeps_30_on_any_display() {
+        for hz in [60.0, 120.0, 240.0] {
+            let (p, s) = on(Some(hz));
+            let s = State { low_power: true, ..s };
+            assert_eq!(us(interval(s, &p)), 32_333, "{hz} Hz");
+            assert_eq!(us(interval(State { alt_screen: true, ..s }, &p)), 32_333, "{hz} Hz alt screen");
+            let flood = Prefs { parse_while_drawing: true, ..p };
+            assert_eq!(us(interval(State { throughput: 50_000, ..s }, &flood)), 32_333, "{hz} Hz flood");
+        }
+    }
+
+    #[test]
+    fn a_hand_set_maximum_wins() {
+        let (p, s) = on(Some(120.0));
+        assert_eq!(us(interval(s, &Prefs { maximum_frame_rate: 45.0, ..p })), 21_222);
+        let flood = State { throughput: 50_000, ..s };
+        assert_eq!(us(interval(flood, &Prefs { maximum_frame_rate: 45.0, parse_while_drawing: true, ..p })), 21_222);
+        // ActiveUpdateCadence is its own setting: set by hand, it wins on its own.
+        let alt = State { alt_screen: true, ..s };
+        assert_eq!(us(interval(alt, &Prefs { active_update_cadence: 30.0, ..p })), 32_333);
+    }
+
+    #[test]
+    fn no_display_rate_keeps_60() {
+        let (p, s) = on(None);
+        assert_eq!(us(interval(s, &p)), 15_667);
+        assert_eq!(shortest_interval(&p, None), interval(s, &p));
+    }
+
+    #[test]
+    fn the_switch_off_keeps_60() {
+        let s = State { display_hz: Some(120.0), ..state() };
+        assert_eq!(us(interval(s, &Prefs::default())), 15_667);
+        let mut g = crate::globals::Globals::empty(std::path::Path::new("none.toml"));
+        assert!(Prefs::from_globals(&g).match_display, "on by default");
+        g.set("MatchDisplayRefreshRate", toml::Value::Boolean(false));
+        assert!(!Prefs::from_globals(&g).match_display);
+    }
+
     #[test]
     fn low_power_caps_the_rate() {
         let p = Prefs::default();
@@ -375,6 +461,7 @@ mod tests {
         let mut g = crate::globals::Globals::empty(std::path::Path::new("none.toml"));
         // Termurion's own switch is on by default; `Prefs::default()` is iTerm2's cadence.
         g.set("ParseWhileDrawing", toml::Value::Boolean(false));
+        g.set("MatchDisplayRefreshRate", toml::Value::Boolean(false));
         let base = Prefs::from_globals(&g);
         assert_eq!(base, Prefs::default());
         g.set("UseAdaptiveFrameRate", toml::Value::Boolean(false));

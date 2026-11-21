@@ -1045,8 +1045,9 @@ impl Pane {
     pub fn replay_gap(&mut self, now: Instant, visible: bool, last_output: Option<Instant>, prefs: &crate::cadence::Prefs, low_power: bool) -> Duration {
         let idle = !self.got_output && last_output.is_none_or(|t| now.saturating_duration_since(t) > crate::cadence::idle_after(self.idle_time));
         let alt = self.own().alt_screen();
-        // Capture keeps the slow flood rate under Parse While Drawing: the same history and work.
-        let state = crate::cadence::State { active: false, idle, visible, alt_screen: alt, throughput: self.throughput.estimate(now), low_power, worker_parses: false };
+        // Capture keeps the slow flood rate under Parse While Drawing, and the 60 fps rate on any
+        // display: the same history and work.
+        let state = crate::cadence::State { active: false, idle, visible, alt_screen: alt, throughput: self.throughput.estimate(now), low_power, worker_parses: false, display_hz: None };
         crate::cadence::interval(state, prefs)
     }
 
@@ -2874,7 +2875,7 @@ mod tests {
     /// left for the frame after the gap.
     #[test]
     fn a_pane_inside_the_floor_does_no_capture_work() {
-        let floor = crate::cadence::shortest_interval(&crate::cadence::Prefs::default());
+        let floor = crate::cadence::shortest_interval(&crate::cadence::Prefs::default(), None);
         let mut p = Pane::tmux(8, 1, 6, 20, 4);
         p.dvr = crate::dvr::Dvr::new(capacity_for(4));
         let t0 = Instant::now();
@@ -2908,6 +2909,19 @@ mod tests {
         assert_eq!(p.replay_gap(now, true, last, &prefs, false), fast, "5 s quiet is not idle after 10 s");
         p.idle_time = Duration::from_secs(2);
         assert_eq!(p.replay_gap(now, true, last, &prefs, false), bg, "5 s quiet is idle after 2 s");
+    }
+
+    /// Match Display Refresh Rate speeds up the window's frames, never Instant Replay's capture.
+    #[test]
+    fn replay_gap_ignores_the_display_rate() {
+        let base = crate::cadence::Prefs::default();
+        let matching = crate::cadence::Prefs { match_display: true, parse_while_drawing: true, ..base };
+        let now = Instant::now();
+        let mut p = Pane::tmux(5, 1, 3, 20, 4);
+        p.got_output = true;
+        assert_eq!(p.replay_gap(now, true, Some(now), &matching, false), crate::cadence::frame_gap(true, false, false, 0));
+        p.throughput.add(now, 100_000);
+        assert_eq!(p.replay_gap(now, true, Some(now), &matching, false), p.replay_gap(now, true, Some(now), &base, false));
     }
 
     /// Parse While Drawing raises a plain pane's flood draws to 60 fps; Instant Replay keeps

@@ -279,6 +279,14 @@ fn leave_broadcast(broadcast: &mut crate::broadcast::Broadcast, broadcast_tabs: 
 }
 
 impl App {
+    /// Reads the monitor's rate again: the window moved, resized or changed scale, possibly onto
+    /// another display.
+    pub(super) fn refresh_display_hz(&mut self) {
+        if let Some(g) = self.gpu.as_mut() {
+            g.display_hz = display_hz_of(&g.window);
+        }
+    }
+
     /// Takes the tab at `at` out of the current window to move it to another: its replays
     /// end, the window's MRU forgets it, and it leaves the window's broadcast settings. The
     /// caller chooses the new active tab.
@@ -1292,7 +1300,7 @@ pub(super) fn init_gpu_from(window: Arc<Window>, from: &(wgpu::Instance, wgpu::A
     surface.configure(device, &config);
     let mut renderer = Renderer::new(device, queue, format, &super::first_font(), FONT_PX * window.scale_factor() as f32);
     renderer.set_view_formats(crate::render_fx_gpu::view_formats_supported(adapter));
-    Ok(Gpu { surface, adapter: adapter.clone(), device: device.clone(), queue: queue.clone(), config, renderer, instance: instance.clone(), alpha: None, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), scene: Default::default(), painted_at: 0, window })
+    Ok(Gpu { surface, adapter: adapter.clone(), device: device.clone(), queue: queue.clone(), config, renderer, instance: instance.clone(), alpha: None, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), scene: Default::default(), painted_at: 0, display_hz: display_hz_of(&window), window })
 }
 
 impl App {

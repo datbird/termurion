@@ -55,6 +55,7 @@ fn rebuild_window_gpu(old: Gpu, primary: &GpuHandles, alpha: Option<&AlphaGpu>) 
         title_sent: Default::default(),
         scene: Default::default(),
         painted_at: 0,
+        display_hz: super::display_hz_of(&window),
         window,
     })
 }
