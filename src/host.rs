@@ -137,6 +137,22 @@ impl Host {
         out
     }
 
+    /// The sessions the prompt watch skips for a flood (held at the window, or a full output
+    /// budget), not a pause: each reads as not at a prompt, so password input never stays on
+    /// through a flood.
+    fn flooding_targets(&self) -> Vec<u64> {
+        let flow = self.client.as_ref().is_some_and(|c| c.version >= FLOW_VERSION);
+        let mut out: Vec<u64> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| s.attached && s.exited.is_none())
+            .filter(|(_, s)| s.pty.as_ref().is_some_and(|p| !p.is_paused() && (held(s, flow) || p.queued() >= crate::pty_budget::PTY_BUDGET)))
+            .map(|(id, _)| *id)
+            .collect();
+        out.sort();
+        out
+    }
+
     /// Password prompt readings start over (a new request, or no Termurion to tell).
     /// Returns a "not at a prompt" for each session that was at one, so a Termurion that keeps
     /// listening never holds a stale "at a prompt".
@@ -169,19 +185,20 @@ fn watch_prompts(host: std::sync::Weak<Mutex<Host>>) {
     loop {
         std::thread::sleep(PROMPT_EVERY);
         let Some(shared) = host.upgrade() else { return };
-        let (debounce, targets) = {
+        let (debounce, targets, flooding) = {
             let h = shared.lock().unwrap();
-            let targets = match h.prompt_debounce {
-                Some(_) => h.prompt_targets(),
-                None => Vec::new(),
+            let (targets, flooding) = match h.prompt_debounce {
+                Some(_) => (h.prompt_targets(), h.flooding_targets()),
+                None => Default::default(),
             };
-            (h.prompt_debounce, targets)
+            (h.prompt_debounce, targets, flooding)
         };
         drop(shared);
         let Some(debounce) = debounce else { continue };
         // Unknown (the mode could not be read, or the session was paused since) is never a
         // prompt.
-        let samples: Vec<(u64, bool, Instant)> = targets.into_iter().map(|(id, pid, paused)| (id, crate::platform::pty::console_mode_unless(pid, &paused).is_ok_and(crate::pwm_prompt::at_prompt), Instant::now())).collect();
+        let mut samples: Vec<(u64, bool, Instant)> = targets.into_iter().map(|(id, pid, paused)| (id, crate::platform::pty::console_mode_unless(pid, &paused).is_ok_and(crate::pwm_prompt::at_prompt), Instant::now())).collect();
+        samples.extend(flooding.into_iter().map(|id| (id, false, Instant::now())));
         let Some(shared) = host.upgrade() else { return };
         let mut h = shared.lock().unwrap();
         // A request changed while these were read: they belong to the old one.
@@ -1076,8 +1093,12 @@ pub(crate) mod tests {
         }
         let ids = |h: &Host| h.prompt_targets().into_iter().map(|t| t.0).collect::<Vec<_>>();
         assert_eq!(ids(&h), vec![1], "a held session and one with a full budget are not read");
+        assert_eq!(h.flooding_targets(), vec![2, 3], "both read as not at a prompt");
         h.client = client(5);
         assert_eq!(ids(&h), vec![1, 2], "a version 5 client's session is never held");
+        assert_eq!(h.flooding_targets(), vec![3]);
+        h.sessions[&3].pty.as_ref().unwrap().set_paused(true);
+        assert!(h.flooding_targets().is_empty(), "a paused session keeps its prompt state");
         for s in h.sessions.drain().map(|(_, s)| s) {
             drop(s.pty);
         }

@@ -391,7 +391,6 @@ mod tests {
         ]
     }
 
-
     #[test]
     fn messages_round_trip() {
         // Version 4 hosts take LaunchWith, version 5 Goodbye, version 6 Consumed; version 1 is still spoken.

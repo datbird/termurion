@@ -206,6 +206,25 @@ pub(crate) fn console_targets(consoles: &HashMap<u32, Console>) -> Vec<(u32, Arc
         .collect()
 }
 
+/// The consoles a look skips for a full budget, not a pause: each reads as not at a prompt,
+/// so password input never stays on through a flood. A paused one keeps its state.
+pub(crate) fn flooding_consoles(consoles: &HashMap<u32, Console>) -> Vec<u32> {
+    consoles.iter().filter(|(_, (p, b))| !p.load(std::sync::atomic::Ordering::Acquire) && b.queued() >= crate::pty_budget::PTY_BUDGET).map(|(pid, _)| *pid).collect()
+}
+
+/// Takes a look's samples into each shell's debounced prompt state; true when one changed.
+fn take_samples(s: &mut Shared, samples: Vec<(u32, bool, std::time::Instant)>) -> bool {
+    let Some(debounce) = s.read_debounce else { return false };
+    let mut changed = false;
+    for (pid, prompt, at) in samples {
+        // A shell forgotten while it was read stays forgotten.
+        if s.consoles.contains_key(&pid) {
+            changed |= s.prompts.entry(pid).or_default().sample(prompt, at, debounce).is_some();
+        }
+    }
+    changed
+}
+
 /// The watcher: a thread that looks at the registered shells' trees and calls `notify`
 /// when a job changes.
 #[derive(Clone)]
@@ -225,26 +244,20 @@ impl JobWatch {
                     let s = shared.lock().unwrap_or_else(|e| e.into_inner());
                     let trees: Vec<u32> = s.trees_wanted.iter().copied().collect();
                     let roots: Vec<u32> = s.roots.union(&s.trees_wanted).copied().collect();
-                    let shells = if s.read_debounce.is_some() { console_targets(&s.consoles) } else { Vec::new() };
+                    let shells = if s.read_debounce.is_some() { (console_targets(&s.consoles), flooding_consoles(&s.consoles)) } else { Default::default() };
                     (roots, trees, s.fast, shells, wait_pids(&s.jobs, s.fast_updates))
                 };
                 drop(shared);
-                if !shells.is_empty() {
+                let (shells, flooding) = shells;
+                if !shells.is_empty() || !flooding.is_empty() {
                     // Each sample with its own time. Unknown (the mode could not be read) is
                     // never a password prompt; nor is one paused since it was picked (refused
                     // under `CONSOLE`, so no read runs on a paused console).
-                    let samples: Vec<(u32, bool, std::time::Instant)> = shells.iter().map(|(pid, paused)| (*pid, crate::platform::pty::console_mode_unless(*pid, paused).is_ok_and(crate::pwm_prompt::at_prompt), std::time::Instant::now())).collect();
+                    let mut samples: Vec<(u32, bool, std::time::Instant)> = shells.iter().map(|(pid, paused)| (*pid, crate::platform::pty::console_mode_unless(*pid, paused).is_ok_and(crate::pwm_prompt::at_prompt), std::time::Instant::now())).collect();
+                    samples.extend(flooding.into_iter().map(|pid| (pid, false, std::time::Instant::now())));
                     let Some(shared) = weak.upgrade() else { return };
                     let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
-                    let mut changed = false;
-                    if let Some(debounce) = s.read_debounce {
-                        for (pid, prompt, at) in samples {
-                            // A shell forgotten while it was read stays forgotten.
-                            if s.consoles.contains_key(&pid) {
-                                changed |= s.prompts.entry(pid).or_default().sample(prompt, at, debounce).is_some();
-                            }
-                        }
-                    }
+                    let changed = take_samples(&mut s, samples);
                     drop(s);
                     if changed {
                         notify();
@@ -418,6 +431,31 @@ mod tests {
         let mut got = ids(&consoles);
         got.sort();
         assert_eq!(got, vec![1, 2], "read again once the pane takes its output");
+    }
+
+    /// A flood ends password input: the console skipped for its full budget reads as not at a
+    /// prompt. A paused one keeps what it had.
+    #[test]
+    fn a_flooding_console_is_not_at_a_prompt() {
+        use crate::pty_budget::{Budget, PTY_BUDGET};
+        let flag = |on| Arc::new(std::sync::atomic::AtomicBool::new(on));
+        let full = || {
+            let b = Budget::new();
+            b.add(PTY_BUDGET);
+            b
+        };
+        let mut s = Shared { read_debounce: Some(0.0), ..Default::default() };
+        s.consoles.insert(1, (flag(false), full()));
+        s.consoles.insert(2, (flag(true), full()));
+        let now = std::time::Instant::now();
+        for pid in [1, 2] {
+            s.prompts.entry(pid).or_default().sample(true, now, 0.0);
+        }
+        assert_eq!(flooding_consoles(&s.consoles), vec![1], "the paused one is skipped for its pause");
+        let samples = flooding_consoles(&s.consoles).into_iter().map(|pid| (pid, false, now)).collect();
+        assert!(take_samples(&mut s, samples));
+        assert!(!s.prompts[&1].on, "the flood turned password input off");
+        assert!(s.prompts[&2].on, "the paused console keeps its state");
     }
 
     /// `PC:479-500`: the names that vanished from a shrinking ancestry, and the one log line.

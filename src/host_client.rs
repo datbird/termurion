@@ -630,6 +630,12 @@ mod tests {
     /// A host from an older Termurion that speaks up to `speaks`: it refuses each higher version
     /// (not busy), welcomes the client at `speaks`, and returns the first message after that.
     fn older_host(name: String, speaks: u32) -> std::thread::JoinHandle<Msg> {
+        let h = older_host_taking(name, speaks, 1);
+        std::thread::spawn(move || h.join().unwrap().remove(0))
+    }
+
+    /// `older_host`, returning the first `count` messages after the welcome.
+    fn older_host_taking(name: String, speaks: u32, count: usize) -> std::thread::JoinHandle<Vec<Msg>> {
         use crate::host_proto::Decoder;
         let mut listener = crate::platform::ipc::Listener::bind(&name).unwrap();
         std::thread::spawn(move || {
@@ -655,13 +661,19 @@ mod tests {
             let (m, mut d, mut buf) = hello(&conn);
             assert_eq!(m, Msg::Hello { version: speaks });
             conn.write_all(&encode(&Msg::Welcome { version: speaks, host_pid: 1, instance: "old".into(), sessions: vec![] })).unwrap();
-            loop {
+            let mut got = Vec::new();
+            while got.len() < count {
                 if let Some(m) = d.next() {
-                    return m.unwrap();
+                    got.push(m.unwrap());
+                    continue;
                 }
-                let n = conn.read(&mut buf).unwrap();
-                d.push(&buf[..n]);
+                // The client closed: no more messages come.
+                match conn.read(&mut buf) {
+                    Ok(n) if n > 0 => d.push(&buf[..n]),
+                    _ => break,
+                }
             }
+            got
         })
     }
 
@@ -777,18 +789,35 @@ mod tests {
                         }
                         got.push(m);
                     }
-                    None => {
-                        let n = conn.read(&mut buf).unwrap();
-                        d.push(&buf[..n]);
-                    }
+                    // The client closed: no more messages come.
+                    None => match conn.read(&mut buf) {
+                        Ok(n) if n > 0 => d.push(&buf[..n]),
+                        _ => break,
+                    },
                 }
             }
             got
         });
         let (c, _) = Client::connect(&name, Duration::from_secs(5)).unwrap().expect("the host answers");
         assert!(c.attach_within(5, 0, 7, quiet(), Duration::from_millis(200)).is_err());
-        assert_eq!(host.join().unwrap(), vec![Msg::Hello { version: VERSION }, Msg::Attach { id: 5, since: 7 }, Msg::Detach { id: 5 }]);
+        // Closing ends the fake host's reads, so a missing Detach fails here instead of hanging
+        // (the Goodbye would come third).
         c.close();
+        assert_eq!(host.join().unwrap(), vec![Msg::Hello { version: VERSION }, Msg::Attach { id: 5, since: 7 }, Msg::Detach { id: 5 }]);
+    }
+
+    /// A version 5 host would drop the whole connection on Detach (an unknown message): a
+    /// timed-out attach sends it nothing.
+    #[test]
+    fn a_version_five_host_never_gets_detach() {
+        let name = crate::platform::ipc::test_name("v5host");
+        let old_host = older_host_taking(name.clone(), 5, 2);
+        let (client, welcome) = Client::connect(&name, Duration::from_secs(5)).unwrap().expect("the version 5 host answers");
+        assert_eq!(welcome.version, 5);
+        assert!(client.attach_within(5, 0, 7, quiet(), Duration::from_millis(200)).is_err());
+        client.kill_all();
+        assert_eq!(old_host.join().unwrap(), vec![Msg::Attach { id: 5, since: 7 }, Msg::KillAll], "KillAll follows the Attach: no Detach between");
+        client.close();
     }
 
     #[test]
