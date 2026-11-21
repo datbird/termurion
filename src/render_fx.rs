@@ -1312,6 +1312,8 @@ mod tests {
         assert_eq!(frame_region(&f, &playing, &now, (8.0, 20.0), false, (800, 600)), None);
         // Nothing to draw in either: nothing shaded, never the full pass.
         assert_eq!(frame_region(&[], &now, &last, (8.0, 20.0), false, (800, 600)), Some(vec![]));
+        // No box found in either frame: each one's line search band, the whole width.
+        assert_eq!(frame_region(&[RegionTerm::InputBox(1.0)], &now, &last, (8.0, 20.0), false, (800, 600)).unwrap(), [PxRect { x: 0, y: 250, w: 800, h: 222 }, PxRect { x: 0, y: 0, w: 800, h: 112 }]);
     }
 
     #[test]

@@ -4739,6 +4739,27 @@ pub(crate) mod tests {
         assert!(fx.cursor.unwrap().rect[0] > 20.0 * r.cell.0, "the cursor sits far right of the mark");
     }
 
+    /// The shaders still find the `shell-rules` rules and mark themselves: Neon's full pass
+    /// restyles pixels outside the cursor:3 rect, where a region without the search areas
+    /// would leave the plain picture.
+    #[test]
+    fn the_shaders_restyle_the_shell_rules_screen_outside_the_cursor() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let p = region_plugins().into_iter().find(|p| p.id == "neon").expect("neon");
+        let preset = preset_of(&p);
+        let (frame, size, bg) = agent_frame(&r, "shell-rules", preset);
+        let plain = plain_through_chain(&mut r, &frame, size);
+        let shots = region_shots(&mut r, &p, &frame, size, bg, preset, CHAIN_KINDS[0], &Plan { hold: 100, every: 50, ..Default::default() });
+        let full = &shots.last().expect("a shot").full;
+        let c = frame.fx.as_ref().unwrap().cursor.unwrap().rect;
+        let pad = 3.0 * r.cell.1.max(2.0 * r.cell.0).max(c[3]);
+        let near = |x: f32, y: f32| x >= c[0] - pad && x <= c[0] + c[2] + pad && y >= c[1] - pad && y <= c[1] + c[3] + pad;
+        let w = size.0 as usize;
+        let outside = (0..full.len() / 4).filter(|&i| !near((i % w) as f32, (i / w) as f32) && full[i * 4..i * 4 + 4] != plain[i * 4..i * 4 + 4]).count();
+        assert!(outside > 0, "the full pass left everything outside cursor:3 plain");
+    }
+
     /// A frame drawn anew shades only its own region over the new picture: the same timeline as
     /// `region_frames_match_full_frames_for_every_shipped_plugin`, but every frame built with
     /// its rows switched to the next agent screen's and back, byte-equal to the full pass. Each
@@ -4778,17 +4799,26 @@ pub(crate) mod tests {
             let (mut built, mut animated, mut bad) = (0, 0, Vec::new());
             let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
             let preset = preset_of(p);
+            // Every frame in the first full_after_change window is full: hold 750 ms past it so
+            // region frames follow.
+            let hold = full_window(p.manifest.region.as_deref().unwrap_or_default()) + 750;
             for (i, (name, next)) in [("hermes", "codex"), ("codex", "tmux-split-band"), ("shell-rules", "hermes")].iter().enumerate() {
                 let (frame, size, bg) = agent_frame(&r, name, preset);
                 let next = agent_frame(&r, next, preset).0;
+                let (mut on_built, mut on_screen) = (0, 0);
                 for kind in CHAIN_KINDS {
-                    // The box lines take the cursor's color a second after it settles: shell-rules holds longer.
-                    let plan = Plan { events: i == 0, hold: if *name == "shell-rules" { 2000 } else { 1000 }, every: 50, built: 2, changed: Some(next.clone()), ..Default::default() };
+                    let plan = Plan { events: i == 0, hold, every: 50, built: 2, changed: Some(next.clone()), ..Default::default() };
                     let shots = region_shots(&mut r, p, &frame, size, bg, preset, kind, &plan);
                     check_shots(&shots, kind, size, &format!("{} mixed {name}", p.id), &mut bad);
-                    built += shots.iter().filter(|s| s.region_path && s.built).count();
+                    on_built += shots.iter().filter(|s| s.region_path && s.built).count();
+                    on_screen += shots.iter().filter(|s| s.region_path).count();
                     animated += shots.iter().filter(|s| s.region_path && !s.built).count();
                 }
+                // Each screen compares region frames, built ones too unless the effect has still looks.
+                if on_screen == 0 || (on_built == 0) != still_looks(p) {
+                    bad.push(format!("{} {name}: {on_screen} region frames, {on_built} of them built", p.id));
+                }
+                built += on_built;
             }
             if (built == 0) != still_looks(p) || animated == 0 {
                 bad.push(format!("{}: {built} built and {animated} animation-only frames shaded only their region", p.id));
