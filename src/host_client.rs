@@ -816,8 +816,9 @@ mod tests {
         assert_eq!(welcome.version, 5);
         assert!(client.attach_within(5, 0, 7, quiet(), Duration::from_millis(200)).is_err());
         client.kill_all();
-        assert_eq!(old_host.join().unwrap(), vec![Msg::Attach { id: 5, since: 7 }, Msg::KillAll], "KillAll follows the Attach: no Detach between");
+        // Closing ends the fake host's reads, so a lost message fails here instead of hanging.
         client.close();
+        assert_eq!(old_host.join().unwrap(), vec![Msg::Attach { id: 5, since: 7 }, Msg::KillAll], "KillAll follows the Attach: no Detach between");
     }
 
     #[test]

@@ -197,7 +197,7 @@ pub(crate) type Console = (Arc<std::sync::atomic::AtomicBool>, Arc<crate::pty_bu
 
 /// The consoles a look reads: those not paused (Undo Close, an inline file question), each
 /// with its flag for the check under `CONSOLE`. Never one with a full output budget: it is
-/// mid-flood, not at a prompt, and every attach lets the readers read past their budgets.
+/// mid-flood, not at a prompt, and an attach to it lets its reader read past the budget.
 pub(crate) fn console_targets(consoles: &HashMap<u32, Console>) -> Vec<(u32, Arc<std::sync::atomic::AtomicBool>)> {
     consoles
         .iter()

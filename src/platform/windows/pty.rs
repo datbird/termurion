@@ -589,15 +589,24 @@ pub(crate) fn start_writer(input: HANDLE, pending: Arc<std::sync::atomic::Atomic
 }
 
 /// Drains ConPTY output on its own thread. It stops at a full `budget` (so the program waits on
-/// the pipe), except while a console attach wants `CONSOLE`: ConPTY must never block then.
+/// the pipe), except while an attach wants this shell's console (or a console no reader owns):
+/// ConPTY must never block one then.
 fn start_reader(output: HANDLE, pid: u32, notify: Notify, paused: Arc<std::sync::atomic::AtomicBool>, budget: Arc<Budget>) -> (Receiver<Vec<u8>>, Receiver<()>, JoinHandle<()>) {
     // Known before the first read, so an attach to this shell from now on lifts this reader.
     wanted(|w| count(&mut w.readers, pid, true));
+    /// Forgets the reader when its thread ends, a panic included.
+    struct Registered(u32);
+    impl Drop for Registered {
+        fn drop(&mut self) {
+            wanted(|w| count(&mut w.readers, self.0, false));
+        }
+    }
     let (tx, rx) = mpsc::channel();
     let (done_tx, done_rx) = mpsc::channel();
     // HANDLE is a raw pointer and not Send. The thread owns this handle from here on.
     let raw = output as usize;
     let reader = std::thread::spawn(move || {
+        let _registered = Registered(pid);
         let output = raw as HANDLE;
         let mut buf = vec![0u8; 64 * 1024];
         loop {
@@ -618,7 +627,6 @@ fn start_reader(output: HANDLE, pid: u32, notify: Notify, paused: Arc<std::sync:
             notify();
         }
         unsafe { CloseHandle(output) };
-        wanted(|w| count(&mut w.readers, pid, false));
         let _ = done_tx.send(());
         notify();
     });
@@ -810,7 +818,8 @@ impl Pty {
         if let Some(reader) = self.reader.take() {
             if self.reader_done.recv_timeout(CLOSE_WAIT).is_err() && !self.cancel_reader(&reader) {
                 eprintln!("termurion: the pipes reader did not stop; leaving it running");
-                unsafe { CloseHandle(self.process) };
+                // The process handle stays open for good: its pid must not be reused while the
+                // reader still owns it in `CONSOLE_WANTED`.
                 return;
             }
             let _ = reader.join();
@@ -839,7 +848,8 @@ impl Drop for Pty {
         if let Some(reader) = self.reader.take() {
             if self.reader_done.recv_timeout(CLOSE_WAIT).is_err() && !self.force_reader_stop(&reader) {
                 eprintln!("termurion: the pty reader did not stop; leaving it running");
-                unsafe { CloseHandle(self.process) };
+                // The process handle stays open for good: its pid must not be reused while the
+                // reader still owns it in `CONSOLE_WANTED`.
                 return;
             }
             let _ = reader.join();
@@ -1161,6 +1171,20 @@ pub(crate) mod tests {
         reader.join().unwrap();
         let got: Vec<u8> = rx.try_iter().flatten().collect();
         assert_eq!(got, b"x");
+    }
+
+    /// A reader is known by its shell's pid while it runs and forgotten when its thread ends
+    /// (by a guard, so a panic forgets it too).
+    #[test]
+    fn a_reader_is_forgotten_when_it_ends() {
+        let pid = 0xFFFF_FF01;
+        let (mut r, mut w): (HANDLE, HANDLE) = (null_mut(), null_mut());
+        assert_ne!(unsafe { CreatePipe(&mut r, &mut w, null(), 0) }, 0);
+        let (_rx, _done, reader) = start_reader(r, pid, Arc::new(|| {}), Arc::new(std::sync::atomic::AtomicBool::new(false)), Budget::new());
+        assert!(wanted(|w| w.readers.contains_key(&pid)));
+        unsafe { CloseHandle(w) };
+        reader.join().unwrap();
+        assert!(!wanted(|w| w.readers.contains_key(&pid)), "an ended reader still owns its pid");
     }
 
     #[test]

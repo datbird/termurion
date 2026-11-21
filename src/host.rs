@@ -123,8 +123,8 @@ impl Host {
     /// once its pipe fills OpenConsole blocks every console call on it, and an attach there
     /// would hold `pty::CONSOLE` for good (and every later close with it). Each comes with its
     /// pause flag, checked again under that lock. Never one held at the window or with a full
-    /// output budget either: it is mid-flood, not at a prompt, and every attach lets the readers
-    /// read past their budgets while nothing takes the output.
+    /// output budget either: it is mid-flood, not at a prompt, and an attach to it lets its
+    /// reader read past the budget while nothing takes the output.
     fn prompt_targets(&self) -> Vec<(u64, u32, Arc<std::sync::atomic::AtomicBool>)> {
         let flow = self.client.as_ref().is_some_and(|c| c.version >= FLOW_VERSION);
         let mut out: Vec<_> = self
