@@ -5,9 +5,9 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 publish = false
 
-# glyphon is a member so its own tests run (`cargo test -p glyphon`); the other vendored crates are not.
+# glyphon and cosmic-text are members so their own tests run (`cargo test -p glyphon`, `-p cosmic-text`); the other vendored crates are not.
 [workspace]
-members = ["crates/glyphon"]
+members = ["crates/glyphon", "crates/cosmic-text"]
 exclude = ["tools/protogen"]
 
 [dependencies]
@@ -162,5 +162,7 @@ alacritty_terminal = { path = "crates/alacritty_terminal" }
 vte = { path = "crates/vte" }
 # glyphon with a mask filter for aliased and thin text (crates/glyphon/TERMURION-PATCHES.md).
 glyphon = { path = "crates/glyphon" }
+# cosmic-text with a bounded, direction-aware word cache (crates/cosmic-text/TERMURION-PATCHES.md).
+cosmic-text = { path = "crates/cosmic-text" }
 # winit with Retina custom cursors on macOS (crates/winit/TERMURION-PATCHES.md).
 winit = { path = "crates/winit" }
