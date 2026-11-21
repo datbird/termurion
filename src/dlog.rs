@@ -275,7 +275,7 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("browser_settings_page.rs", 1),
     ("file_serve.rs", 1),
     ("globals.rs", 1),
-    ("host_client.rs", 2),
+    ("host_client.rs", 3),
     ("jobwatch.rs", 2),
     ("perm_queue.rs", 1),
     ("platform/linux/app_entry.rs", 4),
