@@ -549,6 +549,10 @@ struct GpuVec {
 
 const GPU_CHUNK: usize = 4096;
 
+/// A shaped word no shaping frame used for this many shaping frames is dropped from
+/// cosmic-text's run cache (idle frames shape nothing and age nothing).
+const SHAPE_KEEP_FRAMES: u64 = 60;
+
 impl GpuVec {
     fn new(device: &wgpu::Device) -> GpuVec {
         GpuVec { buf: Self::alloc(device, GPU_CHUNK as u64), cap: GPU_CHUNK as u64, last: Vec::new(), written: 0 }
@@ -851,6 +855,7 @@ impl Renderer {
         self.sync_default_face();
         self.buffers.clear();
         self.advances.clear();
+        self.font_system.shape_run_cache.clear();
         self.widths.clear();
     }
 
@@ -923,6 +928,7 @@ impl Renderer {
         }
         self.buffers.clear();
         self.advances.clear();
+        self.font_system.shape_run_cache.clear();
         self.widths.clear();
     }
 
@@ -941,6 +947,7 @@ impl Renderer {
         }
         self.buffers.clear();
         self.advances.clear();
+        self.font_system.shape_run_cache.clear();
     }
 
     /// The weights of `family`'s regular-style faces, sorted (looked up once per family).
@@ -1032,7 +1039,24 @@ impl Renderer {
             self.calt = calt;
             self.buffers.clear();
             self.advances.clear();
+            self.font_system.shape_run_cache.clear();
         }
+    }
+
+    /// Termurion's `ShapeCache`: off, every word is shaped each time it is drawn.
+    pub fn set_shape_cache(&mut self, on: bool) {
+        let cache = &mut self.font_system.shape_run_cache;
+        cache.set_enabled(on);
+        cache.clear();
+        self.buffers.clear();
+    }
+
+    /// The shape cache's runs, hits and misses (tests).
+    #[cfg(test)]
+    pub(crate) fn shape_cache_stats(&self) -> (usize, u64, u64) {
+        let cache = &self.font_system.shape_run_cache;
+        let (hits, misses) = cache.stats();
+        (cache.len(), hits, misses)
     }
 
     /// The anti-aliasing rules of face `id` for `scene::DrawPrefs`: the profile's switches and
@@ -1456,6 +1480,7 @@ impl Renderer {
         }
         self.buffers.clear();
         self.advances.clear();
+        self.font_system.shape_run_cache.clear();
         self.widths.clear();
     }
 
@@ -1792,6 +1817,7 @@ impl Renderer {
         // Each face's drawn family, looked up before the buffers are borrowed.
         let drawn: Vec<String> = self.faces.iter().map(|f| self.drawn_family(&f.key.family)).collect();
         let bold_badge = self.badge_bold;
+        let shapes = self.shapes;
         let mut used = Vec::with_capacity(all_rows.len());
         for row in all_rows.iter().copied() {
             // Two rows with the same text each take their own buffer, so both draw.
@@ -1919,6 +1945,9 @@ impl Renderer {
             *last_face = row.face;
         }
         self.buffers = used;
+        if self.shapes != shapes {
+            self.font_system.shape_run_cache.trim(SHAPE_KEEP_FRAMES);
+        }
 
         self.viewport.update(&self.queue, Resolution { width, height });
         let groups = self.glyph_groups(&frame.glyphs);
@@ -3172,6 +3201,216 @@ pub(crate) mod tests {
         assert!(!r.advances.is_empty());
         r.set_fonts(LIGATURE_TEST, None, 17.0, 1.0, 1.0);
         assert!(r.advances.is_empty(), "a font change clears the measured advances");
+    }
+
+    /// One frame row per slot, `y` rows down, in face `face`.
+    fn slot_row(y: usize, spans: Vec<Span>, face: u16) -> TextRow {
+        TextRow { x: 0.0, y: y as f32 * 24.0, spans: spans.into(), clip: Rect { x: 0.0, y: y as f32 * 24.0, w: 800.0, h: 24.0 }, scale: 1.0, face }
+    }
+
+    /// Every layout glyph of every slot the last frame shaped, as text (glyph id, font, x, y,
+    /// width, offsets, level, bytes, size, flags and color).
+    fn every_layout_glyph(r: &Renderer) -> Vec<String> {
+        r.buffers.iter().map(|(b, ..)| b.layout_runs().flat_map(|run| run.glyphs.iter().map(|g| format!("{g:?}")).collect::<Vec<_>>()).collect::<Vec<_>>().join("\n")).collect()
+    }
+
+    /// A flood line as the bench prints it: the number, "flood" in a color, then prose.
+    fn flood_line(n: usize, words: &str) -> Vec<Span> {
+        let colors = [rgb(205, 0, 0), rgb(0, 205, 0), rgb(205, 205, 0), rgb(0, 0, 238), rgb(205, 0, 205), rgb(0, 205, 205)];
+        vec![terminal_span(&format!("{n:07} "), false, false), Span { color: colors[n % 6], ..terminal_span("flood", false, false) }, terminal_span(&format!(" {words}"), false, false)]
+    }
+
+    /// Task 8f, the render quality gate: with the shape cache off, on and cold, and on and warm,
+    /// every row draws the same layout glyphs and the same pixels.
+    #[test]
+    fn the_shape_cache_draws_the_same_glyphs_and_pixels() {
+        let (device, queue) = device();
+        let mut r = fixture_renderer(&device, &queue);
+        // 832, not 800: a texture copy's rows are 256-byte aligned.
+        let (w, h) = (832u32, 480u32);
+        let tex = target(&device, w, h);
+        let view = tex.create_view(&Default::default());
+        let ligature_font = ["Fira Code", "Cascadia Code", "JetBrains Mono"].into_iter().find(|f| r.has_family(f));
+        if ligature_font.is_none() {
+            println!("skip: no ligature font installed");
+        }
+        for spacing in [1.0f32, 1.25] {
+            r.set_fonts(LIGATURE_TEST, Some(RTL_TEST), 16.0, spacing, 1.0);
+            let wide = r.face(&FaceKey::new(WIDE_BOLD_TEST, None, 16.0, spacing, 1.0));
+            let mut rows: Vec<(Vec<Span>, u16)> = vec![
+                (flood_line(1234, "the renderer keeps each row it built and draws"), DEFAULT_FACE),
+                (vec![terminal_span("the the the", false, false)], DEFAULT_FACE),
+            ];
+            for level in [0, 1, 2] {
+                rows.push((vec![Span { ligatures: level, ..terminal_span("a->b != c <=> d |> e", false, false) }], DEFAULT_FACE));
+            }
+            if let Some(f) = ligature_font {
+                let face = r.face(&FaceKey::new(f, None, 16.0, spacing, 1.0));
+                for level in [0, 2] {
+                    rows.push((vec![Span { ligatures: level, ..terminal_span("a->b != c <=> d |> e", false, false) }], face));
+                }
+            }
+            for (bold, italic) in [(true, false), (false, true), (true, true)] {
+                rows.push((vec![terminal_span("Wide Bold text", bold, italic)], wide));
+            }
+            for text in [
+                "\u{1f600} \u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467} \u{1f1fa}\u{1f1f8} \u{2764}\u{fe0f}",
+                "\u{4e00}\u{4e8c}\u{4e09} \u{65e5}\u{672c}",
+                "e\u{301} a\u{308}\u{323} n\u{303}",
+            ] {
+                rows.push((vec![Span { alt_font: true, ..terminal_span(text, false, false) }], DEFAULT_FACE));
+            }
+            for text in ["\u{5e9}\u{5dc}\u{5d5}\u{5dd} (12) \u{5e9}\u{5dc}\u{5d5}\u{5dd}", "\u{633}\u{644}\u{627}\u{645} \u{633}\u{644}\u{627}\u{645}"] {
+                rows.push((vec![Span { alt_font: true, ..terminal_span(text, false, false) }], DEFAULT_FACE));
+            }
+            rows.push((vec![terminal_span("abc ", false, false), Span { alt_font: true, ..terminal_span("\u{5e9}\u{5dc}", false, false) }, terminal_span(" (1) def", false, false)], DEFAULT_FACE));
+            // One "<>" word in each direction with the same attributes: a cache that ignored the
+            // direction would draw the second one unmirrored.
+            for text in ["\u{e9} <> b", "\u{5e9}\u{5dc}\u{5d5}\u{5dd} <> \u{5e9}\u{5dc}\u{5d5}\u{5dd}"] {
+                rows.push((vec![Span { alt_font: true, ..terminal_span(text, false, false) }], DEFAULT_FACE));
+            }
+            rows.push((vec![Span { prose: true, ..terminal_span("the renderer keeps", false, false) }], DEFAULT_FACE));
+            rows.push((vec![terminal_span("word ", false, false), Span { color: rgb(0, 205, 0), ..terminal_span("word", false, false) }], DEFAULT_FACE));
+            rows.push((vec![terminal_span(&"x".repeat(300), false, false)], DEFAULT_FACE));
+            assert!(rows.len() * 24 <= h as usize, "{} rows", rows.len());
+            let frame = Frame { clear: rgba(rgb(0, 0, 0), 1.0), rows: rows.into_iter().enumerate().map(|(i, (spans, face))| slot_row(i, spans, face)).collect(), ..Default::default() };
+            let shot = |r: &mut Renderer| {
+                r.buffers.clear();
+                r.draw(&frame, &view, w, h).unwrap();
+                (every_layout_glyph(r), read(&device, &queue, &tex, w, h))
+            };
+            r.set_shape_cache(false);
+            let off = shot(&mut r);
+            assert_eq!(r.shape_cache_stats(), (0, 0, 0), "spacing {spacing}: the off draw stores nothing");
+            r.set_shape_cache(true);
+            let cold = shot(&mut r);
+            let (_, hits, misses) = r.shape_cache_stats();
+            let warm = shot(&mut r);
+            let (_, warm_hits, warm_misses) = r.shape_cache_stats();
+            assert!(warm_hits > hits, "spacing {spacing}: the warm draw reuses words");
+            assert_eq!(warm_misses - misses, 1, "spacing {spacing}: only the run too long to keep misses warm");
+            for (name, (glyphs, pixels)) in [("cold", &cold), ("warm", &warm)] {
+                assert_eq!(glyphs.len(), off.0.len());
+                for (slot, (a, b)) in off.0.iter().zip(glyphs).enumerate() {
+                    assert_eq!(a, b, "spacing {spacing}: slot {slot} lays out other glyphs {name}");
+                }
+                assert!(*pixels == off.1, "spacing {spacing}: the {name} draw has other pixels");
+            }
+        }
+    }
+
+    /// Task 8f: a flood's words are shaped once; a new frame of flood rows shapes only its numbers.
+    #[test]
+    fn flood_rows_shape_mostly_from_the_cache() {
+        let (device, queue) = device();
+        let mut r = fixture_renderer(&device, &queue);
+        r.set_fonts(LIGATURE_TEST, None, 16.0, 1.0, 1.0);
+        let words = ["the", "renderer", "keeps", "each", "row", "it", "built", "and", "draws", "again"];
+        let frame = |numbers: std::ops::Range<usize>, rev: bool| {
+            let rows = numbers
+                .enumerate()
+                .map(|(i, n)| {
+                    let mut w: Vec<&str> = words.to_vec();
+                    w.rotate_left(i % words.len());
+                    if rev {
+                        w.reverse();
+                    }
+                    slot_row(i % 20, flood_line(n, &w.join(" ")), DEFAULT_FACE)
+                })
+                .collect();
+            Frame { rows, ..Default::default() }
+        };
+        drawn_xs(&mut r, &frame(1..41, false), 800, 480);
+        let (_, hits, misses) = r.shape_cache_stats();
+        drawn_xs(&mut r, &frame(41..81, true), 800, 480);
+        let (len, hits2, misses2) = r.shape_cache_stats();
+        assert_eq!(misses2 - misses, 40, "one miss per new number");
+        assert!(hits2 - hits >= 400, "{} hits", hits2 - hits);
+        println!("flood frame: {} hits, {} misses, {len} runs held", hits2 - hits, misses2 - misses);
+    }
+
+    /// Task 8f, review 2: no cached run outlives the fonts or features that shaped it.
+    #[test]
+    fn font_changes_clear_the_shape_cache() {
+        let (device, queue) = device();
+        let mut r = fixture_renderer(&device, &queue);
+        let draw = |r: &mut Renderer| {
+            r.buffers.clear();
+            row_glyphs(r, vec![terminal_span("flood words", false, false)]);
+            assert!(r.shape_cache_stats().0 > 0);
+        };
+        draw(&mut r);
+        let changes: [(&str, fn(&mut Renderer)); 7] = [
+            ("size", |r| r.set_font_px(17.0)),
+            ("fonts", |r| r.set_fonts(LIGATURE_TEST, None, 16.0, 1.0, 1.0)),
+            ("scale", |r| r.set_scale(2.0)),
+            ("contextual alternates", |r| r.set_contextual_alternates(!r.calt)),
+            ("bold difference", |r| r.set_bold_difference(r.bold_difference + 1)),
+            ("generous list", |r| r.set_generous_list("Termurion Ligature Test")),
+            ("a font load", |r| {
+                r.font_system.db_mut().load_font_data(include_bytes!("../tests/fixtures/fonts/TermurionRtlTest-Regular.ttf").to_vec());
+            }),
+        ];
+        for (name, change) in changes {
+            change(&mut r);
+            assert_eq!(r.shape_cache_stats().0, 0, "{name} leaves shaped words cached");
+            draw(&mut r);
+        }
+    }
+
+    /// Task 8f: a word no shaping frame used for `SHAPE_KEEP_FRAMES` shaping frames is shaped again.
+    #[test]
+    fn the_shape_cache_ages_out_between_frames() {
+        let (device, queue) = device();
+        let mut r = fixture_renderer(&device, &queue);
+        let draw = |r: &mut Renderer, text: &str| {
+            r.buffers.clear();
+            row_glyphs(r, vec![terminal_span(text, false, false)]);
+            r.shape_cache_stats().2
+        };
+        draw(&mut r, "alpha");
+        draw(&mut r, "0000001");
+        let misses = r.shape_cache_stats().2;
+        assert_eq!(draw(&mut r, "alpha"), misses, "one frame later alpha is still cached");
+        let mut misses = misses;
+        for n in 0..=SHAPE_KEEP_FRAMES {
+            misses = draw(&mut r, &format!("{:07}", 100 + n));
+        }
+        assert_eq!(draw(&mut r, "alpha"), misses + 1, "alpha aged out after {} shaping frames", SHAPE_KEEP_FRAMES + 1);
+    }
+
+    /// Task 8f: a frame that shapes nothing (every row found again) ages nothing.
+    #[test]
+    fn an_idle_frame_ages_nothing() {
+        let (device, queue) = device();
+        let mut r = fixture_renderer(&device, &queue);
+        row_glyphs(&mut r, vec![terminal_span("alpha", false, false)]);
+        let shapes = r.shapes;
+        for _ in 0..100 {
+            row_glyphs(&mut r, vec![terminal_span("0000001", false, false)]);
+        }
+        assert_eq!(r.shapes - shapes, 1, "the unchanged frame is shaped once");
+        let misses = r.shape_cache_stats().2;
+        r.buffers.clear();
+        row_glyphs(&mut r, vec![terminal_span("alpha", false, false)]);
+        assert_eq!(r.shape_cache_stats().2, misses, "alpha is still cached after 100 idle frames");
+    }
+
+    /// Task 8f: `ShapeCache` off clears the cache, keeps it empty and draws what it drew on.
+    #[test]
+    fn the_shape_cache_setting_turns_it_off_and_on() {
+        let (device, queue) = device();
+        let mut r = fixture_renderer(&device, &queue);
+        let on = row_glyphs(&mut r, vec![terminal_span("flood words", false, false)]);
+        assert!(r.shape_cache_stats().0 > 0);
+        r.set_shape_cache(false);
+        assert_eq!(r.shape_cache_stats(), (0, 0, 0));
+        let off = row_glyphs(&mut r, vec![terminal_span("flood words", false, false)]);
+        assert_eq!(on, off);
+        assert_eq!(r.shape_cache_stats(), (0, 0, 0), "off stores nothing");
+        r.set_shape_cache(true);
+        row_glyphs(&mut r, vec![terminal_span("flood words", false, false)]);
+        assert!(r.shape_cache_stats().0 > 0);
     }
 
     /// Every glyph of a frame row drawn in the renderer's default face: (x, font size).

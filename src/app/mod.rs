@@ -5416,7 +5416,7 @@ impl App {
         let p = self.store.default_profile();
         let (normal, alt) = (p.font("Normal Font"), p.bool("Use Non-ASCII Font").then(|| p.font("Non Ascii Font").family));
         // Re-measuring the font re-shapes all text, so only do it when a font setting changed.
-        let sig = format!("{normal:?} {alt:?} {} {} {} {} {} {} {}", p.float("Horizontal Spacing"), p.float("Vertical Spacing"), self.scale(), p.font("Badge Font").family, self.globals.string("FontsForGenerousRounding"), self.globals.int("MinimumWeightDifferenceForBoldFont"), self.globals.bool("EnableContextualAlternates"));
+        let sig = format!("{normal:?} {alt:?} {} {} {} {} {} {} {} {}", p.float("Horizontal Spacing"), p.float("Vertical Spacing"), self.scale(), p.font("Badge Font").family, self.globals.string("FontsForGenerousRounding"), self.globals.int("MinimumWeightDifferenceForBoldFont"), self.globals.bool("EnableContextualAlternates"), self.globals.bool("ShapeCache"));
         if sig == self.font_sig {
             return;
         }
@@ -5435,6 +5435,7 @@ impl App {
         let generous = self.globals.string("FontsForGenerousRounding");
         let bold_difference = self.globals.int("MinimumWeightDifferenceForBoldFont") as i32;
         let calt = self.globals.bool("EnableContextualAlternates");
+        let shape_cache = self.globals.bool("ShapeCache");
         let Some(g) = self.gpu.as_mut() else { return };
         let px = profile::text_px(normal.size_pt, g.window.scale_factor() as f32);
         // The other panes' faces re-measure in place at a new scale (their ids stay valid).
@@ -5442,6 +5443,7 @@ impl App {
         g.renderer.set_generous_list(&generous);
         g.renderer.set_bold_difference(bold_difference);
         g.renderer.set_contextual_alternates(calt);
+        g.renderer.set_shape_cache(shape_cache);
         g.renderer.set_fonts(&normal.family, alt.as_deref(), px, p.float("Horizontal Spacing") as f32, p.float("Vertical Spacing") as f32);
         g.renderer.set_badge_family(&badge_ui::badge_family(badge_ui::profile_font(&p), &self.globals.string("BadgeFont")));
         g.renderer.set_badge_bold(self.globals.bool("BadgeFontIsBold"));

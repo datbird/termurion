@@ -4372,6 +4372,16 @@ type = "bool"
 default = true
 help = "Match the display refresh rate\nTermurion draws up to the refresh rate of the display the window is on (for example 120 frames a second on a ProMotion display) instead of 60. Battery saver still draws at most 30."
 
+# Termurion's own: shape each repeated word once.
+[[setting]]
+key = "ShapeCache"
+tab = "Advanced"
+section = "Drawing"
+label = "Cache shaped words"
+type = "bool"
+default = true
+help = "Cache shaped words\nTermurion shapes each repeated word once and reuses it, which makes floods of output cheaper to draw. Turn this off if text looks wrong and report it."
+
 [[setting]]
 key = "UseMultiPassUnderlineRenderer"
 tab = "Advanced"
