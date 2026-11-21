@@ -11637,7 +11637,7 @@ mod row_reuse_tests {
         let mut view = Screen::new(40, 6);
         view.feed(b"view one\r\nview two\r\nview three");
         // As build_frame does: follow the screen, then take its damage.
-        let mut frame = |s: &mut Screen, cache: &mut RowCache| {
+        let frame = |s: &mut Screen, cache: &mut RowCache| {
             cache.follow(s.render_id());
             damaged_draw(s, &cfg, cache)
         };

@@ -533,7 +533,7 @@ fn streaming_frames_make_no_upload_buffers() {
     let mut s = crate::screen::Screen::new(120, 30);
     let bar = "\u{2500}".repeat(116);
     s.feed(b"\r\n\r\n\r\n\r\n");
-    let mut frame = |s: &mut crate::screen::Screen, r: &mut Renderer, tick: usize| {
+    let frame = |s: &mut crate::screen::Screen, r: &mut Renderer, tick: usize| {
         let mut out = String::from("\r\x1b[2A\x1b[J");
         if tick % 2 == 0 {
             out.push_str(&format!("the renderer keeps each row it built, line {tick}\r\n"));
