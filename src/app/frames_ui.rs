@@ -48,10 +48,9 @@ impl App {
 
     /// Each pane's cadence state and whether a typed echo is in progress: `changed` are the
     /// panes that just got output. `Throughput::estimate` mutates, so it runs once per pane.
-    fn read_panes(&mut self, panes: &[PaneId], changed: &[PaneId], active: bool, now: Instant, with_output: bool) -> Reading {
+    fn read_panes(&mut self, panes: &[PaneId], changed: &[PaneId], active: bool, now: Instant, with_output: bool, display_hz: Option<f64>) -> Reading {
         let low_power = self.power_saving(now);
         let last_key = self.last_keystroke;
-        let display_hz = self.gpu.as_ref().and_then(|g| g.display_hz);
         let mut reading = Reading { states: Vec::new(), typing: false };
         for id in panes {
             let last_output = self.activity.get(id).and_then(|a| a.last_output());
@@ -85,14 +84,14 @@ impl App {
     /// One window's decision after `outputs`: None when none of them is in the window, else the
     /// frame interval over its front panes plus the panes that got output in its other tabs (the
     /// tab bar shows their title, new-output icon and exit state) and whether a typed echo is in.
-    fn output_decision(&mut self, front: &[PaneId], back: &[PaneId], outputs: &[PaneId], active: bool, now: Instant, with_output: bool) -> Option<(Duration, bool)> {
+    fn output_decision(&mut self, front: &[PaneId], back: &[PaneId], outputs: &[PaneId], active: bool, now: Instant, with_output: bool, display_hz: Option<f64>) -> Option<(Duration, bool)> {
         let routed = route_output(outputs, front, back);
         if routed.front.is_empty() && routed.back.is_empty() {
             return None;
         }
         let changed: Vec<PaneId> = routed.front.iter().chain(&routed.back).copied().collect();
         let considered: Vec<PaneId> = front.iter().chain(&routed.back).copied().collect();
-        let reading = self.read_panes(&considered, &changed, active, now, with_output);
+        let reading = self.read_panes(&considered, &changed, active, now, with_output, display_hz);
         Some((cadence::window_interval(&reading.states, &self.cadence_prefs()), reading.typing))
     }
 
@@ -118,22 +117,24 @@ impl App {
         let mut drew = false;
         let (front, back) = self.tab_panes_here();
         let active = self.window_active();
-        if let Some((gap, typing)) = self.output_decision(&front, &back, outputs, active, now, with_output)
+        let here_hz = self.gpu.as_ref().and_then(|g| g.display_hz);
+        if let Some((gap, typing)) = self.output_decision(&front, &back, outputs, active, now, with_output, here_hz)
             && self.pacer.output(now, gap, typing) {
                 self.redraw_here();
                 drew = true;
             }
-        let parked: Vec<(u64, Vec<PaneId>, Vec<PaneId>)> = self
+        let parked: Vec<(u64, Vec<PaneId>, Vec<PaneId>, Option<f64>)> = self
             .windows
             .parked()
             .filter(|(_, s)| s.gpu.as_ref().is_some_and(|g| window_on_screen(g.window.is_visible(), g.window.is_minimized(), s.hotkey.as_ref().map(|h| h.shown))))
             .map(|(k, s)| {
                 let (front, back) = split_tabs(s.tabs.iter().map(|t| t.layout.panes()).collect(), s.active);
-                (*k, front, back)
+                (*k, front, back, s.gpu.as_ref().and_then(|g| g.display_hz))
             })
             .collect();
-        for (key, front, back) in parked {
-            let Some((gap, typing)) = self.output_decision(&front, &back, outputs, false, now, with_output) else { continue };
+        for (key, front, back, hz) in parked {
+            // Each window draws at its own display's rate.
+            let Some((gap, typing)) = self.output_decision(&front, &back, outputs, false, now, with_output, hz) else { continue };
             if let Some((_, s)) = self.windows.parked_mut().find(|(k, _)| **k == key)
                 && s.pacer.output(now, gap, typing) {
                     if let Some(g) = &s.gpu {
@@ -288,6 +289,23 @@ mod tests {
         let presence = include_str!("presence_ui.rs");
         let states = presence.split("fn terminal_window_states").nth(1).unwrap().split("\n    }\n").next().unwrap();
         assert!(states.contains("current_on_screen(self.resident"), "the dock click does not count it");
+    }
+
+    /// Each window's decision reads the refresh rate of its own display, never the focused one's:
+    /// the parked window's rate comes from its own slot, and `read_panes` reads no window itself.
+    #[test]
+    fn a_parked_window_decides_at_its_own_display_rate() {
+        let src = include_str!("frames_ui.rs");
+        let read = src.split("fn read_panes").nth(1).unwrap().split("\n    }\n").next().unwrap();
+        assert!(!read.contains("self.gpu"), "read_panes takes the rate it is given");
+        assert!(src.contains("s.gpu.as_ref().and_then(|g| g.display_hz)"), "a parked window's own rate");
+        // What each window then gets, both ways round.
+        let p = Prefs { match_display: true, ..Prefs::default() };
+        let gap = |hz: f64| cadence::window_interval(&[State { active: false, idle: false, visible: true, alt_screen: false, throughput: 500, low_power: false, worker_parses: true, display_hz: Some(hz) }], &p);
+        let (focused, parked) = (gap(120.0), gap(60.0));
+        assert!(focused < parked, "focused 120 Hz, parked 60 Hz: the parked one is not sped up");
+        let (focused, parked) = (gap(60.0), gap(120.0));
+        assert!(focused > parked, "focused 60 Hz, parked 120 Hz: the parked one is not held to 60");
     }
 
     #[test]

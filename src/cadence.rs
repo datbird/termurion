@@ -117,7 +117,7 @@ pub struct State {
 /// its default of 60 and Match Display Refresh Rate is on. A value set by hand wins.
 fn matched(setting: f64, display_hz: Option<f64>, p: &Prefs) -> f64 {
     match display_hz {
-        Some(hz) if p.match_display && setting == 60.0 && hz.is_finite() => hz.clamp(30.0, 240.0),
+        Some(hz) if p.match_display && setting == 60.0 && hz.is_finite() => hz.round().clamp(30.0, 240.0),
         _ => setting,
     }
 }
@@ -136,7 +136,7 @@ pub fn typing_now(throughput: i64, last_key: Option<Instant>, now: Instant) -> b
 /// the millisecond knocked off at `UC:239-243`.
 pub fn interval(s: State, p: &Prefs) -> Duration {
     let rate = |fps: f64| 1.0 / matched(fps, s.display_hz, p).max(1.0);
-    let low_power = |secs: f64| if s.low_power { secs.max(rate(p.low_power_frame_rate)) } else { secs };
+    let low_power = |secs: f64| if s.low_power { secs.max(1.0 / p.low_power_frame_rate.max(1.0)) } else { secs };
     let secs = if !(s.active || !s.idle) || !s.visible {
         1.0
     } else if !p.maximize_throughput || s.alt_screen {
@@ -425,6 +425,26 @@ mod tests {
         // ActiveUpdateCadence is its own setting: set by hand, it wins on its own.
         let alt = State { alt_screen: true, ..s };
         assert_eq!(us(interval(alt, &Prefs { active_update_cadence: 30.0, ..p })), 32_333);
+    }
+
+    #[test]
+    fn a_hand_set_low_power_rate_never_follows_the_display() {
+        let (p, s) = on(Some(120.0));
+        let low = State { low_power: true, ..s };
+        // Battery saver at a hand-set 60 on a 120 Hz display: 60, not 120 (and not faster than that).
+        assert_eq!(us(interval(low, &Prefs { low_power_frame_rate: 60.0, ..p })), 15_667);
+        assert_eq!(us(interval(State { alt_screen: true, ..low }, &Prefs { low_power_frame_rate: 60.0, ..p })), 15_667);
+        assert_eq!(us(interval(low, &Prefs { low_power_frame_rate: 120.0, ..p })), 7_333);
+    }
+
+    #[test]
+    fn a_fractional_rate_rounds_to_the_nearest_hz() {
+        let p = Prefs { match_display: true, ..Prefs::default() };
+        let hz = |hz: f64| interval(State { display_hz: Some(hz), ..state() }, &p);
+        assert_eq!(hz(59.94), hz(60.0));
+        assert_eq!(us(hz(59.94)), 15_667);
+        assert_eq!(hz(119.88), hz(120.0));
+        assert_eq!(shortest_interval(&p, Some(59.94)), shortest_interval(&p, Some(60.0)));
     }
 
     #[test]
