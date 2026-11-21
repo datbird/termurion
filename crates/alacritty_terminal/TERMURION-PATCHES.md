@@ -233,4 +233,8 @@ test data) is left out. Changes:
     cache (`src/scene_rows.rs`) keys a built row by the row's cells, so a row that did not change
     can be placed again instead of rebuilt. Needs `Hash` on `Color`, `Rgb` and `NamedColor` in vte.
 
+42. `term/mod.rs`: printable ASCII parses fast. `Term.fast_ascii` (default true; false is the
+    tests' oracle). In `input`, 0x20 to 0x7E is one cell without asking the width rule, and the
+    regional indicator and pictograph checks are skipped (none of them can match ASCII).
+
 To update alacritty_terminal, copy the new version here and apply these changes again.

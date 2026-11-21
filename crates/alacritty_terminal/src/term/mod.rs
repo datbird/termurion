@@ -440,6 +440,10 @@ pub struct Term<T> {
     pub print_watch: Option<(i32, i32, usize, usize)>,
     pub watch_hit: bool,
 
+    /// Termurion patch 42: printable ASCII skips the width rule. Off sends every character
+    /// through the rule (the tests' oracle).
+    pub fast_ascii: bool,
+
     /// Termurion: whether a scroll region that starts at the top but stops above the bottom row
     /// saves the lines leaving it to scrollback (iTerm2's Scrollback With Status Bar).
     scrollback_with_region: bool,
@@ -594,6 +598,7 @@ impl<T> Term<T> {
             echo_point: None,
             print_watch: None,
             watch_hit: false,
+            fast_ascii: true,
             scrollback_with_region: true,
             cursor_blink_change: true,
             active_charset: Default::default(),
@@ -1585,7 +1590,11 @@ impl<T: EventListener> Handler for Term<T> {
         // Number of cells the char will occupy.
         // Termurion patch: a width rule measures it (iTerm2's tables, U+200B, ambiguous width).
         let rule = self.width_rule;
+        // Termurion patch 42: printable ASCII is one cell under every rule, and never a regional
+        // indicator or a pictograph.
+        let ascii = self.fast_ascii && (' '..='~').contains(&c);
         let width = match rule {
+            _ if ascii => Some(1),
             Some(rule) => (rule.width)(c, &rule),
             None => c.width(),
         };
@@ -1598,7 +1607,7 @@ impl<T: EventListener> Handler for Term<T> {
 
         // Termurion patch: the second regional indicator of a flag joins the first one's cell,
         // and the pair is always two cells (iTerm2 `StringToScreenChars`).
-        if rule.is_some() && is_regional_indicator(c) {
+        if !ascii && rule.is_some() && is_regional_indicator(c) {
             if let Some(column) = self.previous_cell_column() {
                 let line = self.grid.cursor.point.line;
                 let cell = &self.grid[line][column];
@@ -1618,7 +1627,7 @@ impl<T: EventListener> Handler for Term<T> {
         // preceded by a ZWJ). A skin tone modifier keeps its own cell (iTerm2's default
         // AggressiveBaseCharacterDetection), and the pictograph after a ZWJ that follows one
         // joins that cell.
-        if let Some(rule) = rule {
+        if let Some(rule) = rule.filter(|_| !ascii) {
             if (rule.is_pictograph)(c) {
                 if let Some(column) = self.previous_cell_column() {
                     let line = self.grid.cursor.point.line;

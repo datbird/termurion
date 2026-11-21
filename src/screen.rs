@@ -102,6 +102,10 @@ fn is_ignorable(c: char) -> bool {
 /// base of a cluster, `enumerateComposedCharacters`), two cells by the tables, else one.
 fn rule_width(c: char, rule: &alacritty_terminal::term::WidthRule) -> Option<usize> {
     use unicode_width::UnicodeWidthChar;
+    // Printable ASCII is one cell under every rule (no table is wide or zero below U+00A1).
+    if (' '..='~').contains(&c) {
+        return Some(1);
+    }
     if c == '\u{200B}' {
         return Some(usize::from(rule.zwsp_advances));
     }
@@ -2341,6 +2345,12 @@ impl Screen {
         self.cell_px
     }
 
+    /// Turns the printable ASCII fast paths on or off (off is the char by char oracle).
+    #[cfg(test)]
+    pub(crate) fn set_fast_paths(&mut self, on: bool) {
+        self.term.fast_ascii = on;
+    }
+
     /// Fixes the clock that stamps written rows (seconds), for tests; None uses the time.
     pub fn set_clock(&mut self, secs: Option<u32>) {
         self.clock = secs;
@@ -3070,6 +3080,48 @@ pub struct MenuFacts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `rule_width` before its ASCII shortcut: the tables alone.
+    fn rule_width_tables(c: char, rule: &alacritty_terminal::term::WidthRule) -> Option<usize> {
+        use unicode_width::UnicodeWidthChar;
+        if c == '\u{200B}' {
+            return Some(usize::from(rule.zwsp_advances));
+        }
+        if c.width() == Some(0) {
+            return Some(0);
+        }
+        if is_ignorable(c) {
+            return None;
+        }
+        if crate::widths::is_double_width(c as u32, rule.ambiguous_wide, rule.unicode_version, rule.full_width_flags) {
+            return Some(2);
+        }
+        c.width().map(|w| w.min(1))
+    }
+
+    /// Printable ASCII is one cell, never a pictograph or a skin tone, whatever the rule says, so
+    /// the shortcut in `rule_width` and the fast paths in `Term` change nothing.
+    #[test]
+    fn ascii_takes_one_cell_under_every_rule() {
+        let versions = [crate::osc1337::profile_unicode(Some(8)), crate::osc1337::profile_unicode(Some(9)), crate::osc1337::profile_unicode(None)];
+        for bits in 0..32u8 {
+            for version in versions {
+                let mut rule = width_rule(&Look::default(), &crate::emu::Rules::default(), 0);
+                rule.ambiguous_wide = bits & 1 != 0;
+                rule.full_width_flags = bits & 2 != 0;
+                rule.zwsp_advances = bits & 4 != 0;
+                rule.vs16 = bits & 8 != 0;
+                rule.vs16_primary = bits & 16 != 0;
+                rule.unicode_version = version;
+                for c in ' '..='~' {
+                    assert_eq!(rule_width(c, &rule), Some(1), "{c:?} {rule:?}");
+                    assert_eq!(rule_width_tables(c, &rule), Some(1), "{c:?} {rule:?}");
+                    assert!(!crate::widths::is_extended_pictographic(c as u32), "{c:?}");
+                    assert!(!crate::widths::is_skin_tone(c as u32), "{c:?}");
+                }
+            }
+        }
+    }
 
     fn menu_screen() -> Screen {
         let mut s = Screen::new(80, 24);

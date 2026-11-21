@@ -297,6 +297,8 @@ pub mod paste;
 pub mod paste_history;
 pub mod popup_filter;
 pub mod screen;
+#[cfg(test)]
+mod fast_parse_tests;
 pub mod screenterm;
 pub mod shell_history;
 pub mod snippets;
