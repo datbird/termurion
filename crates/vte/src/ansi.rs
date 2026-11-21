@@ -505,6 +505,14 @@ pub trait Handler {
     /// A character to be displayed.
     fn input(&mut self, _c: char) {}
 
+    /// Termurion patch 4: a run of printable ASCII (0x20 to 0x7E) to be displayed, as `input`
+    /// for each character would.
+    fn input_ascii(&mut self, run: &str) {
+        for c in run.chars() {
+            self.input(c);
+        }
+    }
+
     /// Set cursor to position.
     fn goto(&mut self, _line: i32, _col: usize) {}
 
@@ -1298,6 +1306,15 @@ where
     fn print(&mut self, c: char) {
         self.handler.input(c);
         self.state.preceding_char = Some(c);
+    }
+
+    /// Termurion patch 4: a run of printable ASCII goes to the handler in one call.
+    #[inline]
+    fn print_ascii(&mut self, run: &str) {
+        self.handler.input_ascii(run);
+        if let Some(c) = run.chars().next_back() {
+            self.state.preceding_char = Some(c);
+        }
     }
 
     #[inline]

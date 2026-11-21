@@ -440,8 +440,8 @@ pub struct Term<T> {
     pub print_watch: Option<(i32, i32, usize, usize)>,
     pub watch_hit: bool,
 
-    /// Termurion patch 42: printable ASCII skips the width rule. Off sends every character
-    /// through the rule (the tests' oracle).
+    /// Termurion patch 42: printable ASCII skips the width rule and runs of it are written in one
+    /// pass. Off sends every character through `input` (the tests' oracle).
     pub fast_ascii: bool,
 
     /// Termurion: whether a scroll region that starts at the top but stops above the bottom row
@@ -1427,33 +1427,36 @@ impl<T> Term<T> {
             self.grid[line].block = self.block;
         }
 
-        let mut cursor_cell = self.grid.cursor_cell();
-
         // Clear all related cells when overwriting a fullwidth cell.
-        if cursor_cell.flags.intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER) {
-            // Remove wide char and spacer.
-            let wide = cursor_cell.flags.contains(Flags::WIDE_CHAR);
-            let point = self.grid.cursor.point;
-            if wide && point.column < self.last_column() {
-                self.grid[point.line][point.column + 1].flags.remove(Flags::WIDE_CHAR_SPACER);
-            } else if point.column > 0 {
-                self.grid[point.line][point.column - 1].clear_wide();
-            }
-
-            // Remove leading spacers.
-            if point.column <= 1 && point.line != self.topmost_line() {
-                let column = self.last_column();
-                self.grid[point.line - 1i32][column].flags.remove(Flags::LEADING_WIDE_CHAR_SPACER);
-            }
-
-            cursor_cell = self.grid.cursor_cell();
+        if self.grid.cursor_cell().flags.intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER) {
+            self.clear_wide_for_write();
         }
 
+        let cursor_cell = self.grid.cursor_cell();
         cursor_cell.c = c;
         cursor_cell.fg = fg;
         cursor_cell.bg = bg;
         cursor_cell.flags = flags;
         cursor_cell.extra = extra;
+    }
+
+    /// Removes the wide character the cell at the cursor is half of, before it is written over.
+    /// Termurion patch 42: out of `write_at_cursor`, so `input_ascii` uses it too.
+    fn clear_wide_for_write(&mut self) {
+        // Remove wide char and spacer.
+        let wide = self.grid.cursor_cell().flags.contains(Flags::WIDE_CHAR);
+        let point = self.grid.cursor.point;
+        if wide && point.column < self.last_column() {
+            self.grid[point.line][point.column + 1].flags.remove(Flags::WIDE_CHAR_SPACER);
+        } else if point.column > 0 {
+            self.grid[point.line][point.column - 1].clear_wide();
+        }
+
+        // Remove leading spacers.
+        if point.column <= 1 && point.line != self.topmost_line() {
+            let column = self.last_column();
+            self.grid[point.line - 1i32][column].flags.remove(Flags::LEADING_WIDE_CHAR_SPACER);
+        }
     }
 
     /// Termurion patch: the column of the cell just before the cursor (the first half when that is
@@ -1738,6 +1741,85 @@ impl<T: EventListener> Handler for Term<T> {
             self.grid.cursor.point.column += 1;
         } else {
             self.grid.cursor.input_needs_wrap = true;
+        }
+    }
+
+    /// Termurion patch 42: a run of printable ASCII, written a row segment at a time. Exactly what
+    /// `input` for each character does; the cases it does not cover go through `input`.
+    #[inline(never)]
+    fn input_ascii(&mut self, run: &str) {
+        let columns = self.columns();
+        if !self.fast_ascii
+            || self.mode.contains(TermMode::INSERT)
+            || !self.mode.contains(TermMode::LINE_WRAP)
+            || self.lr_active()
+            || self.echo_armed
+            || self.print_watch.is_some()
+            || self.grid.cursor.point.column.0 >= columns
+        {
+            for c in run.chars() {
+                self.input(c);
+            }
+            return;
+        }
+
+        let charset = self.grid.cursor.charsets[self.active_charset];
+        let mut rest = run.as_bytes();
+        while !rest.is_empty() {
+            if self.grid.cursor.input_needs_wrap {
+                self.wrapline_always();
+            }
+            let line = self.grid.cursor.point.line;
+            let col = self.grid.cursor.point.column.0;
+            let n = rest.len().min(columns - col);
+            let (segment, after) = rest.split_at(n);
+            rest = after;
+
+            // Termurion patch: the row remembers when it was last written (as `write_at_cursor`).
+            let row = &mut self.grid[line];
+            row.time = self.stamp;
+            row.alt = false;
+            if self.block != 0 {
+                row.block = self.block;
+            }
+
+            let template = &self.grid.cursor.template;
+            let (fg, bg, flags, extra) = (template.fg, template.bg, template.flags, template.extra.clone());
+            let wide = Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER;
+            let any_wide = self.grid[line][Column(col)..Column(col + n)].iter().any(|cell| cell.flags.intersects(wide));
+            if any_wide {
+                // Rare: a wide character is written over, its other half is cleared cell by cell.
+                for (k, b) in segment.iter().enumerate() {
+                    let column = Column(col + k);
+                    if self.grid[line][column].flags.intersects(wide) {
+                        self.grid.cursor.point.column = column;
+                        self.clear_wide_for_write();
+                    }
+                    let cell = &mut self.grid[line][column];
+                    cell.c = charset.map(*b as char);
+                    cell.fg = fg;
+                    cell.bg = bg;
+                    cell.flags = flags;
+                    cell.extra = extra.clone();
+                }
+            } else {
+                let cells = &mut self.grid[line][Column(col)..Column(col + n)];
+                for (cell, b) in cells.iter_mut().zip(segment) {
+                    cell.c = charset.map(*b as char);
+                    cell.fg = fg;
+                    cell.bg = bg;
+                    cell.flags = flags;
+                    cell.extra = extra.clone();
+                }
+            }
+
+            self.printed = self.printed.wrapping_add(n as u64);
+            if col + n < columns {
+                self.grid.cursor.point.column = Column(col + n);
+            } else {
+                self.grid.cursor.point.column = Column(columns - 1);
+                self.grid.cursor.input_needs_wrap = true;
+            }
         }
     }
 

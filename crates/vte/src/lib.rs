@@ -724,13 +724,26 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
     }
 
     /// Handle ground dispatch of print/execute for all characters in a string.
+    ///
+    /// Termurion patch 4: each run of printable ASCII goes to `print_ascii` in one call.
     #[inline]
     fn ground_dispatch<P: Perform>(performer: &mut P, text: &str) {
-        for c in text.chars() {
+        let bytes = text.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            let run = bytes[i..].iter().take_while(|b| (0x20..=0x7e).contains(*b)).count();
+            if run > 0 {
+                // Printable ASCII is valid UTF-8 on its own.
+                performer.print_ascii(unsafe { str::from_utf8_unchecked(&bytes[i..i + run]) });
+                i += run;
+                continue;
+            }
+            let Some(c) = text[i..].chars().next() else { break };
             match c {
                 '\x00'..='\x1f' | '\u{80}'..='\u{9f}' => performer.execute(c as u8),
                 _ => performer.print(c),
             }
+            i += c.len_utf8();
         }
     }
 }
@@ -769,6 +782,15 @@ pub enum State {
 pub trait Perform {
     /// Draw a character to the screen and update states.
     fn print(&mut self, _c: char) {}
+
+    /// Termurion patch 4: draw a run of printable ASCII (0x20 to 0x7E), as `print` for each
+    /// character would.
+    #[inline]
+    fn print_ascii(&mut self, run: &str) {
+        for c in run.chars() {
+            self.print(c);
+        }
+    }
 
     /// Execute a C0 or C1 control function.
     fn execute(&mut self, _byte: u8) {}
@@ -1532,6 +1554,71 @@ mod tests {
         assert_eq!(dispatcher.dispatched[8], Sequence::Execute(158));
         assert_eq!(dispatcher.dispatched[9], Sequence::Execute(159));
         assert_eq!(dispatcher.dispatched[10], Sequence::Print('a'));
+    }
+
+    #[derive(Debug, PartialEq, Eq, Clone)]
+    enum Ground {
+        Run(std::string::String),
+        Print(char),
+        Execute(u8),
+    }
+
+    #[derive(Default)]
+    struct Runs(Vec<Ground>);
+
+    impl Perform for Runs {
+        fn print_ascii(&mut self, run: &str) {
+            self.0.push(Ground::Run(run.into()));
+        }
+
+        fn print(&mut self, c: char) {
+            self.0.push(Ground::Print(c));
+        }
+
+        fn execute(&mut self, byte: u8) {
+            self.0.push(Ground::Execute(byte));
+        }
+    }
+
+    fn flat(calls: &[Ground]) -> Vec<Ground> {
+        calls
+            .iter()
+            .flat_map(|g| match g {
+                Ground::Run(r) => r.chars().map(Ground::Print).collect(),
+                g => vec![g.clone()],
+            })
+            .collect()
+    }
+
+    /// Termurion patch 4: plain ASCII comes in runs, everything else one at a time, in order.
+    #[test]
+    fn ground_text_splits_into_ascii_runs() {
+        let text = "ab\u{e9}c\x7f d\x07ef";
+        let mut one = Runs::default();
+        Parser::new().advance(&mut one, text.as_bytes());
+        let want = vec![
+            Ground::Run("ab".into()),
+            Ground::Print('\u{e9}'),
+            Ground::Run("c".into()),
+            Ground::Print('\x7f'),
+            Ground::Run(" d".into()),
+            Ground::Execute(7),
+            Ground::Run("ef".into()),
+        ];
+        assert_eq!(one.0, want);
+        // What the char by char dispatch gave: a control executes, anything else prints.
+        let old: Vec<Ground> = text
+            .chars()
+            .map(|c| if (c as u32) < 0x20 { Ground::Execute(c as u8) } else { Ground::Print(c) })
+            .collect();
+        let bytes = text.as_bytes();
+        for cut in 0..=bytes.len() {
+            let mut two = Runs::default();
+            let mut parser = Parser::new();
+            parser.advance(&mut two, &bytes[..cut]);
+            parser.advance(&mut two, &bytes[cut..]);
+            assert_eq!(flat(&two.0), old, "cut at {cut}");
+        }
     }
 
     #[test]

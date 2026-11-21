@@ -14,4 +14,11 @@ This is vte 0.15.0 from crates.io (Apache-2.0 OR MIT, see the LICENSE files), us
 3. `ansi.rs`: `Rgb`, `Color` and `NamedColor` derive `Hash`, so `alacritty_terminal`'s `Cell` can
    be hashed. Termurion's row cache (`src/scene_rows.rs`) keys a built row by its cells.
 
+4. `lib.rs`, `ansi.rs`: printable ASCII in bulk. `ground_dispatch` passes each maximal run of
+   0x20 to 0x7E to the new `Perform::print_ascii` (default: `print` for each character) and
+   everything else (controls, DEL, non-ASCII) one at a time as before, in order. `Performer`
+   hands the run to the new `Handler::input_ascii` (default: `input` for each character) and
+   keeps the run's last character for REP. alacritty_terminal writes a run's cells in one pass
+   (its patch 42), the flood parse's largest cost.
+
 To update vte, copy the new version here and apply these changes again.

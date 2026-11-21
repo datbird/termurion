@@ -233,8 +233,14 @@ test data) is left out. Changes:
     cache (`src/scene_rows.rs`) keys a built row by the row's cells, so a row that did not change
     can be placed again instead of rebuilt. Needs `Hash` on `Color`, `Rgb` and `NamedColor` in vte.
 
-42. `term/mod.rs`: printable ASCII parses fast. `Term.fast_ascii` (default true; false is the
-    tests' oracle). In `input`, 0x20 to 0x7E is one cell without asking the width rule, and the
-    regional indicator and pictograph checks are skipped (none of them can match ASCII).
+42. `term/mod.rs`: printable ASCII parses fast. `Term.fast_ascii` (default true; false sends every
+    character through `input`, the tests' oracle). In `input`, 0x20 to 0x7E is one cell without
+    asking the width rule, and the regional indicator and pictograph checks are skipped (none of
+    them can match ASCII). `Handler::input_ascii` (vte patch 4) writes a run a row segment at a
+    time: wrap first when a wrap is pending, stamp the row once, clear the other half of any wide
+    character written over (`clear_wide_for_write`, moved out of `write_at_cursor`), write the
+    charset-mapped characters with the template's colors, flags and extra, add to `printed` and
+    leave the cursor as `input` would. Insert mode, DECAWM off, left and right margins in force,
+    an armed echo and a print watch go through `input` per character.
 
 To update alacritty_terminal, copy the new version here and apply these changes again.
