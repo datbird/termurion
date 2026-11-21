@@ -67,7 +67,79 @@ const EXIT_DRAIN_BYTES: u64 = (crate::pty_budget::PTY_BUDGET as u64) + (256 << 1
 /// The session's client is a full window behind: `pump` stops reading it until an ack. Only for
 /// a client that acks (`flow`); a session nobody shows reads into its ring.
 fn held(s: &Session, flow: bool) -> bool {
-    s.attached && flow && s.ring.end().saturating_sub(s.acked) >= WINDOW
+    at_window(&s.ring, s.acked, s.attached, flow)
+}
+
+fn at_window(ring: &Ring, acked: u64, attached: bool, flow: bool) -> bool {
+    attached && flow && ring.end().saturating_sub(acked) >= WINDOW
+}
+
+/// `pump` joins the chunks waiting for a session into frames of at most this size, so the app
+/// still takes at most 64 KiB at a time (a pty read is at most that, so any chunk fits).
+pub const MERGE_CAP: usize = 64 << 10;
+
+/// What `pump` reads a session's output from: its pty (a test's list stands in).
+trait OutputSource {
+    fn try_read(&self) -> Read;
+    fn rearm_notify(&self);
+}
+
+impl OutputSource for Pty {
+    fn try_read(&self) -> Read {
+        Pty::try_read(self)
+    }
+
+    fn rearm_notify(&self) {
+        Pty::rearm_notify(self)
+    }
+}
+
+/// Reads `src` into `ring` until it is empty (true) or the window holds it. An attached session's
+/// bytes go out as `Output` frames of at most `MERGE_CAP`, offsets contiguous.
+fn drain(src: &impl OutputSource, ring: &mut Ring, acked: u64, attached: bool, flow: bool, id: u64, msgs: &mut Vec<Msg>) -> bool {
+    let mut frame: Option<(u64, Vec<u8>)> = None;
+    let mut drained = false;
+    while !at_window(ring, acked, attached, flow) {
+        let chunk = match src.try_read() {
+            Read::Data(c) => c,
+            Read::Closed => {
+                drained = true;
+                break;
+            }
+            // The reader wakes us again only after a rearm, and a chunk that came just before
+            // it did not: read once more. A held pump never rearms (the ack's wake pumps it).
+            Read::Empty => {
+                src.rearm_notify();
+                match src.try_read() {
+                    Read::Data(c) => c,
+                    _ => {
+                        drained = true;
+                        break;
+                    }
+                }
+            }
+        };
+        let offset = ring.end();
+        ring.push(&chunk);
+        if !attached {
+            continue;
+        }
+        match &mut frame {
+            Some((_, f)) if f.len() + chunk.len() <= MERGE_CAP => {
+                f.reserve_exact(MERGE_CAP - f.len());
+                f.extend_from_slice(&chunk);
+            }
+            _ => {
+                if let Some((offset, bytes)) = frame.replace((offset, chunk)) {
+                    msgs.push(Msg::Output { id, offset, bytes });
+                }
+            }
+        }
+    }
+    if let Some((offset, bytes)) = frame {
+        msgs.push(Msg::Output { id, offset, bytes });
+    }
+    drained
 }
 
 /// `Exited` goes now: this pump read everything there was, or the cap since the exit passed and
@@ -332,33 +404,7 @@ fn pump(host: &Shared, id: u64) {
     let Some(s) = h.sessions.get_mut(&id) else { return };
     let mut msgs = Vec::new();
     if let Some(p) = &s.pty {
-        let mut drained = false;
-        while !held(s, flow) {
-            let chunk = match p.try_read() {
-                Read::Data(c) => c,
-                Read::Closed => {
-                    drained = true;
-                    break;
-                }
-                // The reader wakes us again only after a rearm, and a chunk that came just before
-                // it did not: read once more. A held pump never rearms (the ack's wake pumps it).
-                Read::Empty => {
-                    p.rearm_notify();
-                    match p.try_read() {
-                        Read::Data(c) => c,
-                        _ => {
-                            drained = true;
-                            break;
-                        }
-                    }
-                }
-            };
-            let offset = s.ring.end();
-            s.ring.push(&chunk);
-            if s.attached {
-                msgs.push(Msg::Output { id, offset, bytes: chunk });
-            }
-        }
+        let drained = drain(p, &mut s.ring, s.acked, s.attached, flow, id, &mut msgs);
         let pending = p.pending();
         if s.attached && pending != s.pending {
             msgs.push(Msg::Pending { id, bytes: pending as u64 });
@@ -779,6 +825,82 @@ pub(crate) mod tests {
         assert!(!held(&s, false), "a client below version 6 is never held");
         s.attached = false;
         assert!(!held(&s, true), "a detached session is never held");
+    }
+
+    /// Chunks standing in for a pty's queue, counting rearms.
+    #[derive(Default)]
+    struct Chunks {
+        queue: std::cell::RefCell<std::collections::VecDeque<Vec<u8>>>,
+        rearms: std::cell::Cell<u32>,
+    }
+
+    impl Chunks {
+        /// `n` chunks of `len` bytes, each byte its chunk's number.
+        fn of(n: usize, len: usize) -> Chunks {
+            let c = Chunks::default();
+            c.queue.borrow_mut().extend((0..n).map(|i| vec![i as u8; len]));
+            c
+        }
+
+        fn bytes(&self) -> Vec<u8> {
+            self.queue.borrow().iter().flatten().copied().collect()
+        }
+    }
+
+    impl OutputSource for Chunks {
+        fn try_read(&self) -> Read {
+            self.queue.borrow_mut().pop_front().map_or(Read::Empty, Read::Data)
+        }
+
+        fn rearm_notify(&self) {
+            self.rearms.set(self.rearms.get() + 1);
+        }
+    }
+
+    fn frames(msgs: &[Msg]) -> Vec<(u64, &[u8])> {
+        msgs.iter()
+            .map(|m| match m {
+                Msg::Output { id: 7, offset, bytes } => (*offset, bytes.as_slice()),
+                m => panic!("not an Output of 7: {m:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn waiting_chunks_go_in_one_frame() {
+        let mut ring = Ring::new(RING);
+        let (ten, mut msgs) = (Chunks::of(10, 4096), Vec::new());
+        assert!(drain(&ten, &mut ring, 0, true, true, 7, &mut msgs), "drained");
+        assert_eq!(frames(&msgs).iter().map(|(o, b)| (*o, b.len())).collect::<Vec<_>>(), vec![(0, 40960)]);
+        assert_eq!(ten.rearms.get(), 1, "an empty read rearms");
+        let hundred = Chunks::of(100, 4096);
+        let want = hundred.bytes();
+        msgs.clear();
+        assert!(drain(&hundred, &mut ring, 0, true, false, 7, &mut msgs));
+        let got = frames(&msgs);
+        assert!(got.iter().all(|(_, b)| b.len() <= MERGE_CAP), "a frame over the cap");
+        assert_eq!(got.len(), 100 * 4096 / MERGE_CAP + 1, "full frames but the last");
+        let mut at = 40960;
+        for (offset, bytes) in &got {
+            assert_eq!(*offset, at, "offsets are contiguous");
+            at += bytes.len() as u64;
+        }
+        assert_eq!(got.iter().flat_map(|(_, b)| b.iter().copied()).collect::<Vec<_>>(), want);
+        assert_eq!(ring.end(), at);
+    }
+
+    #[test]
+    fn a_held_drain_stops_at_the_window_and_never_rearms() {
+        use crate::host_proto::WINDOW;
+        let (src, mut ring, mut msgs) = (Chunks::of(600, 4096), Ring::new(RING), Vec::new());
+        assert!(!drain(&src, &mut ring, 0, true, true, 7, &mut msgs), "held, not drained");
+        assert_eq!(ring.end(), WINDOW);
+        assert_eq!(src.rearms.get(), 0);
+        // Nobody shows it: it reads into the ring and sends nothing.
+        msgs.clear();
+        assert!(drain(&src, &mut ring, 0, false, true, 7, &mut msgs));
+        assert!(msgs.is_empty());
+        assert_eq!(ring.end(), 600 * 4096);
     }
 
     #[test]
