@@ -909,7 +909,19 @@ mod tests {
         let p = spawn(&PtyApi, "/bin/sh -c yes", 80, 24).unwrap();
         wait_full(&p);
         p.write(b"\x03").unwrap();
-        assert!(p.wait_exit(secs(2)).is_some(), "Ctrl+C reached a program blocked on its output");
+        // macOS delivers the signal at once, but the process's exit waits for its tty output to
+        // drain (it sits in state E until then; Linux ends at once), so the output is taken as
+        // the app does. Ctrl+C flushes the tty's queue: only what the reader already holds is
+        // left, so the flood stopped at the Ctrl+C rather than at the drain.
+        let (end, mut after) = (std::time::Instant::now() + secs(2), 0);
+        while p.exit_code().is_none() {
+            assert!(std::time::Instant::now() < end, "Ctrl+C did not end a program blocked on its output");
+            if let Some(d) = p.read_timeout(Duration::from_millis(10)) {
+                after += d.len();
+            }
+        }
+        let most = crate::pty_budget::PTY_BUDGET + 128 * 1024;
+        assert!(after <= most, "the flood ran on after Ctrl+C: {after} bytes, over {most}");
     }
 
     #[test]

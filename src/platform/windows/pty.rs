@@ -37,17 +37,66 @@ use crate::ssh_transport::Transport;
 /// never be one then. Closes share the read side, so they still run side by side.
 pub(crate) static CONSOLE: std::sync::RwLock<()> = std::sync::RwLock::new(());
 
-/// Attaches waiting for `CONSOLE` or running: every reader then reads past its budget, since
-/// OpenConsole blocks console calls on a full output pipe.
-static CONSOLE_WANTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Which consoles attaches want: OpenConsole blocks console calls on a full output pipe, so the
+/// reader of a console being attached to (or waited for) reads past its budget. Only that one:
+/// a flood held at its budget must not grow while other consoles are read.
+#[derive(Default)]
+struct Wanted {
+    /// Live readers by their shell's pid (a count: a reused pid's old reader may still drain).
+    readers: std::collections::HashMap<u32, usize>,
+    /// Attaches waiting for `CONSOLE` or running, by target pid.
+    by_pid: std::collections::HashMap<u32, usize>,
+    /// Attaches to a pid that is no reader's shell (Send Signal to a job): its console is not
+    /// known, so every reader reads past its budget meanwhile.
+    unknown: usize,
+}
 
-/// Lowers `CONSOLE_WANTED` when an attach returns, however it returns.
-struct Wanted;
+static CONSOLE_WANTED: std::sync::Mutex<Option<Wanted>> = std::sync::Mutex::new(None);
 
-impl Drop for Wanted {
-    fn drop(&mut self) {
-        CONSOLE_WANTED.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+fn wanted<T>(f: impl FnOnce(&mut Wanted) -> T) -> T {
+    f(CONSOLE_WANTED.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default))
+}
+
+fn count(map: &mut std::collections::HashMap<u32, usize>, key: u32, up: bool) {
+    if up {
+        *map.entry(key).or_default() += 1;
+    } else if let Some(n) = map.get_mut(&key) {
+        *n -= 1;
+        if *n == 0 {
+            map.remove(&key);
+        }
     }
+}
+
+/// Marks an attach to `pid` until it returns, however it returns.
+struct WantMark(Option<u32>);
+
+impl WantMark {
+    fn new(pid: u32) -> WantMark {
+        wanted(|w| {
+            if w.readers.contains_key(&pid) {
+                count(&mut w.by_pid, pid, true);
+                WantMark(Some(pid))
+            } else {
+                w.unknown += 1;
+                WantMark(None)
+            }
+        })
+    }
+}
+
+impl Drop for WantMark {
+    fn drop(&mut self) {
+        wanted(|w| match self.0 {
+            Some(pid) => count(&mut w.by_pid, pid, false),
+            None => w.unknown -= 1,
+        });
+    }
+}
+
+/// An attach wants the console of the shell `pid`: its reader reads past its budget.
+fn console_wanted(pid: u32) -> bool {
+    wanted(|w| w.unknown > 0 || w.by_pid.contains_key(&pid))
 }
 
 /// Attached right now (inside `attached`).
@@ -106,8 +155,7 @@ pub(crate) fn send_ctrl_event_attached(ctrl_break: bool, wait: Duration) -> Resu
 /// `f` (it would show in that console): errors come back and are reported by the caller,
 /// after the detach.
 pub(crate) fn attached_unless<T>(pid: u32, stop: &std::sync::atomic::AtomicBool, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-    CONSOLE_WANTED.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-    let _wanted = Wanted;
+    let _wanted = WantMark::new(pid);
     let _one = CONSOLE.write().unwrap_or_else(|e| e.into_inner());
     if stop.load(std::sync::atomic::Ordering::Acquire) {
         return Err("the console is paused".into());
@@ -266,7 +314,8 @@ fn spawn_with(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, env: &[St
 fn assemble(api: &Api, hpc: HPCON, input: HANDLE, output: HANDLE, process: HANDLE, notify: Notify) -> Result<Pty, String> {
     let paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let budget = Budget::new();
-    let (rx, reader_done, reader) = start_reader(output, notify.clone(), paused.clone(), budget.clone());
+    let pid = unsafe { windows_sys::Win32::System::Threading::GetProcessId(process) };
+    let (rx, reader_done, reader) = start_reader(output, pid, notify.clone(), paused.clone(), budget.clone());
     let pending = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (writer, write_error) = start_writer(input, pending.clone(), notify.clone());
     let pty = Pty { api: api.clone(), hpc, writer: Some(writer), write_error, pending, paused, process, output: rx, budget, reader: Some(reader), reader_done, held: None };
@@ -541,7 +590,9 @@ pub(crate) fn start_writer(input: HANDLE, pending: Arc<std::sync::atomic::Atomic
 
 /// Drains ConPTY output on its own thread. It stops at a full `budget` (so the program waits on
 /// the pipe), except while a console attach wants `CONSOLE`: ConPTY must never block then.
-fn start_reader(output: HANDLE, notify: Notify, paused: Arc<std::sync::atomic::AtomicBool>, budget: Arc<Budget>) -> (Receiver<Vec<u8>>, Receiver<()>, JoinHandle<()>) {
+fn start_reader(output: HANDLE, pid: u32, notify: Notify, paused: Arc<std::sync::atomic::AtomicBool>, budget: Arc<Budget>) -> (Receiver<Vec<u8>>, Receiver<()>, JoinHandle<()>) {
+    // Known before the first read, so an attach to this shell from now on lifts this reader.
+    wanted(|w| count(&mut w.readers, pid, true));
     let (tx, rx) = mpsc::channel();
     let (done_tx, done_rx) = mpsc::channel();
     // HANDLE is a raw pointer and not Send. The thread owns this handle from here on.
@@ -550,7 +601,7 @@ fn start_reader(output: HANDLE, notify: Notify, paused: Arc<std::sync::atomic::A
         let output = raw as HANDLE;
         let mut buf = vec![0u8; 64 * 1024];
         loop {
-            budget.wait_for_room(Duration::from_millis(10), || CONSOLE_WANTED.load(std::sync::atomic::Ordering::Acquire) > 0);
+            budget.wait_for_room(Duration::from_millis(10), || console_wanted(pid));
             let mut n = 0u32;
             let ok = unsafe { ReadFile(output, buf.as_mut_ptr(), buf.len() as u32, &mut n, null_mut()) };
             // While paused, a chunk already read waits here and nothing more is read.
@@ -567,6 +618,7 @@ fn start_reader(output: HANDLE, notify: Notify, paused: Arc<std::sync::atomic::A
             notify();
         }
         unsafe { CloseHandle(output) };
+        wanted(|w| count(&mut w.readers, pid, false));
         let _ = done_tx.send(());
         notify();
     });
@@ -1099,7 +1151,7 @@ pub(crate) mod tests {
     fn reader_survives_a_zero_byte_write() {
         let (mut r, mut w): (HANDLE, HANDLE) = (null_mut(), null_mut());
         assert_ne!(unsafe { CreatePipe(&mut r, &mut w, null(), 0) }, 0);
-        let (rx, _done, reader) = start_reader(r, Arc::new(|| {}), Arc::new(std::sync::atomic::AtomicBool::new(false)), Budget::new());
+        let (rx, _done, reader) = start_reader(r, 0, Arc::new(|| {}), Arc::new(std::sync::atomic::AtomicBool::new(false)), Budget::new());
         let mut n = 0u32;
         unsafe {
             WriteFile(w, b"".as_ptr(), 0, &mut n, null_mut());
@@ -1263,6 +1315,9 @@ pub(crate) mod tests {
     #[ignore]
     fn attach_child() {
         let Ok(which) = std::env::var("TERMURION_ATTACH_CHILD") else { return };
+        if which == "neighbor" {
+            return neighbor_reads_leave_a_full_budget();
+        }
         let api = if which.contains("inbox") { conpty::load(&Source::Inbox).unwrap() } else { shipped() };
         let p = spawn(&api, FLOOD, 80, 24).unwrap();
         // ConPTY floods slowly: wait for the full budget, then 1 s more for the pipe to fill.
@@ -1280,6 +1335,24 @@ pub(crate) mod tests {
         assert!(got.is_ok(), "the attach failed: {got:?}");
     }
 
+    /// The child half of `reading_one_console_never_lifts_another`: a full flood stays at its
+    /// budget while an idle neighbor is attached every 50 ms for 3 s, each attach reading its
+    /// mode and staying 100 ms (as Send Signal stays for its own copy of the event).
+    fn neighbor_reads_leave_a_full_budget() {
+        let (full, idle) = (spawn(&shipped(), FLOOD, 80, 24).unwrap(), spawn(&shipped(), "cmd.exe /d /k", 80, 24).unwrap());
+        wait_full(&full);
+        std::thread::sleep(secs(1));
+        let no = std::sync::atomic::AtomicBool::new(false);
+        let end = Instant::now() + secs(3);
+        while Instant::now() < end {
+            assert!(console_mode_unless(idle.pid(), &no).is_ok(), "the neighbor's mode was not read");
+            assert_eq!(attached_unless(idle.pid(), &no, || Ok(std::thread::sleep(Duration::from_millis(100)))), Ok(()));
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let limit = crate::pty_budget::PTY_BUDGET + 64 * 1024;
+        assert!(full.queued() <= limit, "reading the neighbor let the full one grow: {} over {limit}", full.queued());
+    }
+
     /// Writes 64 KiB of text to the attached console.
     fn write_conout() -> Result<(), String> {
         let name: Vec<u16> = "CONOUT$".encode_utf16().chain(Some(0)).collect();
@@ -1293,6 +1366,13 @@ pub(crate) mod tests {
         let err = (!ok).then(|| os_err("WriteConsoleW"));
         unsafe { CloseHandle(h) };
         err.map_or(Ok(()), Err)
+    }
+
+    /// Only the console being attached reads past its budget: sampling an idle pane must not
+    /// grow a held flood.
+    #[test]
+    fn reading_one_console_never_lifts_another() {
+        in_detached_child("neighbor");
     }
 
     #[test]
