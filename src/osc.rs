@@ -243,7 +243,6 @@ struct Deferred {
     began: usize,
 }
 
-#[derive(Default)]
 pub struct Scanner {
     parser: vte::Parser,
     tap: Tap,
@@ -257,6 +256,23 @@ pub struct Scanner {
     /// Report `CSI Pl;Pc H` and `f` as held cursor moves (armed by the screen while a command
     /// runs, milestone 13o Task 4).
     pub cup_armed: bool,
+    /// Step over whole SGR sequences without the parser (off is the tests' oracle).
+    pub fast_sgr: bool,
+}
+
+impl Default for Scanner {
+    fn default() -> Self {
+        Scanner {
+            parser: vte::Parser::default(),
+            tap: Tap::default(),
+            string: Str::None,
+            sbegan: 0,
+            deferred: None,
+            pending: None,
+            cup_armed: false,
+            fast_sgr: true,
+        }
+    }
 }
 
 fn could_be_wanted(buf: &[u8]) -> bool {
@@ -281,6 +297,16 @@ fn ascii_prefix(bytes: &[u8]) -> usize {
         at += 16;
     }
     at + bytes[at..].iter().take_while(|b| **b < 0x80).count()
+}
+
+/// The length of the whole SGR sequence (`ESC [`, digits, `;` and `:`, then `m`) that `bytes`
+/// starts with. None for anything else: a marker or an intermediate, or a sequence cut short.
+pub(crate) fn sgr_run(bytes: &[u8]) -> Option<usize> {
+    if !bytes.starts_with(b"\x1b[") {
+        return None;
+    }
+    let n = 2 + csi_param_run(&bytes[2..]);
+    (bytes.get(n) == Some(&b'm')).then_some(n + 1)
 }
 
 /// How many bytes at the front of `bytes` are the digits, `;` and `:` of a control sequence's
@@ -312,7 +338,7 @@ impl Scanner {
     /// Back between sequences, as after Termurion wrote an ESC of its own that cancelled the one
     /// the program left open. The armed state stays.
     pub fn restart(&mut self) {
-        *self = Scanner { cup_armed: self.cup_armed, ..Scanner::default() };
+        *self = Scanner { cup_armed: self.cup_armed, fast_sgr: self.fast_sgr, ..Scanner::default() };
     }
 
     /// The events in `bytes`, each with the offset just past its terminator.
@@ -381,6 +407,14 @@ impl Scanner {
             }
             if b == 0x1b {
                 began = i;
+                // A whole SGR leaves the parser between sequences and is never an event (no held
+                // or query arm ends in `m` without an intermediate). After an ASCII byte no half
+                // character can be held, so the parser needs none of it.
+                if self.fast_sgr && before == VState::Ground && i > 0 && bytes[i - 1] < 0x80
+                    && let Some(n) = sgr_run(&bytes[i..]) {
+                        i += n;
+                        continue;
+                    }
             }
             self.parser.advance(&mut self.tap, &bytes[i..=i]);
             let after = self.parser.state();
@@ -1005,12 +1039,23 @@ mod tests {
             b"plain text here", b"a much longer run of plain text that is over thirty two bytes long, with 12345", b"\n", b"\r\n", b"\t", b"caf\xc3\xa9 \xe3\x81\x82", b"\xc3", b"\x80", b"\x9b", b"\xff", b"\x05", b"\x07", b"\x18", b"\x1a",
             b"\x1b[38;2;10;20;30m", b"\x1b[0m", b"\x1b[3J", b"\x1b[5n", b"\x1b[20t", b"\x1b[?1049h", b"\x1b[3;4H", b"\x1b[2b", b"\x1b[c", b"\x1b[", b"\x1b", b"\x7f", b"\x1b[1;2;3:4m", b"\x1b[?25l", b"\x1b[38:2::1:2:3m", b"\x1b[99999999999;1m", b"\x1b[;;;;m", b"\x1b[1\x18", b"\x1b[1\x1b[2m", b"\x1b[1?2m", b"\x1b[12", b";34",
             b"\x1b]0;a title\x07", b"\x1b]7;file://h/dir\x1b\\", b"\x1b]1337;SetMark\x07", b"\x1b]52;c;aGk=\x07", b"\x1b]", b"\x1bP$qm\x1b\\", b"\x1bP1000p", b"\x1b_Gi=1;AAAA\x1b\\", b"\x1bX junk \x1b\\", b"\x1b\\",
+            b"\x1b[m", b"\x1b[1;31m", b"\x1b[>4;2m", b"\x1b[?1m", b"\x1b[31", b"\xc3\x1b[0m", b"x\x1b[0mx",
         ];
         let mut out = Vec::new();
         for _ in 0..1 + next() % 60 {
             out.extend_from_slice(PIECES[next() as usize % PIECES.len()]);
         }
         out
+    }
+
+    #[test]
+    fn sgr_run_finds_whole_sgr_sequences() {
+        assert_eq!(sgr_run(b"\x1b[1;31mx"), Some(7));
+        assert_eq!(sgr_run(b"\x1b[m"), Some(3));
+        assert_eq!(sgr_run(b"\x1b[38:2::1:2:3m"), Some(14));
+        for no in [&b"\x1b[>4;2m"[..], b"\x1b[?1m", b"\x1b[31", b"\x1b[3 m", b"\x1b]0;x\x07", b"\x1b[0K"] {
+            assert_eq!(sgr_run(no), None, "{:?}", String::from_utf8_lossy(no));
+        }
     }
 
     /// The scanner takes a run of ground bytes in one step: it ends at the first ESC or ENQ, and

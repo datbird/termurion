@@ -1660,7 +1660,9 @@ impl Screen {
                 // The rest of the chunk is read again when the person answers, by a scanner
                 // back where this sequence left it (between sequences).
                 self.held_output.extend_from_slice(&bytes[at..]);
+                let fast_sgr = self.osc.fast_sgr;
                 self.osc = Default::default();
+                self.osc.fast_sgr = fast_sgr;
                 pending = None;
                 stop = at;
                 break;
@@ -2349,6 +2351,7 @@ impl Screen {
     #[cfg(test)]
     pub(crate) fn set_fast_paths(&mut self, on: bool) {
         self.term.fast_ascii = on;
+        self.osc.fast_sgr = on;
     }
 
     /// Fixes the clock that stamps written rows (seconds), for tests; None uses the time.
