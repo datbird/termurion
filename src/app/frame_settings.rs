@@ -32,6 +32,8 @@ pub(super) struct FrameSettings {
     pub auto_composer: bool,
     pub smart_logging: bool,
     pub always_line_marks: bool,
+    /// `ParseWhileDrawing`: a frame lends the panes to a parse worker while it draws.
+    pub parse_while_drawing: bool,
 }
 
 impl FrameSettings {
@@ -66,6 +68,7 @@ impl FrameSettings {
             auto_composer: g.bool("AutoComposer"),
             smart_logging: g.bool("SmartLoggingWithAutoComposer"),
             always_line_marks: g.bool("AlwaysUseLineStyleMarks"),
+            parse_while_drawing: g.bool("ParseWhileDrawing"),
         }
     }
 }

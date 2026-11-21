@@ -57,11 +57,15 @@ pub struct Prefs {
     pub threshold: i64,
     /// `LowPowerModeFrameRate`.
     pub low_power_frame_rate: f64,
+    /// Termurion's `ParseWhileDrawing`: output is parsed while a frame draws, so heavy output
+    /// draws at `maximum_frame_rate` instead of `metal_slow_frame_rate`. Off in `default()`,
+    /// which is iTerm2's cadence; the setting itself is on by default.
+    pub parse_while_drawing: bool,
 }
 
 impl Default for Prefs {
     fn default() -> Prefs {
-        Prefs { maximize_throughput: true, active_update_cadence: 60.0, maximum_frame_rate: 60.0, metal_slow_frame_rate: 30.0, threshold: THROUGHPUT_LIMIT, low_power_frame_rate: 30.0 }
+        Prefs { maximize_throughput: true, active_update_cadence: 60.0, maximum_frame_rate: 60.0, metal_slow_frame_rate: 30.0, threshold: THROUGHPUT_LIMIT, low_power_frame_rate: 30.0, parse_while_drawing: false }
     }
 }
 
@@ -77,6 +81,7 @@ impl Prefs {
             metal_slow_frame_rate: num("MetalSlowFrameRate", d.metal_slow_frame_rate),
             threshold: g.get("AdaptiveFrameRateThroughputThreshold").and_then(|v| v.as_integer()).unwrap_or(d.threshold),
             low_power_frame_rate: num("LowPowerModeFrameRate", d.low_power_frame_rate),
+            parse_while_drawing: g.bool("ParseWhileDrawing"),
         }
     }
 }
@@ -118,6 +123,8 @@ pub fn interval(s: State, p: &Prefs) -> Duration {
         low_power(rate(p.active_update_cadence))
     } else if s.throughput > 0 && s.throughput < p.threshold {
         low_power(rate(p.maximum_frame_rate))
+    } else if p.parse_while_drawing {
+        low_power(rate(p.maximum_frame_rate))
     } else {
         low_power(1.0 / p.metal_slow_frame_rate)
     };
@@ -129,7 +136,8 @@ pub fn shortest_interval(p: &Prefs) -> Duration {
     let rate = |fps: f64| 1.0 / fps.max(1.0);
     // Each branch's gap as `interval` finishes it, so an odd setting (NaN) floors the same way.
     // The adaptive rates only count with Maximize Throughput on.
-    let adaptive = if p.maximize_throughput { [rate(p.maximum_frame_rate), 1.0 / p.metal_slow_frame_rate] } else { [1.0, 1.0] };
+    let heavy = if p.parse_while_drawing { rate(p.maximum_frame_rate) } else { 1.0 / p.metal_slow_frame_rate };
+    let adaptive = if p.maximize_throughput { [rate(p.maximum_frame_rate), heavy] } else { [1.0, 1.0] };
     [1.0, rate(p.active_update_cadence)]
         .into_iter()
         .chain(adaptive)
@@ -313,6 +321,7 @@ mod tests {
             Prefs { metal_slow_frame_rate: f64::NAN, ..base },
             Prefs { maximum_frame_rate: 100_000.0, maximize_throughput: false, ..base },
             Prefs { active_update_cadence: 0.0, maximum_frame_rate: 0.5, metal_slow_frame_rate: 2.0, ..base },
+            Prefs { metal_slow_frame_rate: 500.0, parse_while_drawing: true, ..base },
         ];
         for p in prefs {
             let floor = shortest_interval(&p);
@@ -326,6 +335,19 @@ mod tests {
             assert!(floor <= fastest, "{p:?}: floor {floor:?} above the fastest state {fastest:?}");
             assert_eq!(floor, fastest, "{p:?}: the floor is the fastest state");
         }
+    }
+
+    #[test]
+    fn a_flood_draws_at_the_full_rate_only_with_the_switch() {
+        let s = State { throughput: 50_000, ..state() };
+        let on = Prefs { parse_while_drawing: true, ..Prefs::default() };
+        assert_eq!(us(interval(s, &on)), 15_667, "MaximumFrameRate while the worker parses");
+        assert_eq!(us(interval(s, &Prefs { parse_while_drawing: false, ..on })), 32_333, "MetalSlowFrameRate without it");
+        assert_eq!(us(interval(State { low_power: true, ..s }, &on)), 32_333, "battery saver still caps it");
+        let mut g = crate::globals::Globals::empty(std::path::Path::new("none.toml"));
+        assert!(Prefs::from_globals(&g).parse_while_drawing, "on by default");
+        g.set("ParseWhileDrawing", toml::Value::Boolean(false));
+        assert!(!Prefs::from_globals(&g).parse_while_drawing);
     }
 
     #[test]
@@ -343,6 +365,8 @@ mod tests {
     #[test]
     fn non_metal_keys_are_inert() {
         let mut g = crate::globals::Globals::empty(std::path::Path::new("none.toml"));
+        // Termurion's own switch is on by default; `Prefs::default()` is iTerm2's cadence.
+        g.set("ParseWhileDrawing", toml::Value::Boolean(false));
         let base = Prefs::from_globals(&g);
         assert_eq!(base, Prefs::default());
         g.set("UseAdaptiveFrameRate", toml::Value::Boolean(false));

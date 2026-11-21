@@ -324,7 +324,7 @@ mod tests {
         // A frame that gets no drawable still paces the next one.
         let acquire = &body[acquire..];
         let timeout = &acquire[acquire.find("Timeout | wgpu::CurrentSurfaceTexture::Occluded").unwrap()..];
-        assert!(timeout[..timeout.find("return;").unwrap()].contains("pace_fx(fx_now, focused_window, fx_pacing, true)"));
+        assert!(timeout[..timeout.find("return None;").unwrap()].contains("pace_fx(fx_now, focused_window, fx_pacing, true)"));
         // Only an active chain may skip.
         assert!(body.contains("filter(|f| f.active()).and_then(|f| f.chain_mut())"));
         // A frame left out waits a frame gap before it asks again.

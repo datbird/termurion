@@ -4352,6 +4352,16 @@ type = "bool"
 default = true
 help = "Redraw only the rows that changed\nTermurion rebuilds only the rows whose text, colors or highlights changed, as other fast terminals do. Turn this off if text is drawn wrongly (leftover or stale characters) and report it."
 
+# Termurion's own (iTerm2 has no such key): parse output on a second thread while a frame draws.
+[[setting]]
+key = "ParseWhileDrawing"
+tab = "Advanced"
+section = "Drawing"
+label = "Parse output while a frame is drawn"
+type = "bool"
+default = true
+help = "Parse output while a frame is drawn\nTermurion reads program output on a second thread while the window draws, so a flood of output keeps drawing at the full frame rate. Turn this off if output shows late or out of order and report it."
+
 [[setting]]
 key = "UseMultiPassUnderlineRenderer"
 tab = "Advanced"

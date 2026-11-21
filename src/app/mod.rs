@@ -704,6 +704,9 @@ pub struct App {
     pump_from: usize,
     /// A slice ran out of time with output unread: the loop parses again after drawing.
     parse_owed: bool,
+    /// The frame being drawn may lend the panes to a parse worker (`render_frame`): only the
+    /// RedrawRequested arm, which runs `pump_tail` after it, sets it.
+    parse_in_frame: bool,
     /// How many times `about_to_wait` ran. A window that painted at the count it shows now is in
     /// Windows' title-bar drag, whose modal loop has no `about_to_wait`.
     waits: u64,
@@ -2594,6 +2597,7 @@ pub fn run() {
         pty_notify,
         pump_from: 0,
         parse_owed: false,
+        parse_in_frame: false,
         // Above a new window's `painted_at`: its first paint only draws.
         waits: 1,
         jobs,
@@ -7524,14 +7528,16 @@ impl App {
         frame
     }
 
-    fn render(&mut self) {
+    /// Draws the current window. Output parsed meanwhile comes back for `pump_tail`; only
+    /// `render_parsing` lets a frame parse.
+    fn render(&mut self) -> Option<parse_meanwhile::Parsed> {
         // Before the timed phases (13w S12): each browser view is placed for this frame, so the
         // COM calls a changed placement makes are not counted as drawing.
         self.place_browser_views();
         // Nothing is measured while LogDrawingPerformance is off.
         let timing = self.globals.bool("LogDrawingPerformance");
         let started = timing.then(Instant::now);
-        self.render_frame(timing);
+        let parsed = self.render_frame(timing);
         if let Some(started) = started {
             self.draw_timers.stats[0].add(started.elapsed().as_secs_f64(), 1);
             if self.draw_timers.due(Instant::now(), crate::perf::DRAW_EVERY) {
@@ -7541,17 +7547,27 @@ impl App {
                 crate::dlog!("{}", table);
             }
         }
+        parsed
     }
 
-    fn render_frame(&mut self, timing: bool) {
+    /// A RedrawRequested frame: owed output may be parsed while it draws. The caller runs
+    /// `pump_tail` on what comes back before anything else, so the next frame is built after it.
+    fn render_parsing(&mut self) -> Option<parse_meanwhile::Parsed> {
+        self.parse_in_frame = true;
+        let parsed = self.render();
+        self.parse_in_frame = false;
+        parsed
+    }
+
+    fn render_frame(&mut self, timing: bool) -> Option<parse_meanwhile::Parsed> {
         // A lost device draws nothing; the recovery remakes it and asks every window to draw.
         if self.gpu_recovery_blocks() {
-            return;
+            return None;
         }
         // Where windows cannot hide (Wayland) the resident window is one never drawn: a first
         // frame would map it on screen.
         if self.resident && !crate::platform::window_style::can_hide() {
-            return;
+            return None;
         }
         // Focus moves between windows and panes, as the debug log reports them.
         if crate::dlog::is_on() {
@@ -7642,7 +7658,9 @@ impl App {
         // The menu bar's theme and view are read only when the bar draws.
         let bar_draws = bar_on || self.gpu.as_ref().is_some_and(|g| g.bar.busy());
         let bar_dark = bar_draws && self.dark();
-        let Some(gpu) = self.gpu.as_mut() else { return };
+        // Owed output is parsed on a worker while this frame draws (Parse While Drawing).
+        let job = (self.parse_in_frame && self.parse_owed && self.fs().parse_while_drawing).then(|| self.parse_job());
+        let Some(gpu) = self.gpu.as_mut() else { return None };
         // Only a changed title goes out: the compositor hears every set_title (H2).
         if let Some(title) = &title {
             gpu.title_sent.send(&gpu.window, &crate::platform::window::os_title(title));
@@ -7652,7 +7670,7 @@ impl App {
             gpu.scene.keep(frame, built, size);
             // Counted as a frame that needed no drawable.
             self.perf_frames.entry(window_n).or_default().frame(before.map(|b| now.saturating_duration_since(b).as_secs_f64() * 1000.0), None, false, &mut self.perf, window_n);
-            return;
+            return None;
         }
         // The effects' uniforms are packed before the surface is asked for: a frame of the same
         // scene whose passes would write the bytes they wrote last time shows what the window
@@ -7675,119 +7693,153 @@ impl App {
             gpu.scene.keep(frame, built, size);
             self.perf_frames.entry(window_n).or_default().frame(before.map(|b| now.saturating_duration_since(b).as_secs_f64() * 1000.0), None, false, &mut self.perf, window_n);
             gpu.pace_fx(fx_now, focused_window, fx_pacing, true);
-            return;
+            return None;
         }
-        let wait_start = Instant::now();
-        let acquired = gpu.surface.get_current_texture();
-        // The renderer's timings for Copy Performance Stats: counters and milliseconds only.
-        let dropped = matches!(acquired, wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded);
-        let start_gap = before.map(|b| now.saturating_duration_since(b).as_secs_f64() * 1000.0);
-        let wait = wait_start.elapsed().as_secs_f64() * 1000.0;
-        self.perf_frames.entry(window_n).or_default().frame(start_gap, Some(wait), dropped, &mut self.perf, window_n);
-        let texture = match acquired {
-            wgpu::CurrentSurfaceTexture::Success(t) => t,
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                // No drawable ends the frame early; the animation still asks for its next one, a gap away.
-                gpu.pace_fx(fx_now, focused_window, fx_pacing, true);
-                return;
-            }
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Suboptimal(_) => {
-                gpu.reconfigure();
-                gpu.redraw();
-                return;
-            }
-            wgpu::CurrentSurfaceTexture::Lost => {
-                // A fade running now stops, and fades stay off for the run.
-                if self.hotkey.as_ref().is_some_and(|h| h.fading()) {
-                    self.fade_failed = true;
+        // The drawing and the present: nothing in it reads a pane, so a worker may parse them
+        // meanwhile (`the_scope_reads_no_pane`).
+        let draw = || {
+            let Some(gpu) = self.gpu.as_mut() else { return None };
+            let wait_start = Instant::now();
+            let acquired = gpu.surface.get_current_texture();
+            // The renderer's timings for Copy Performance Stats: counters and milliseconds only.
+            let dropped = matches!(acquired, wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded);
+            let start_gap = before.map(|b| now.saturating_duration_since(b).as_secs_f64() * 1000.0);
+            let wait = wait_start.elapsed().as_secs_f64() * 1000.0;
+            self.perf_frames.entry(window_n).or_default().frame(start_gap, Some(wait), dropped, &mut self.perf, window_n);
+            let texture = match acquired {
+                wgpu::CurrentSurfaceTexture::Success(t) => t,
+                wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                    // No drawable ends the frame early; the animation still asks for its next one, a gap away.
+                    gpu.pace_fx(fx_now, focused_window, fx_pacing, true);
+                    return None;
                 }
-                match gpu.render_instance().create_surface(gpu.window.clone()) {
-                    Ok(s) => gpu.surface = s,
-                    Err(e) => self.banners.set("gpu", format!("Lost the window surface: {e}")),
-                }
-                if let Some(gpu) = self.gpu.as_mut() {
+                wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Suboptimal(_) => {
                     gpu.reconfigure();
                     gpu.redraw();
+                    return None;
                 }
-                return;
+                wgpu::CurrentSurfaceTexture::Lost => {
+                    // A fade running now stops, and fades stay off for the run.
+                    if self.hotkey.as_ref().is_some_and(|h| h.fading()) {
+                        self.fade_failed = true;
+                    }
+                    match gpu.render_instance().create_surface(gpu.window.clone()) {
+                        Ok(s) => gpu.surface = s,
+                        Err(e) => self.banners.set("gpu", format!("Lost the window surface: {e}")),
+                    }
+                    if let Some(gpu) = self.gpu.as_mut() {
+                        gpu.reconfigure();
+                        gpu.redraw();
+                    }
+                    return None;
+                }
+                wgpu::CurrentSurfaceTexture::Validation => {
+                    if self.hotkey.as_ref().is_some_and(|h| h.fading()) {
+                        self.fade_failed = true;
+                    }
+                    self.banners.set("gpu", "GPU validation error");
+                    return None;
+                }
+            };
+            // An effect chain that writes the raw view never reads the sRGB one, unless the bar draws on it.
+            let fx_raw = gpu.fx.as_ref().filter(|f| f.active()).is_some_and(|f| f.wants_raw_out());
+            let view = (!fx_raw || bar_draws).then(|| texture.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+            // The non-sRGB view a fade needs on an sRGB target; no fade, no view.
+            let raw = gpu.config.view_formats.first().filter(|_| frame.fade < 1.0).map(|f| texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(*f), ..Default::default() }));
+            #[cfg(debug_assertions)]
+            let capturing = gpu_capture::begin(gpu.render_device());
+            let draw_start = timing.then(Instant::now);
+            let drawn = match gpu.fx.as_mut().filter(|f| f.active()) {
+                Some(fx) => {
+                    // The passes write the window through its non-sRGB view (fx_sync made sure it has one).
+                    // A frame shades only its region (`draw_fx_for`); a frame whose own region is
+                    // full tells the chain no next frame can, so it skips the kept output.
+                    let region = fx.region(fx_cell, (w, h));
+                    let (chain, uniforms) = fx.chain_mut().expect("active");
+                    chain.keep_output(region.own.is_some());
+                    // Without view formats (OpenGL) the chain's last copy writes the window's own view.
+                    let out = if chain.wants_raw_out() { texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(crate::render_fx_gpu::raw_format(gpu.config.format)), ..Default::default() }) } else { view.clone().expect("made unless the chain writes the raw view") };
+                    gpu.renderer.draw_fx_for(&frame, chain, uniforms, &out, w, h, same_scene, Some(&region))
+                }
+                None => gpu.renderer.draw_with(&frame, view.as_ref().expect("made without effects"), raw.as_ref(), w, h),
+            };
+            // Animated effects keep the window drawing while they run, at the pace "Effects
+            // animation" allows; a frame not due yet waits in the idle loop (`fx_frame_tick`).
+            gpu.pace_fx(fx_now, focused_window, fx_pacing, false);
+            if drawn.is_ok() {
+                gpu.scene.keep(frame, built, (w, h));
+            } else {
+                gpu.scene.invalidate();
             }
-            wgpu::CurrentSurfaceTexture::Validation => {
+            if let Some(t) = draw_start {
+                self.draw_timers.stats[2].add(t.elapsed().as_secs_f64(), 1);
+            }
+            if let Err(e) = drawn {
                 if self.hotkey.as_ref().is_some_and(|h| h.fading()) {
                     self.fade_failed = true;
                 }
-                self.banners.set("gpu", "GPU validation error");
-                return;
+                self.banners.set("gpu", e);
+            }
+            // The menu bar and any open menu go over the terminal, on the same frame.
+            let mut chosen = None;
+            if let Some(gpu) = self.gpu.as_mut()
+                && bar_draws
+            {
+                let (device, queue) = (gpu.render_device().clone(), gpu.render_queue().clone());
+                let frame = menu_bar_ui::BarFrame { device: &device, queue: &queue, target: view.as_ref().expect("made when the bar draws"), format: gpu.config.format, size: (w, h), scale: bar_scale, dark: bar_dark };
+                let menu = self.menu_bar.as_ref().map(|b| &b.menu).filter(|_| bar_on);
+                chosen = gpu.bar.draw(&frame, menu);
+                // Drawn over the frame, which does not say so: the next one draws whole.
+                gpu.scene.invalidate();
+                if gpu.bar.animating() {
+                    gpu.redraw();
+                }
+            }
+            let present_start = timing.then(Instant::now);
+            if let Some(gpu) = self.gpu.as_ref() {
+                gpu.render_queue().present(texture);
+                self.terminal_presented = true;
+                #[cfg(debug_assertions)]
+                if capturing {
+                    gpu_capture::end(gpu.render_device());
+                }
+            }
+            if let Some(t) = present_start {
+                self.draw_timers.stats[3].add(t.elapsed().as_secs_f64(), 1);
+            }
+            chosen
+        };
+        let (chosen, parsed) = match job {
+            None => (draw(), None),
+            Some((order, start, prep)) => {
+                let stop = std::sync::atomic::AtomicBool::new(false);
+                let panes = &mut self.panes;
+                std::thread::scope(|s| {
+                    // No thread to be had: the frame only draws, and the loop's slices parse.
+                    let worker = std::thread::Builder::new().name("parse-while-drawing".into()).spawn_scoped(s, || parse_meanwhile::parse_meanwhile(panes, &order, &prep, &stop)).ok();
+                    // The worker ends after its chunk once the frame is presented, however the draw returns.
+                    let chosen = {
+                        let _stop = parse_meanwhile::StopOnDrop(&stop);
+                        draw()
+                    };
+                    let parsed = worker.map(|w| w.join().unwrap_or_else(|e| std::panic::resume_unwind(e)));
+                    (chosen, parsed.map(|p| parse_meanwhile::Parsed { start, ..p }))
+                })
             }
         };
-        // An effect chain that writes the raw view never reads the sRGB one, unless the bar draws on it.
-        let fx_raw = gpu.fx.as_ref().filter(|f| f.active()).is_some_and(|f| f.wants_raw_out());
-        let view = (!fx_raw || bar_draws).then(|| texture.texture.create_view(&wgpu::TextureViewDescriptor::default()));
-        // The non-sRGB view a fade needs on an sRGB target; no fade, no view.
-        let raw = gpu.config.view_formats.first().filter(|_| frame.fade < 1.0).map(|f| texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(*f), ..Default::default() }));
-        #[cfg(debug_assertions)]
-        let capturing = gpu_capture::begin(gpu.render_device());
-        let draw_start = timing.then(Instant::now);
-        let drawn = match gpu.fx.as_mut().filter(|f| f.active()) {
-            Some(fx) => {
-                // The passes write the window through its non-sRGB view (fx_sync made sure it has one).
-                // A frame shades only its region (`draw_fx_for`); a frame whose own region is
-                // full tells the chain no next frame can, so it skips the kept output.
-                let region = fx.region(fx_cell, (w, h));
-                let (chain, uniforms) = fx.chain_mut().expect("active");
-                chain.keep_output(region.own.is_some());
-                // Without view formats (OpenGL) the chain's last copy writes the window's own view.
-                let out = if chain.wants_raw_out() { texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(crate::render_fx_gpu::raw_format(gpu.config.format)), ..Default::default() }) } else { view.clone().expect("made unless the chain writes the raw view") };
-                gpu.renderer.draw_fx_for(&frame, chain, uniforms, &out, w, h, same_scene, Some(&region))
-            }
-            None => gpu.renderer.draw_with(&frame, view.as_ref().expect("made without effects"), raw.as_ref(), w, h),
-        };
-        // Animated effects keep the window drawing while they run, at the pace "Effects
-        // animation" allows; a frame not due yet waits in the idle loop (`fx_frame_tick`).
-        gpu.pace_fx(fx_now, focused_window, fx_pacing, false);
-        if drawn.is_ok() {
-            gpu.scene.keep(frame, built, (w, h));
-        } else {
-            gpu.scene.invalidate();
-        }
-        if let Some(t) = draw_start {
-            self.draw_timers.stats[2].add(t.elapsed().as_secs_f64(), 1);
-        }
-        if let Err(e) = drawn {
-            if self.hotkey.as_ref().is_some_and(|h| h.fading()) {
-                self.fade_failed = true;
-            }
-            self.banners.set("gpu", e);
-        }
-        // The menu bar and any open menu go over the terminal, on the same frame.
-        let mut chosen = None;
-        if let Some(gpu) = self.gpu.as_mut()
-            && bar_draws
-        {
-            let (device, queue) = (gpu.render_device().clone(), gpu.render_queue().clone());
-            let frame = menu_bar_ui::BarFrame { device: &device, queue: &queue, target: view.as_ref().expect("made when the bar draws"), format: gpu.config.format, size: (w, h), scale: bar_scale, dark: bar_dark };
-            let menu = self.menu_bar.as_ref().map(|b| &b.menu).filter(|_| bar_on);
-            chosen = gpu.bar.draw(&frame, menu);
-            // Drawn over the frame, which does not say so: the next one draws whole.
-            gpu.scene.invalidate();
-            if gpu.bar.animating() {
-                gpu.redraw();
-            }
-        }
-        let present_start = timing.then(Instant::now);
-        if let Some(gpu) = self.gpu.as_ref() {
-            gpu.render_queue().present(texture);
-            self.terminal_presented = true;
-            #[cfg(debug_assertions)]
-            if capturing {
-                gpu_capture::end(gpu.render_device());
-            }
-        }
-        if let Some(t) = present_start {
-            self.draw_timers.stats[3].add(t.elapsed().as_secs_f64(), 1);
-        }
         if let Some(id) = chosen {
             self.bar_choice(id);
         }
+        parsed
+    }
+
+    /// What a worker needs to parse during this frame: the rotation, where it starts, and the
+    /// settings each pane takes first (as `pump_panes` gives them).
+    fn parse_job(&mut self) -> (Vec<PaneId>, usize, parse_meanwhile::PumpPrep) {
+        self.sync_output_policy();
+        self.sync_host_policy();
+        let (order, start) = self.pump_order();
+        (order, start, self.pump_prep())
     }
 }
 
@@ -8833,9 +8885,13 @@ impl ApplicationHandler<UserEvent> for App {
                 if sig != self.font_sig || self.pane_faces.stale() || self.laid_out.as_ref() != Some(&self.room()) {
                     self.relayout();
                 }
-                self.render();
+                let parsed = self.render_parsing();
                 // The IME's candidate window follows the caret of the frame just drawn.
                 self.ime_area();
+                // Last: what follows the output parsed during the frame can close this window.
+                if let Some(parsed) = parsed {
+                    self.pump_tail(parsed, event_loop);
+                }
             }
             // The IME's composition and commits; the Settings and tool windows (egui) keep
             // egui-winit's own handling.
@@ -9619,7 +9675,7 @@ mod tests {
         let keep = src.find("gpu.scene.keep(frame, built, (w, h))").expect("keep after the draw");
         let head = &src[..keep];
         assert!(head.trim_end().ends_with("if drawn.is_ok() {"), "keep only when the draw succeeded");
-        assert!(src[keep..].starts_with("gpu.scene.keep(frame, built, (w, h));\n        } else {\n            gpu.scene.invalidate();"), "a failed draw invalidates");
+        assert!(src[keep..].starts_with("gpu.scene.keep(frame, built, (w, h));\n            } else {\n                gpu.scene.invalidate();"), "a failed draw invalidates");
     }
 
     #[test]

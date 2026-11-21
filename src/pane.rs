@@ -677,6 +677,40 @@ impl Pane {
         p
     }
 
+    /// Its output reaches only its own screen, log and pty (a plain local or hosted shell), so
+    /// another thread may parse it: no tmux, SSH integration, conductor or coprocess, and
+    /// nothing queued for the main thread's tmux and SSH pumps.
+    pub fn parses_alone(&self) -> bool {
+        let plain = match &self.pty {
+            Some(Io::Local(_) | Io::Hosted(_)) => true,
+            #[cfg(test)]
+            Some(Io::Chunks(_)) => true,
+            _ => false,
+        };
+        plain && !self.gateway && !self.tmux_hook.active() && !self.ssh_hook.active() && self.ssh_q.is_empty() && self.tmux_q.is_empty() && self.conductor.is_none() && self.coprocess.is_none()
+    }
+
+    /// Test seam: a pane whose shell has exited and left these reads behind, one chunk each.
+    #[cfg(test)]
+    pub(crate) fn chunked_for_test(id: PaneId, chunks: Vec<Vec<u8>>) -> Pane {
+        Pane::with(id, Some(Io::Chunks(std::cell::RefCell::new(chunks.into()))), 80, 24)
+    }
+
+    /// Test seam: the chunks still unread.
+    #[cfg(test)]
+    pub(crate) fn waiting_chunks_for_test(&self) -> usize {
+        match &self.pty {
+            Some(Io::Chunks(c)) => c.borrow().len(),
+            _ => 0,
+        }
+    }
+
+    /// Test seam: one read through the hooks.
+    #[cfg(test)]
+    pub(crate) fn hook_output_for_test(&mut self, bytes: &[u8]) {
+        self.hook_output(bytes.to_vec());
+    }
+
     pub fn browser_io(&self) -> Option<&crate::browser::BrowserIo> {
         match &self.pty {
             Some(Io::Browser(b)) => Some(b),

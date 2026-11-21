@@ -252,6 +252,15 @@ pub struct TriggerState {
     pub(crate) slow: SlowDetector,
 }
 
+#[cfg(test)]
+impl TriggerState {
+    /// Test seam: no time budget, so a loaded test machine checks every line the same way.
+    pub(crate) fn unbudgeted_for_test(&mut self) {
+        self.budget = Some(Duration::from_secs(3600));
+        self.pattern_budget = Some(Duration::from_secs(3600));
+    }
+}
+
 /// iTerm2's triggers slowness detector (`PTYTriggerEvaluator.m:221-241`, `iTermSlownessDetector`): over
 /// windows longer than a second, in an interactive app, are triggers at least half as costly as
 /// the work of reading the output, and together at least a tenth of the time?
