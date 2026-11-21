@@ -28,6 +28,7 @@ use windows_sys::Win32::System::Threading::{
 
 use super::conpty::Api;
 use crate::platform::pty::{Notify, Read};
+use crate::pty_budget::Budget;
 use crate::ssh_transport::Transport;
 
 /// One console attach at a time (Send Signal's events, password prompt mode reads, the write
@@ -35,6 +36,19 @@ use crate::ssh_transport::Transport;
 /// closing a pseudoconsole ends every process attached to it, and Termurion (or termurion-host) must
 /// never be one then. Closes share the read side, so they still run side by side.
 pub(crate) static CONSOLE: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+/// Attaches waiting for `CONSOLE` or running: every reader then reads past its budget, since
+/// OpenConsole blocks console calls on a full output pipe.
+static CONSOLE_WANTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Lowers `CONSOLE_WANTED` when an attach returns, however it returns.
+struct Wanted;
+
+impl Drop for Wanted {
+    fn drop(&mut self) {
+        CONSOLE_WANTED.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
 
 /// Attached right now (inside `attached`).
 static ATTACHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -92,6 +106,8 @@ pub(crate) fn send_ctrl_event_attached(ctrl_break: bool, wait: Duration) -> Resu
 /// `f` (it would show in that console): errors come back and are reported by the caller,
 /// after the detach.
 pub(crate) fn attached_unless<T>(pid: u32, stop: &std::sync::atomic::AtomicBool, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    CONSOLE_WANTED.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    let _wanted = Wanted;
     let _one = CONSOLE.write().unwrap_or_else(|e| e.into_inner());
     if stop.load(std::sync::atomic::Ordering::Acquire) {
         return Err("the console is paused".into());
@@ -166,6 +182,8 @@ pub struct Pty {
     paused: Arc<std::sync::atomic::AtomicBool>,
     process: HANDLE,
     output: Receiver<Vec<u8>>,
+    /// Output read and not yet taken: the reader stops at the budget.
+    budget: Arc<Budget>,
     reader: Option<JoinHandle<()>>,
     reader_done: Receiver<()>,
     /// Something kept alive as long as the pty (a handed-off console's slot in the live count).
@@ -247,10 +265,11 @@ fn spawn_with(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, env: &[St
 /// The `Pty` around a started child: its reader and writer threads and its exit watch.
 fn assemble(api: &Api, hpc: HPCON, input: HANDLE, output: HANDLE, process: HANDLE, notify: Notify) -> Result<Pty, String> {
     let paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (rx, reader_done, reader) = start_reader(output, notify.clone(), paused.clone());
+    let budget = Budget::new();
+    let (rx, reader_done, reader) = start_reader(output, notify.clone(), paused.clone(), budget.clone());
     let pending = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (writer, write_error) = start_writer(input, pending.clone(), notify.clone());
-    let pty = Pty { api: api.clone(), hpc, writer: Some(writer), write_error, pending, paused, process, output: rx, reader: Some(reader), reader_done, held: None };
+    let pty = Pty { api: api.clone(), hpc, writer: Some(writer), write_error, pending, paused, process, output: rx, budget, reader: Some(reader), reader_done, held: None };
     watch_exit(pty.process, notify)?;
     Ok(pty)
 }
@@ -520,8 +539,9 @@ pub(crate) fn start_writer(input: HANDLE, pending: Arc<std::sync::atomic::Atomic
     (tx, error)
 }
 
-/// Drains ConPTY output on its own thread, so ConPTY never blocks on a full pipe.
-fn start_reader(output: HANDLE, notify: Notify, paused: Arc<std::sync::atomic::AtomicBool>) -> (Receiver<Vec<u8>>, Receiver<()>, JoinHandle<()>) {
+/// Drains ConPTY output on its own thread. It stops at a full `budget` (so the program waits on
+/// the pipe), except while a console attach wants `CONSOLE`: ConPTY must never block then.
+fn start_reader(output: HANDLE, notify: Notify, paused: Arc<std::sync::atomic::AtomicBool>, budget: Arc<Budget>) -> (Receiver<Vec<u8>>, Receiver<()>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
     let (done_tx, done_rx) = mpsc::channel();
     // HANDLE is a raw pointer and not Send. The thread owns this handle from here on.
@@ -530,13 +550,18 @@ fn start_reader(output: HANDLE, notify: Notify, paused: Arc<std::sync::atomic::A
         let output = raw as HANDLE;
         let mut buf = vec![0u8; 64 * 1024];
         loop {
+            budget.wait_for_room(Duration::from_millis(10), || CONSOLE_WANTED.load(std::sync::atomic::Ordering::Acquire) > 0);
             let mut n = 0u32;
             let ok = unsafe { ReadFile(output, buf.as_mut_ptr(), buf.len() as u32, &mut n, null_mut()) };
             // While paused, a chunk already read waits here and nothing more is read.
             while paused.load(std::sync::atomic::Ordering::Acquire) && ok != 0 && n != 0 {
                 std::thread::sleep(Duration::from_millis(20));
             }
-            if ok == 0 || n == 0 || tx.send(buf[..n as usize].to_vec()).is_err() {
+            if ok == 0 || n == 0 {
+                break;
+            }
+            budget.add(n as usize);
+            if tx.send(buf[..n as usize].to_vec()).is_err() {
                 break;
             }
             notify();
@@ -603,7 +628,10 @@ impl Pty {
 
     pub fn try_read(&self) -> Read {
         match self.output.try_recv() {
-            Ok(chunk) => Read::Data(chunk),
+            Ok(chunk) => {
+                self.budget.take(chunk.len());
+                Read::Data(chunk)
+            }
             Err(TryRecvError::Empty) => Read::Empty,
             Err(TryRecvError::Disconnected) => Read::Closed,
         }
@@ -643,6 +671,11 @@ impl Pty {
         self.pending.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Output read from the child and not yet taken.
+    pub fn queued(&self) -> usize {
+        self.budget.queued()
+    }
+
     /// The child's exit code, or None while it runs.
     pub fn exit_code(&self) -> Option<u32> {
         self.wait_exit(Duration::ZERO)
@@ -651,7 +684,10 @@ impl Pty {
     /// Returns the next chunk of output, or None if nothing came within `wait`.
     pub fn read_timeout(&self, wait: Duration) -> Option<Vec<u8>> {
         match self.output.recv_timeout(wait) {
-            Ok(chunk) => Some(chunk),
+            Ok(chunk) => {
+                self.budget.take(chunk.len());
+                Some(chunk)
+            }
             Err(RecvTimeoutError::Timeout) => None,
             // The output pipe closed. Sleep, so callers that poll do not spin.
             Err(RecvTimeoutError::Disconnected) => {
@@ -728,6 +764,8 @@ impl Pty {
 
 impl Drop for Pty {
     fn drop(&mut self) {
+        // First: a reader waiting at the budget drains again, so no close blocks on a full pipe.
+        self.budget.close();
         if self.hpc == 0 {
             return self.drop_pipes();
         }
@@ -1056,7 +1094,7 @@ pub(crate) mod tests {
     fn reader_survives_a_zero_byte_write() {
         let (mut r, mut w): (HANDLE, HANDLE) = (null_mut(), null_mut());
         assert_ne!(unsafe { CreatePipe(&mut r, &mut w, null(), 0) }, 0);
-        let (rx, _done, reader) = start_reader(r, Arc::new(|| {}), Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        let (rx, _done, reader) = start_reader(r, Arc::new(|| {}), Arc::new(std::sync::atomic::AtomicBool::new(false)), Budget::new());
         let mut n = 0u32;
         unsafe {
             WriteFile(w, b"".as_ptr(), 0, &mut n, null_mut());
@@ -1122,6 +1160,81 @@ pub(crate) mod tests {
             }
         }
         assert!(text(&all).contains("try-read"), "{:?}", text(&all));
+    }
+
+    const FLOOD: &str = r#"cmd.exe /d /c "for /l %i in (0,0,1) do @echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx""#;
+
+    /// A full budget, `p` never read: waits until the reader stops at it.
+    fn wait_full(p: &Pty) {
+        let end = Instant::now() + secs(10);
+        while p.queued() < crate::pty_budget::PTY_BUDGET {
+            assert!(Instant::now() < end, "the budget never filled: {}", p.queued());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_flood_waits_at_the_budget() {
+        let p = spawn(&shipped(), FLOOD, 80, 24).unwrap();
+        std::thread::sleep(secs(1));
+        assert!(p.queued() <= crate::pty_budget::PTY_BUDGET + 64 * 1024, "the reader read past the budget: {}", p.queued());
+        let end = Instant::now() + Duration::from_millis(200);
+        let mut got = 0;
+        while Instant::now() < end {
+            if let Read::Data(d) = p.try_read() {
+                got += d.len();
+            }
+        }
+        assert!(got > 1 << 20, "reading again let the flood go on: {got}");
+    }
+
+    #[test]
+    fn a_dropped_pty_with_a_full_budget_hangs_up() {
+        let p = spawn(&shipped(), FLOOD, 80, 24).unwrap();
+        wait_full(&p);
+        let start = Instant::now();
+        drop(p);
+        // Past CLOSE_WAIT Drop gives up on the reader (force_reader_stop): inside it, the
+        // reader ended and said so on `reader_done`.
+        assert!(start.elapsed() < CLOSE_WAIT, "the reader did not end on the close: {:?}", start.elapsed());
+    }
+
+    #[test]
+    fn a_console_read_never_waits_on_a_full_budget() {
+        let p = spawn(&shipped(), FLOOD, 80, 24).unwrap();
+        // ConPTY floods slowly: wait for the full budget, then 1 s more for the pipe to fill.
+        wait_full(&p);
+        std::thread::sleep(secs(1));
+        let pid = p.pid();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(console_mode_unless(pid, &std::sync::atomic::AtomicBool::new(false)));
+        });
+        let got = rx.recv_timeout(secs(2));
+        assert!(got.is_ok(), "the console read waited on the full pipe");
+    }
+
+    #[test]
+    fn ctrl_c_ends_a_flood_while_it_is_read() {
+        // A test run can ignore Ctrl+C, and every child inherits that (cmd then never stops), so
+        // the flood takes Ctrl+C back first, as signal_child does.
+        let script = "$k = Add-Type -Name C -Namespace T -PassThru -MemberDefinition '[DllImport(\"kernel32.dll\")] public static extern bool SetConsoleCtrlHandler(IntPtr h, bool add);'; [void]$k::SetConsoleCtrlHandler([IntPtr]::Zero, $false); $s = 'x' * 4000; while ($true) { [Console]::Out.Write($s) }";
+        let p = spawn(&shipped(), &format!("powershell.exe -NoProfile -EncodedCommand {}", encoded_command(script)), 80, 24).unwrap();
+        let mut seen = 0;
+        let end = Instant::now() + secs(20);
+        while seen < 64 * 1024 {
+            assert!(Instant::now() < end, "the flood never started");
+            if let Some(d) = p.read_timeout(Duration::from_millis(100)) {
+                seen += d.len();
+            }
+        }
+        p.write(b"\x03").unwrap();
+        let end = Instant::now() + secs(5);
+        while p.exit_code().is_none() {
+            assert!(Instant::now() < end, "Ctrl+C did not end the flood within 5 s");
+            while let Read::Data(_) = p.try_read() {}
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     #[test]

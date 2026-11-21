@@ -20,6 +20,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::platform::pty::{Notify, Read};
+use crate::pty_budget::Budget;
 use crate::ssh_transport::Transport;
 
 /// Nothing to load on Unix.
@@ -85,6 +86,8 @@ pub struct Pty {
     /// Undo Close: the reader holds off, so the program waits on the pty.
     paused: Arc<AtomicBool>,
     output: Receiver<Vec<u8>>,
+    /// Output read and not yet taken: the reader stops at the budget.
+    budget: Arc<Budget>,
     /// Writing to it wakes the reader out of its poll.
     wake: OwnedFd,
     exit: Arc<Exit>,
@@ -186,11 +189,12 @@ fn spawn_with_env(inherited: Vec<(OsString, OsString)>, t: Transport, cmdline: &
         }
         Source::Pipe(fd) => (Arc::new(fd), None),
     };
-    let (output, _reader) = start_reader(read_fd, wake_r, notify.clone(), paused.clone());
+    let budget = Budget::new();
+    let (output, _reader) = start_reader(read_fd, wake_r, notify.clone(), paused.clone(), budget.clone());
     let pending = Arc::new(AtomicUsize::new(0));
     let (writer, write_error) = start_writer(input, pending.clone(), notify.clone());
     start_waiter(child, exit.clone(), notify);
-    Ok(Pty { pid, tty, writer: Some(writer), write_error, pending, paused, output, wake, exit, held: None })
+    Ok(Pty { pid, tty, writer: Some(writer), write_error, pending, paused, output, budget, wake, exit, held: None })
 }
 
 enum Source {
@@ -410,9 +414,10 @@ fn poll(fds: &mut [libc::pollfd], ms: i32) -> bool {
     }
 }
 
-/// Drains the child's output on its own thread. While paused it reads nothing, so the child
-/// blocks once the pty's buffer is full (as on Windows). EOF, EIO or a write to `wake` ends it.
-fn start_reader(fd: Arc<OwnedFd>, wake: OwnedFd, notify: Notify, paused: Arc<AtomicBool>) -> (Receiver<Vec<u8>>, JoinHandle<()>) {
+/// Drains the child's output on its own thread. While paused, or while `budget` is full, it
+/// reads nothing, so the child blocks once the pty's buffer is full (as on Windows). EOF, EIO
+/// or a write to `wake` ends it.
+fn start_reader(fd: Arc<OwnedFd>, wake: OwnedFd, notify: Notify, paused: Arc<AtomicBool>, budget: Arc<Budget>) -> (Receiver<Vec<u8>>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
     let reader = std::thread::spawn(move || {
         let mut buf = vec![0u8; 64 * 1024];
@@ -428,6 +433,8 @@ fn start_reader(fd: Arc<OwnedFd>, wake: OwnedFd, notify: Notify, paused: Arc<Ato
                 }
                 continue;
             }
+            // Drop closes the budget, so this never outlives the pty.
+            budget.wait_for_room(Duration::from_millis(100), || false);
             let mut fds = [pfd(fd.as_raw_fd()), pfd(wake.as_raw_fd())];
             if !poll(&mut fds, -1) || fds[1].revents != 0 {
                 break;
@@ -448,6 +455,7 @@ fn start_reader(fd: Arc<OwnedFd>, wake: OwnedFd, notify: Notify, paused: Arc<Ato
                     break 'read;
                 }
             }
+            budget.add(n as usize);
             if tx.send(buf[..n as usize].to_vec()).is_err() {
                 break;
             }
@@ -615,7 +623,10 @@ impl Pty {
 
     pub fn try_read(&self) -> Read {
         match self.output.try_recv() {
-            Ok(chunk) => Read::Data(chunk),
+            Ok(chunk) => {
+                self.budget.take(chunk.len());
+                Read::Data(chunk)
+            }
             Err(TryRecvError::Empty) => Read::Empty,
             Err(TryRecvError::Disconnected) => Read::Closed,
         }
@@ -652,6 +663,11 @@ impl Pty {
         self.pending.load(Ordering::Relaxed)
     }
 
+    /// Output read from the child and not yet taken.
+    pub fn queued(&self) -> usize {
+        self.budget.queued()
+    }
+
     /// The child's exit code (`128 + signal` for a killed one), or None while it runs.
     pub fn exit_code(&self) -> Option<u32> {
         self.wait_exit(Duration::ZERO)
@@ -660,7 +676,10 @@ impl Pty {
     /// Returns the next chunk of output, or None if nothing came within `wait`.
     pub fn read_timeout(&self, wait: Duration) -> Option<Vec<u8>> {
         match self.output.recv_timeout(wait) {
-            Ok(chunk) => Some(chunk),
+            Ok(chunk) => {
+                self.budget.take(chunk.len());
+                Some(chunk)
+            }
             Err(RecvTimeoutError::Timeout) => None,
             // The output closed. Sleep, so callers that poll do not spin.
             Err(RecvTimeoutError::Disconnected) => {
@@ -690,6 +709,7 @@ impl Drop for Pty {
     /// shell that ignores the hangup is killed (its group, for a pty) after `CLOSE_WAIT`.
     fn drop(&mut self) {
         self.set_paused(false);
+        self.budget.close();
         self.writer.take();
         let group = self.tty.is_some();
         if let Some(own) = self.tty.take() {
@@ -834,6 +854,67 @@ mod tests {
         }
         assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "the shell is still there");
         assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+    }
+
+    /// A full budget, `p` never read: waits until the reader stops at it.
+    fn wait_full(p: &Pty) {
+        let end = std::time::Instant::now() + secs(5);
+        while p.queued() < crate::pty_budget::PTY_BUDGET {
+            assert!(std::time::Instant::now() < end, "the budget never filled: {}", p.queued());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_flood_waits_at_the_budget() {
+        let p = spawn(&PtyApi, "/bin/sh -c yes", 80, 24).unwrap();
+        std::thread::sleep(secs(1));
+        assert!(p.queued() <= crate::pty_budget::PTY_BUDGET + 64 * 1024, "the reader read past the budget: {}", p.queued());
+        let end = std::time::Instant::now() + Duration::from_millis(200);
+        let mut got = 0;
+        while std::time::Instant::now() < end {
+            if let Read::Data(d) = p.try_read() {
+                got += d.len();
+            }
+        }
+        assert!(got > 1 << 20, "reading again let the flood go on: {got}");
+    }
+
+    #[test]
+    fn a_dropped_pty_with_a_full_budget_hangs_up() {
+        let p = spawn(&PtyApi, "/bin/sh -c yes", 80, 24).unwrap();
+        let pid = p.pid() as libc::pid_t;
+        wait_full(&p);
+        drop(p);
+        let end = std::time::Instant::now() + CLOSE_WAIT + secs(1);
+        while std::time::Instant::now() < end && unsafe { libc::kill(pid, 0) } == 0 {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "the flood outlived its pty");
+    }
+
+    #[test]
+    fn ctrl_c_ends_a_flood_whose_output_waits() {
+        let p = spawn(&PtyApi, "/bin/sh -c yes", 80, 24).unwrap();
+        wait_full(&p);
+        p.write(b"\x03").unwrap();
+        assert!(p.wait_exit(secs(2)).is_some(), "Ctrl+C reached a program blocked on its output");
+    }
+
+    #[test]
+    fn pause_and_budget_are_separate() {
+        let p = spawn(&PtyApi, "/bin/sh -c yes", 80, 24).unwrap();
+        assert!(p.read_timeout(secs(5)).is_some());
+        p.set_paused(true);
+        std::thread::sleep(Duration::from_millis(100));
+        // Everything taken, so the budget has room: the pause alone holds the reader.
+        while let Read::Data(_) = p.try_read() {}
+        assert_eq!(p.queued(), 0);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(matches!(p.try_read(), Read::Empty), "a paused reader queued more");
+        assert_eq!(p.queued(), 0);
+        p.set_paused(false);
+        assert!(p.read_timeout(secs(2)).is_some(), "reading resumes after the pause");
     }
 
     #[test]
