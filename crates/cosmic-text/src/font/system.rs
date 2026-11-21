@@ -290,6 +290,9 @@ impl FontSystem {
     /// Get a mutable reference to the database.
     pub fn db_mut(&mut self) -> &mut fontdb::Database {
         self.font_matches_cache.clear();
+        // Termurion patch 4: a cached run may name a fallback the new fonts replace.
+        #[cfg(feature = "shape-run-cache")]
+        self.shape_run_cache.clear();
         &mut self.db
     }
 

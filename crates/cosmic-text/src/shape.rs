@@ -423,13 +423,33 @@ fn shape_run_cached(
     end_run: usize,
     span_rtl: bool,
 ) {
-    use crate::{AttrsOwned, ShapeRunKey};
+    use crate::{AttrsOwned, ShapeRunKey, MAX_RUN_BYTES};
+
+    // Termurion patch 3: off, or a run too long to keep, shapes as if there were no cache.
+    let cache = &mut font_system.shape_run_cache;
+    if !cache.enabled() || end_run - start_run > MAX_RUN_BYTES {
+        if cache.enabled() {
+            cache.count_miss();
+        }
+        shape_run(
+            glyphs,
+            font_system,
+            line,
+            attrs_list,
+            start_run,
+            end_run,
+            span_rtl,
+        );
+        return;
+    }
 
     let run_range = start_run..end_run;
     let mut key = ShapeRunKey {
         text: line[run_range.clone()].to_string(),
         default_attrs: AttrsOwned::new(&attrs_list.defaults()),
         attrs_spans: Vec::new(),
+        // Termurion patch 2: the direction is part of the key.
+        rtl: span_rtl,
     };
     for (attrs_range, attrs) in attrs_list.spans.overlapping(&run_range) {
         if attrs == &key.default_attrs {
@@ -3055,5 +3075,143 @@ impl ShapeLine {
         scratch.visual_lines.append(&mut cached_visual_lines);
         scratch.cached_visual_lines = cached_visual_lines;
         scratch.glyph_sets = cached_glyph_sets;
+    }
+}
+
+// Termurion patch 2: the run cache gives the shaper's own glyphs.
+#[cfg(all(test, feature = "shape-run-cache"))]
+mod run_cache_tests {
+    use super::*;
+    use crate::{FeatureTag, FontFeatures, Weight};
+    use alloc::string::String;
+    use unicode_bidi::Level;
+
+    const FAMILIES: [&str; 3] = [
+        "Termurion Wide Bold Test",
+        "Termurion Ligature Test",
+        "Termurion RTL Test",
+    ];
+
+    fn font_system() -> FontSystem {
+        let mut db = fontdb::Database::new();
+        for data in [
+            &include_bytes!("../../../tests/fixtures/fonts/TermurionWideBoldTest-Regular.ttf")[..],
+            include_bytes!("../../../tests/fixtures/fonts/TermurionWideBoldTest-Bold.ttf"),
+            include_bytes!("../../../tests/fixtures/fonts/TermurionLigatureTest-Regular.ttf"),
+            include_bytes!("../../../tests/fixtures/fonts/TermurionRtlTest-Regular.ttf"),
+        ] {
+            db.load_font_data(data.to_vec());
+        }
+        FontSystem::new_with_locale_and_db("en-US".into(), db)
+    }
+
+    fn glyphs(fs: &mut FontSystem, text: &str, attrs: &Attrs, level: Level) -> String {
+        let list = AttrsList::new(attrs);
+        let word = ShapeWord::new(fs, text, &list, 0..text.len(), level, false, Shaping::Advanced);
+        format!("{:?}", word.glyphs)
+    }
+
+    #[test]
+    fn a_word_shapes_the_same_cached_and_uncached() {
+        let texts = [
+            "flood",
+            " ",
+            "0001234",
+            "a->b",
+            "!=",
+            "a=>b",
+            "e\u{301}",
+            "\u{5e9}\u{5dc}\u{5d5}\u{5dd}",
+            "\u{633}\u{644}\u{627}\u{645}",
+            "\u{4e00}",
+        ];
+        let mut liga_on = FontFeatures::new();
+        liga_on.enable(FeatureTag::STANDARD_LIGATURES);
+        let mut liga_off = FontFeatures::new();
+        liga_off.disable(FeatureTag::STANDARD_LIGATURES);
+        let mut fs = font_system();
+        let mut cases = 0;
+        for text in texts {
+            let level = if text.chars().any(|c| ('\u{590}'..'\u{700}').contains(&c)) {
+                Level::rtl()
+            } else {
+                Level::ltr()
+            };
+            for family in FAMILIES {
+                for weight in [Weight(400), Weight(700)] {
+                    for italic in [false, true] {
+                        for features in [None, Some(&liga_on), Some(&liga_off)] {
+                            let mut attrs = Attrs::new()
+                                .family(Family::Name(family))
+                                .weight(weight)
+                                .style(if italic { Style::Italic } else { Style::Normal });
+                            if let Some(f) = features {
+                                attrs = attrs.font_features(f.clone());
+                            }
+                            fs.shape_run_cache.set_enabled(false);
+                            let plain = glyphs(&mut fs, text, &attrs, level);
+                            fs.shape_run_cache.set_enabled(true);
+                            let cold = glyphs(&mut fs, text, &attrs, level);
+                            let warm = glyphs(&mut fs, text, &attrs, level);
+                            let case = (text, family, weight, italic, features.is_some());
+                            assert_eq!(plain, cold, "{case:?}");
+                            assert_eq!(plain, warm, "{case:?}");
+                            assert!(fs.shape_run_cache.stats().0 > 0, "{case:?}");
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 10 * 3 * 2 * 2 * 3);
+    }
+
+    #[test]
+    fn the_same_text_in_each_direction_keeps_its_own_glyphs() {
+        let mut fs = font_system();
+        let attrs = Attrs::new().family(Family::Name("Termurion Ligature Test"));
+        fs.shape_run_cache.set_enabled(false);
+        let plain_rtl = glyphs(&mut fs, "ab(", &attrs, Level::rtl());
+        fs.shape_run_cache.set_enabled(true);
+        let ltr = glyphs(&mut fs, "ab(", &attrs, Level::ltr());
+        let rtl = glyphs(&mut fs, "ab(", &attrs, Level::rtl());
+        assert_eq!(rtl, plain_rtl, "the right to left run took the left to right glyphs");
+        assert_ne!(ltr, plain_rtl, "the two directions shape alike, so the test sees nothing");
+    }
+
+    #[test]
+    fn loading_a_font_clears_the_cache() {
+        let mut fs = font_system();
+        let attrs = Attrs::new().family(Family::Name("Termurion Ligature Test"));
+        glyphs(&mut fs, "flood", &attrs, Level::ltr());
+        assert!(fs.shape_run_cache.len() > 0);
+        fs.db_mut();
+        assert_eq!(fs.shape_run_cache.len(), 0);
+    }
+
+    #[test]
+    fn a_disabled_cache_stays_empty() {
+        let mut fs = font_system();
+        fs.shape_run_cache.set_enabled(false);
+        let attrs = Attrs::new().family(Family::Name("Termurion Ligature Test"));
+        for i in 0..10 {
+            glyphs(&mut fs, &format!("word{i}"), &attrs, Level::ltr());
+        }
+        assert_eq!(fs.shape_run_cache.len(), 0);
+        assert_eq!(fs.shape_run_cache.stats(), (0, 0));
+    }
+
+    #[test]
+    fn a_long_run_is_never_stored() {
+        let mut fs = font_system();
+        let attrs = Attrs::new().family(Family::Name("Termurion Ligature Test"));
+        let long = "x".repeat(crate::MAX_RUN_BYTES + 1);
+        let (len, (_, misses)) = (fs.shape_run_cache.len(), fs.shape_run_cache.stats());
+        glyphs(&mut fs, &long, &attrs, Level::ltr());
+        assert_eq!(fs.shape_run_cache.len(), len);
+        assert_eq!(fs.shape_run_cache.stats().1, misses + 1);
+        let fits = "x".repeat(crate::MAX_RUN_BYTES);
+        glyphs(&mut fs, &fits, &attrs, Level::ltr());
+        assert_eq!(fs.shape_run_cache.len(), len + 1);
     }
 }

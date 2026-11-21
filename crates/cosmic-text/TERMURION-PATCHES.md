@@ -7,5 +7,22 @@ through `[patch.crates-io]` in Termurion's Cargo.toml. The `benches/`, `sample/`
 changed site carries a `// Termurion patch N:` comment. Seven upstream comments in `buffer.rs`
 and `shape.rs` had an em dash, now a colon. Changes:
 
-1. Vendored as is. The root `Cargo.toml` lists cosmic-text as a workspace member so
-   `cargo test -p cosmic-text --lib` runs.
+1. Vendored, with the `shape-run-cache` feature in `default` (Cargo.toml), so every build and
+   cosmic-text's own tests have the run cache. The root `Cargo.toml` lists cosmic-text as a
+   workspace member so `cargo test -p cosmic-text --lib` runs; its tests load the fonts in
+   Termurion's `tests/fixtures/fonts` with `include_bytes!`.
+2. `shape_run_cache.rs`, `shape.rs` (`shape_run_cached`): `ShapeRunKey` holds `rtl`, the run's
+   direction. Without it the same text shaped in a right to left span and a left to right one
+   (a `(12)` or `!?` inside Hebrew: mirrored and reversed glyphs) shared one entry and drew wrong.
+   Test: `shape::run_cache_tests::the_same_text_in_each_direction_keeps_its_own_glyphs`.
+3. `shape_run_cache.rs`, `shape.rs` (`shape_run_cached`): caps and a switch. `MAX_ENTRIES` (4096
+   runs), `MAX_GLYPHS` (32768 glyphs across all runs) and `MAX_RUN_BYTES` (256: a longer run is
+   shaped and never stored). An `insert` that would pass a cap first drops every run not used since
+   the last `trim`, and stores nothing when that is not enough; `trim` keeps the glyph count.
+   `set_enabled(false)` clears the cache and makes `shape_run_cached` call `shape_run` with
+   nothing touched. `clear`, `len`, `is_empty`, `glyph_count`, and `stats` (hits and misses since
+   creation or the last `clear`; a run over `MAX_RUN_BYTES` counts a miss, decided before the key
+   is built). Tests: `shape_run_cache::tests`, `shape::run_cache_tests`.
+4. `font/system.rs` (`db_mut`): also clears the run cache, as it clears the font match cache, so a
+   cached run never names a fallback that a newly loaded font replaces. Test:
+   `shape::run_cache_tests::loading_a_font_clears_the_cache`.
