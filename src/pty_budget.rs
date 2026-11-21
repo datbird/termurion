@@ -30,11 +30,14 @@ impl Budget {
         self.lock().0 += n;
     }
 
-    /// The consumer took `n` bytes.
+    /// The consumer took `n` bytes. Wakes the reader only on the way down past `PTY_RESUME`: a
+    /// reader waits only above it, so a take below it has nobody to wake (and a wake is a
+    /// syscall per take during a flood).
     pub fn take(&self, n: usize) {
         let mut g = self.lock();
+        let before = g.0;
         g.0 = g.0.saturating_sub(n);
-        if g.0 <= PTY_RESUME {
+        if before > PTY_RESUME && g.0 <= PTY_RESUME {
             self.room.notify_all();
         }
     }
@@ -125,6 +128,24 @@ mod tests {
         stop.store(true, Ordering::Release);
         b.close();
         t.join().unwrap();
+    }
+
+    #[test]
+    fn a_take_past_the_resume_mark_wakes_the_reader() {
+        let b = Budget::new();
+        b.add(2 * PTY_BUDGET);
+        let b2 = b.clone();
+        // A long `every`: only the take's wake can end the wait in time.
+        let t = std::thread::spawn(move || b2.wait_for_room(Duration::from_secs(60), || false));
+        std::thread::sleep(ms(100));
+        b.take(PTY_BUDGET);
+        std::thread::sleep(ms(100));
+        assert!(!t.is_finished(), "still above the resume mark");
+        let at = Instant::now();
+        b.take(PTY_BUDGET);
+        t.join().unwrap();
+        assert!(at.elapsed() < ms(100), "one take from above the mark to 0 wakes it: {:?}", at.elapsed());
+        assert_eq!(b.queued(), 0);
     }
 
     #[test]

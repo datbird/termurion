@@ -668,6 +668,11 @@ impl Pty {
         self.budget.queued()
     }
 
+    /// The budget itself, for a console reader that skips a full one.
+    pub fn budget(&self) -> Arc<Budget> {
+        self.budget.clone()
+    }
+
     /// The child's exit code (`128 + signal` for a killed one), or None while it runs.
     pub fn exit_code(&self) -> Option<u32> {
         self.wait_exit(Duration::ZERO)
@@ -869,15 +874,18 @@ mod tests {
     fn a_flood_waits_at_the_budget() {
         let p = spawn(&PtyApi, "/bin/sh -c yes", 80, 24).unwrap();
         std::thread::sleep(secs(1));
-        assert!(p.queued() <= crate::pty_budget::PTY_BUDGET + 64 * 1024, "the reader read past the budget: {}", p.queued());
-        let end = std::time::Instant::now() + Duration::from_millis(200);
+        let at_start = p.queued();
+        assert!(at_start <= crate::pty_budget::PTY_BUDGET + 64 * 1024, "the reader read past the budget: {at_start}");
+        // More than the queue it stopped at: the reader read again. Not timed, so a loaded
+        // machine only makes it slower.
+        let (want, end) = (crate::pty_budget::PTY_BUDGET + (1 << 20), std::time::Instant::now() + secs(5));
         let mut got = 0;
-        while std::time::Instant::now() < end {
-            if let Read::Data(d) = p.try_read() {
+        while got <= want {
+            assert!(std::time::Instant::now() < end, "reading again did not let the flood go on: {got} (queued {at_start} at the start)");
+            if let Some(d) = p.read_timeout(Duration::from_millis(100)) {
                 got += d.len();
             }
         }
-        assert!(got > 1 << 20, "reading again let the flood go on: {got}");
     }
 
     #[test]
@@ -885,12 +893,15 @@ mod tests {
         let p = spawn(&PtyApi, "/bin/sh -c yes", 80, 24).unwrap();
         let pid = p.pid() as libc::pid_t;
         wait_full(&p);
+        // Drop takes the registry's copy and its own: the reader holds the last one.
+        let master = Arc::downgrade(p.tty.as_ref().unwrap());
         drop(p);
         let end = std::time::Instant::now() + CLOSE_WAIT + secs(1);
-        while std::time::Instant::now() < end && unsafe { libc::kill(pid, 0) } == 0 {
+        while std::time::Instant::now() < end && (unsafe { libc::kill(pid, 0) } == 0 || master.upgrade().is_some()) {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "the flood outlived its pty");
+        assert!(master.upgrade().is_none(), "the reader still waits and holds the master open");
     }
 
     #[test]

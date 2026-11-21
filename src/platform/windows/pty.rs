@@ -676,6 +676,11 @@ impl Pty {
         self.budget.queued()
     }
 
+    /// The budget itself, for a console reader that skips a full one.
+    pub fn budget(&self) -> Arc<Budget> {
+        self.budget.clone()
+    }
+
     /// The child's exit code, or None while it runs.
     pub fn exit_code(&self) -> Option<u32> {
         self.wait_exit(Duration::ZERO)
@@ -1173,19 +1178,34 @@ pub(crate) mod tests {
         }
     }
 
+    /// The CPU time `process` has used, for telling a blocked writer from a running one.
+    fn cpu(process: HANDLE) -> Duration {
+        use windows_sys::Win32::Foundation::FILETIME;
+        let zero = || FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let (mut a, mut b, mut k, mut u) = (zero(), zero(), zero(), zero());
+        assert_ne!(unsafe { windows_sys::Win32::System::Threading::GetProcessTimes(process, &mut a, &mut b, &mut k, &mut u) }, 0);
+        let t = |f: FILETIME| ((f.dwHighDateTime as u64) << 32 | f.dwLowDateTime as u64) * 100;
+        Duration::from_nanos(t(k) + t(u))
+    }
+
     #[test]
     fn a_flood_waits_at_the_budget() {
         let p = spawn(&shipped(), FLOOD, 80, 24).unwrap();
+        wait_full(&p);
+        std::thread::sleep(Duration::from_millis(500));
+        // The flood itself stops: were OpenConsole to buffer its output instead, cmd would
+        // keep running and the memory would only move there.
+        let before = cpu(p.process);
         std::thread::sleep(secs(1));
+        let used = cpu(p.process) - before;
+        assert!(used < Duration::from_millis(100), "the flood ran on while held: {used:?} of CPU in 1 s");
         assert!(p.queued() <= crate::pty_budget::PTY_BUDGET + 64 * 1024, "the reader read past the budget: {}", p.queued());
-        let end = Instant::now() + Duration::from_millis(200);
-        let mut got = 0;
-        while Instant::now() < end {
-            if let Read::Data(d) = p.try_read() {
-                got += d.len();
-            }
+        while let Read::Data(_) = p.try_read() {}
+        let end = Instant::now() + secs(5);
+        while p.queued() < 256 * 1024 {
+            assert!(Instant::now() < end, "the reader did not read again after the drain: {}", p.queued());
+            std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(got > 1 << 20, "reading again let the flood go on: {got}");
     }
 
     #[test]
@@ -1199,19 +1219,98 @@ pub(crate) mod tests {
         assert!(start.elapsed() < CLOSE_WAIT, "the reader did not end on the close: {:?}", start.elapsed());
     }
 
+    /// Runs `attach_child` with `which` in a copy of this test binary that has no console. An
+    /// attach from a process with one fails at once (AttachConsole: access denied), which would
+    /// let these tests pass without ever attaching.
+    fn in_detached_child(which: &str) {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "platform::windows::pty::tests::attach_child", "--ignored", "--test-threads=1", "--nocapture"])
+            .env("TERMURION_ATTACH_CHILD", which)
+            .creation_flags(DETACHED_PROCESS)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (mut out, mut err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
+        let reading = std::thread::spawn(move || {
+            let mut s = String::new();
+            let _ = std::io::Read::read_to_string(&mut out, &mut s);
+            let _ = std::io::Read::read_to_string(&mut err, &mut s);
+            s
+        });
+        let end = Instant::now() + secs(60);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if Instant::now() >= end {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let got = reading.join().unwrap();
+        assert!(status.is_some_and(|s| s.success()) && got.contains("1 passed"), "{which}: {status:?}\n{got}");
+    }
+
+    /// The child half of the attach tests below: a flood on `which`'s ConPTY fills its budget,
+    /// then an attach (a mode read, or a write that makes output) must be done within 2 s.
     #[test]
-    fn a_console_read_never_waits_on_a_full_budget() {
-        let p = spawn(&shipped(), FLOOD, 80, 24).unwrap();
+    #[ignore]
+    fn attach_child() {
+        let Ok(which) = std::env::var("TERMURION_ATTACH_CHILD") else { return };
+        let api = if which.contains("inbox") { conpty::load(&Source::Inbox).unwrap() } else { shipped() };
+        let p = spawn(&api, FLOOD, 80, 24).unwrap();
         // ConPTY floods slowly: wait for the full budget, then 1 s more for the pipe to fill.
         wait_full(&p);
         std::thread::sleep(secs(1));
         let pid = p.pid();
+        let write = which.contains("write");
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(console_mode_unless(pid, &std::sync::atomic::AtomicBool::new(false)));
+            let no = std::sync::atomic::AtomicBool::new(false);
+            let r = if write { attached_unless(pid, &no, write_conout).map(|_| 0) } else { console_mode_unless(pid, &no) };
+            let _ = tx.send(r);
         });
-        let got = rx.recv_timeout(secs(2));
-        assert!(got.is_ok(), "the console read waited on the full pipe");
+        let got = rx.recv_timeout(secs(2)).expect("the attach waited on the full pipe");
+        assert!(got.is_ok(), "the attach failed: {got:?}");
+    }
+
+    /// Writes 64 KiB of text to the attached console.
+    fn write_conout() -> Result<(), String> {
+        let name: Vec<u16> = "CONOUT$".encode_utf16().chain(Some(0)).collect();
+        let h = unsafe { CreateFileW(name.as_ptr(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, null(), OPEN_EXISTING, 0, null_mut()) };
+        if h == INVALID_HANDLE_VALUE {
+            return Err(os_err("CreateFileW(CONOUT$)"));
+        }
+        let text: Vec<u16> = std::iter::repeat_n(b'x' as u16, 32 * 1024).collect();
+        let mut n = 0u32;
+        let ok = unsafe { windows_sys::Win32::System::Console::WriteConsoleW(h, text.as_ptr().cast(), text.len() as u32, &mut n, null_mut()) } != 0;
+        let err = (!ok).then(|| os_err("WriteConsoleW"));
+        unsafe { CloseHandle(h) };
+        err.map_or(Ok(()), Err)
+    }
+
+    #[test]
+    fn a_console_read_never_waits_on_a_full_budget() {
+        in_detached_child("read");
+    }
+
+    /// The older inbox conhost holds the console lock while it paints into a full pipe.
+    #[test]
+    fn an_inbox_console_read_never_waits_on_a_full_budget() {
+        in_detached_child("read-inbox");
+    }
+
+    /// An attach that writes (text, or a resize as `ssh_probe_win` does) makes output, which
+    /// OpenConsole cannot put in a full pipe.
+    #[test]
+    fn a_writing_attach_never_waits_on_a_full_budget() {
+        in_detached_child("write");
     }
 
     #[test]
