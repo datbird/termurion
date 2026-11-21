@@ -4,6 +4,7 @@
 use crate::screen::{Look, Screen};
 use crate::trigger_eval::TriggerPrefs;
 use crate::triggers::Trigger;
+use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::TermDamage;
 
 struct Rng(u64);
@@ -40,6 +41,15 @@ const PIECES: &[&[u8]] = &[
     b"\x1b[5;10r", b"\x1b[r", b"\x1b[?7l", b"\x1b[?7h", b"\x1b[?69h\x1b[10;40s", b"\x1b[?69l", b"\x1b[3;70H", b"\x1b[5b",
     b"\x1b[?1049h", b"\x1b[?1049l", "\u{4e00}\u{4e00}\x1b[1;2Habc".as_bytes(), b"\x1b]0;t\x07", b"\x1b]133;A\x07",
     b"\x1b[?25l", b"\x1b[?25h", b"\x1b[1;31m", b"\x1b[m", b"\x1b[3;1H", b"\x1b[24;19H",
+    // A hyperlink and an underline color put something in the template's extra. The link has an
+    // id: one without gets a process-wide serial, which differs between the two screens.
+    b"\x1b]8;id=a;https://e.x\x1b\\link text\x1b]8;;\x1b\\", b"\x1b[4;58:5:3mx\x1b[m",
+    // A leading wide spacer in row 1's last column, then ASCII over the wide char below it.
+    "\x1b[1;999H\u{4e00}\x1b[2;1Hxy".as_bytes(),
+    // Runs that end on a wide char's first half or its spacer, at a fixed spot.
+    "\x1b[H\u{4e00}\u{4e00}\x1b[Ha".as_bytes(), "\x1b[H\u{4e00}\u{4e00}\x1b[1;2Hab".as_bytes(),
+    // A keycap after ASCII: VS16 widens the cell the run just wrote.
+    "#\u{fe0f}\u{20e3}".as_bytes(), "ab#\u{fe0f}\u{20e3}".as_bytes(),
 ];
 
 /// One piece of output: the bench's flood line, a plain line longer than the width, or a
@@ -88,7 +98,6 @@ fn damage(s: &mut Screen) -> String {
 /// Every row's cells and marks, history first: what the grid's Debug shows apart from the
 /// rows' occupancy, quick enough to check after every chunk.
 fn rows_equal(a: &Screen, b: &Screen) -> bool {
-    use alacritty_terminal::grid::Dimensions;
     use alacritty_terminal::index::{Column, Line};
     let (ga, gb) = (a.term().grid(), b.term().grid());
     if (ga.history_size(), ga.screen_lines(), ga.columns(), ga.display_offset()) != (gb.history_size(), gb.screen_lines(), gb.columns(), gb.display_offset()) {
@@ -153,6 +162,12 @@ fn fast_print_matches_char_by_char() {
                     fast.term_mut().print_watch = watch;
                     slow.term_mut().print_watch = watch;
                 }
+                3 if rng.below(4) == 0 => {
+                    // The same resize on both: odd cursor and pending wrap states.
+                    let (c, r) = (cols - 3 + rng.below(7), (rows - 1 + rng.below(3)).max(2));
+                    fast.resize(c, r);
+                    slow.resize(c, r);
+                }
                 2 => {
                     fast.term_mut().print_watch = None;
                     slow.term_mut().print_watch = None;
@@ -162,7 +177,21 @@ fn fast_print_matches_char_by_char() {
                 _ => {}
             }
             let (a, b) = (fast.feed(chunk), slow.feed(chunk));
-            assert!(rows_equal(&fast, &slow), "round {round} ({cols}x{rows} wide {wide} triggers {triggers}) at {at}+{take}: the rows differ in {:?}", String::from_utf8_lossy(&stream));
+            if !rows_equal(&fast, &slow) {
+                let (ga, gb) = (fast.term().grid(), slow.term().grid());
+                let row = (-(ga.history_size().min(gb.history_size()) as i32)..ga.screen_lines().min(gb.screen_lines()) as i32)
+                    .find(|i| format!("{:?}", ga[alacritty_terminal::index::Line(*i)]) != format!("{:?}", gb[alacritty_terminal::index::Line(*i)]));
+                let show = |g: &alacritty_terminal::Grid<alacritty_terminal::term::cell::Cell>| row.map(|i| format!("{:?}", g[alacritty_terminal::index::Line(i)])).unwrap_or_default();
+                panic!(
+                    "round {round} ({cols}x{rows} wide {wide} triggers {triggers}) at {at}+{take}: the rows differ (row {row:?}, history {} {}) in {:?}\nchunk {:?}\nfast {}\nslow {}",
+                    ga.history_size(),
+                    gb.history_size(),
+                    String::from_utf8_lossy(&stream),
+                    String::from_utf8_lossy(chunk),
+                    show(ga),
+                    show(gb)
+                );
+            }
             chunks += 1;
             let full = chunks % 16 == 0 || at + take == stream.len();
             let (a, b) = (state(&mut fast, &a, full), state(&mut slow, &b, full));
@@ -193,8 +222,12 @@ fn flood_parse_rate() {
         let want = 40 + rng.below(80);
         block.extend(format!("{i:07} \x1b[3{}mflood\x1b[0m {}\r\n", 1 + i % 6, prose(&mut rng, want)).into_bytes());
     }
-    for fast in [false, true, false, true] {
+    // Watched as after a typed Enter (`user_write` arms the whole screen).
+    for (fast, watched) in [(false, false), (true, false), (false, false), (true, false), (false, true), (true, true)] {
         let mut s = screen(120, 40, false, false, fast);
+        if watched {
+            s.term_mut().print_watch = Some((0, 39, 0, 119));
+        }
         let started = std::time::Instant::now();
         for _ in 0..20 {
             for chunk in block.chunks(64 << 10) {
@@ -202,6 +235,44 @@ fn flood_parse_rate() {
             }
         }
         let secs = started.elapsed().as_secs_f64();
-        println!("fast {fast}: {:.1} MB/s", 20.0 * block.len() as f64 / secs / 1e6);
+        println!("fast {fast} watched {watched}: {:.1} MB/s", 20.0 * block.len() as f64 / secs / 1e6);
+    }
+}
+
+/// An armed echo and a print watch keep the bulk path, with the same echo cell and the same hit
+/// as char by char: a run inside the box, one that crosses its edge, one that wraps into it, and
+/// ones that miss it.
+#[test]
+fn a_watched_run_takes_the_bulk_path() {
+    // (cursor row and column, 1-based; the text; the watch; whether it is hit)
+    let cases: &[(usize, usize, &str, (i32, i32, usize, usize), bool)] = &[
+        (2, 3, "abc", (1, 1, 1, 5), true),
+        (2, 1, "abcdefgh", (1, 1, 5, 9), true),
+        (2, 1, "abcd", (1, 1, 5, 9), false),
+        (2, 11, "abcdefghij", (1, 1, 5, 9), false),
+        (1, 15, "abcdefghij", (1, 1, 0, 2), true),
+        (1, 15, "abcde", (1, 1, 0, 2), false),
+        (3, 1, "abc", (0, 1, 0, 19), false),
+        // The edges: a run that starts on the box's last column, and runs that end on or just
+        // before its first.
+        (2, 10, "ab", (1, 1, 5, 9), true),
+        (2, 1, "abcde", (1, 1, 4, 9), true),
+        (2, 1, "abcd", (1, 1, 4, 9), false),
+    ];
+    for &(row, col, text, watch, hit) in cases {
+        let mut seen = Vec::new();
+        for fast in [true, false] {
+            let mut s = screen(20, 5, false, false, fast);
+            s.feed(format!("\x1b[?25l\x1b[{row};{col}H").as_bytes());
+            s.term_mut().print_watch = Some(watch);
+            s.note_typed();
+            let bulk = s.term().ascii_bulk;
+            s.feed(text.as_bytes());
+            assert_eq!(s.term().ascii_bulk > bulk, fast, "{text:?} at {row};{col}: bulk path taken");
+            seen.push((s.term().watch_hit, s.echo_at, state(&mut s, &[], true)));
+        }
+        assert_eq!(seen[0].0, hit, "{text:?} at {row};{col} in {watch:?}");
+        assert_eq!(seen[0].1, Some((row as i32 - 1, col - 1)), "the echo lands on the first cell");
+        assert_eq!(seen[0], seen[1], "{text:?} at {row};{col}");
     }
 }

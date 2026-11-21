@@ -1593,7 +1593,7 @@ mod tests {
     /// Termurion patch 4: plain ASCII comes in runs, everything else one at a time, in order.
     #[test]
     fn ground_text_splits_into_ascii_runs() {
-        let text = "ab\u{e9}c\x7f d\x07ef";
+        let text = "ab\u{e9}c\x7f d\x07ef\u{85}g";
         let mut one = Runs::default();
         Parser::new().advance(&mut one, text.as_bytes());
         let want = vec![
@@ -1604,20 +1604,28 @@ mod tests {
             Ground::Run(" d".into()),
             Ground::Execute(7),
             Ground::Run("ef".into()),
+            Ground::Execute(0x85),
+            Ground::Run("g".into()),
         ];
         assert_eq!(one.0, want);
-        // What the char by char dispatch gave: a control executes, anything else prints.
-        let old: Vec<Ground> = text
-            .chars()
-            .map(|c| if (c as u32) < 0x20 { Ground::Execute(c as u8) } else { Ground::Print(c) })
-            .collect();
+        // What the char by char dispatch gave: a control executes, anything else prints. A C1
+        // control cut in half is completed by the partial path, which prints it (as upstream).
+        let old = |cut: usize| -> Vec<Ground> {
+            text.char_indices()
+                .map(|(at, c)| {
+                    let split = at < cut && cut < at + c.len_utf8();
+                    let control = (c as u32) < 0x20 || ('\u{80}'..='\u{9f}').contains(&c);
+                    if control && !split { Ground::Execute(c as u8) } else { Ground::Print(c) }
+                })
+                .collect()
+        };
         let bytes = text.as_bytes();
         for cut in 0..=bytes.len() {
             let mut two = Runs::default();
             let mut parser = Parser::new();
             parser.advance(&mut two, &bytes[..cut]);
             parser.advance(&mut two, &bytes[cut..]);
-            assert_eq!(flat(&two.0), old, "cut at {cut}");
+            assert_eq!(flat(&two.0), old(cut), "cut at {cut}");
         }
     }
 

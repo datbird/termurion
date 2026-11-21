@@ -240,7 +240,9 @@ test data) is left out. Changes:
     time: wrap first when a wrap is pending, stamp the row once, clear the other half of any wide
     character written over (`clear_wide_for_write`, moved out of `write_at_cursor`), write the
     charset-mapped characters with the template's colors, flags and extra, add to `printed` and
-    leave the cursor as `input` would. Insert mode, DECAWM off, left and right margins in force,
-    an armed echo and a print watch go through `input` per character.
+    leave the cursor as `input` would. An armed echo lands on a segment's first cell and a print
+    watch is hit when any of its cells is inside the block (patch 39, per segment). Insert mode,
+    DECAWM off and left and right margins in force go through `input` per character.
+    `ascii_bulk` counts the cells written in bulk, for tests.
 
 To update alacritty_terminal, copy the new version here and apply these changes again.

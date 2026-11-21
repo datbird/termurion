@@ -443,6 +443,8 @@ pub struct Term<T> {
     /// Termurion patch 42: printable ASCII skips the width rule and runs of it are written in one
     /// pass. Off sends every character through `input` (the tests' oracle).
     pub fast_ascii: bool,
+    /// Termurion patch 42: cells `input_ascii` wrote in bulk, ever (tests check the bulk path ran).
+    pub ascii_bulk: u64,
 
     /// Termurion: whether a scroll region that starts at the top but stops above the bottom row
     /// saves the lines leaving it to scrollback (iTerm2's Scrollback With Status Bar).
@@ -599,6 +601,7 @@ impl<T> Term<T> {
             print_watch: None,
             watch_hit: false,
             fast_ascii: true,
+            ascii_bulk: 0,
             scrollback_with_region: true,
             cursor_blink_change: true,
             active_charset: Default::default(),
@@ -1753,8 +1756,6 @@ impl<T: EventListener> Handler for Term<T> {
             || self.mode.contains(TermMode::INSERT)
             || !self.mode.contains(TermMode::LINE_WRAP)
             || self.lr_active()
-            || self.echo_armed
-            || self.print_watch.is_some()
             || self.grid.cursor.point.column.0 >= columns
         {
             for c in run.chars() {
@@ -1774,6 +1775,19 @@ impl<T: EventListener> Handler for Term<T> {
             let n = rest.len().min(columns - col);
             let (segment, after) = rest.split_at(n);
             rest = after;
+
+            // Termurion patch 39, as `input` does per character: the echo lands on the first
+            // cell, and the watch is hit when any of the segment's cells is inside it.
+            if self.echo_armed {
+                self.echo_armed = false;
+                self.echo_point = Some(self.grid.cursor.point);
+            }
+            if let Some((top, bottom, left, right)) = self.print_watch {
+                if (top..=bottom).contains(&line.0) && col <= right && col + n > left {
+                    self.watch_hit = true;
+                }
+            }
+            self.ascii_bulk = self.ascii_bulk.wrapping_add(n as u64);
 
             // Termurion patch: the row remembers when it was last written (as `write_at_cursor`).
             let row = &mut self.grid[line];
