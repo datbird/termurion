@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use crate::host_proto::{Decoder, Live, MIN_VERSION, Msg, VERSION, encode};
+use crate::host_proto::{ACK_EVERY, Decoder, FLOW_VERSION, Live, MIN_VERSION, Msg, VERSION, encode};
 use crate::platform::pty::{Notify, Read};
 use crate::ssh_transport::Transport;
 use crate::platform::ipc::Pipe;
@@ -59,6 +59,8 @@ struct Incoming {
     end: u64,
     /// The output offset after the last byte `try_read` gave out.
     taken: u64,
+    /// The offset last sent to the host in `Consumed`.
+    acked: u64,
     exited: Option<u32>,
     host_pending: u64,
     /// The connection to the host is gone.
@@ -203,7 +205,7 @@ fn dispatch(inner: &Inner, m: Msg, welcome: &mut Option<mpsc::Sender<Result<Welc
         Msg::Attached { id, from, dropped } => {
             if let Some(slot) = inner.slot(id) {
                 let mut s = slot.lock().unwrap();
-                (s.end, s.taken) = (from, from);
+                (s.end, s.taken, s.acked) = (from, from, from);
             }
             if let Some(tx) = inner.attaches.lock().unwrap().remove(&id) {
                 let _ = tx.send((from, dropped));
@@ -300,6 +302,9 @@ impl Client {
         match rx.recv_timeout(wait.max(REPLY_WAIT)) {
             Ok(Ok(w)) => {
                 crate::rlog!("session host connected, protocol {}", version);
+                if version < FLOW_VERSION {
+                    crate::rlog!("session host speaks protocol {}: hosted output has no flow control", version);
+                }
                 Ok(Some((client, w)))
             }
             Ok(Err(e)) => {
@@ -357,7 +362,7 @@ impl Client {
     /// Takes over a running session: its output from `since` on. Returns the pty, the offset
     /// the output starts at, and whether bytes before it were dropped.
     pub fn attach(&self, id: u64, pid: u32, since: u64, notify: Notify) -> Result<(HostedPty, u64, bool), String> {
-        let slot: Slot = Arc::new(Mutex::new(Incoming { notify: Some(notify), end: since, taken: since, ..Default::default() }));
+        let slot: Slot = Arc::new(Mutex::new(Incoming { notify: Some(notify), end: since, taken: since, acked: since, ..Default::default() }));
         self.inner.sessions.lock().unwrap().insert(id, slot.clone());
         let (tx, rx) = mpsc::channel();
         self.inner.attaches.lock().unwrap().insert(id, tx);
@@ -464,11 +469,21 @@ impl HostedPty {
         self.detached = true;
     }
 
+    /// Every `ACK_EVERY` bytes taken, tells a version 6 host, so it sends more (from whichever
+    /// thread parses).
     pub fn try_read(&self) -> Read {
         let mut s = self.slot.lock().unwrap();
         match s.queue.pop_front() {
             Some(d) => {
                 s.taken += d.len() as u64;
+                let ack = (s.taken - s.acked >= ACK_EVERY && self.inner.version.load(Ordering::Acquire) >= FLOW_VERSION).then(|| {
+                    s.acked = s.taken;
+                    s.taken
+                });
+                drop(s);
+                if let Some(offset) = ack {
+                    let _ = self.inner.send(&Msg::Consumed { id: self.id, offset });
+                }
                 Read::Data(d)
             }
             None if s.lost => Read::Closed,
@@ -715,6 +730,60 @@ mod tests {
             }
         }
         all
+    }
+
+    fn flood() -> &'static str {
+        crate::platform::by_os(r#"cmd.exe /d /c "for /l %i in (0,0,1) do @echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx""#, "/bin/sh -c yes")
+    }
+
+    /// Takes at least `n` bytes through `try_read`, within 10 s.
+    fn take(p: &HostedPty, n: u64) {
+        let end = Instant::now() + Duration::from_secs(10);
+        let mut got = 0u64;
+        while got < n {
+            assert!(Instant::now() < end, "only {got} of {n} bytes came");
+            match p.try_read() {
+                Read::Data(d) => got += d.len() as u64,
+                _ => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+    }
+
+    #[test]
+    fn taking_output_acks_every_256k() {
+        use crate::host_proto::{ACK_EVERY, WINDOW};
+        let (name, _host) = start_host(Duration::from_secs(1));
+        let (c, _) = connect(&name);
+        let p = c.launch(flood(), None, &[], 80, 24, quiet()).unwrap();
+        take(&p, 300 * 1024);
+        assert!(p.slot.lock().unwrap().acked >= ACK_EVERY, "no ack after 300 KiB");
+        // The acks keep the host sending past its window.
+        take(&p, 3 * WINDOW);
+        c.kill_all();
+    }
+
+    #[test]
+    fn a_version_five_host_gets_no_consumed() {
+        use crate::host_proto::WINDOW;
+        let (name, _host) = start_host(Duration::from_secs(1));
+        let end = Instant::now() + Duration::from_secs(5);
+        let (c, w) = loop {
+            if let Some(c) = Client::connect_as(&name, Duration::from_secs(5), 5).unwrap() {
+                break c;
+            }
+            assert!(Instant::now() < end, "no host");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(w.version, 5);
+        let p = c.launch(flood(), None, &[], 80, 24, quiet()).unwrap();
+        take(&p, 1 << 20);
+        let end = Instant::now() + Duration::from_secs(5);
+        while p.slot.lock().unwrap().end <= WINDOW {
+            assert!(Instant::now() < end, "a version 5 host held its output at the window");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(p.slot.lock().unwrap().acked, 0, "a version 5 host was sent an ack");
+        c.kill_all();
     }
 
     #[test]

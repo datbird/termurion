@@ -9,9 +9,16 @@ use std::collections::VecDeque;
 /// stream). Version 3 hosts honor Launch's `env` (the session environment); the field was
 /// always on the wire, and older hosts ignore it. Version 4 adds `LaunchWith` (a session on an
 /// SSH transport, `ssh_transport::HOST_VERSION`). Version 5 adds `Goodbye`: a client that leaves
-/// on purpose says so, so the host can tell it from a client that vanished.
-pub const VERSION: u32 = 5;
+/// on purpose says so, so the host can tell it from a client that vanished. Version 6 adds
+/// `Consumed`: flow control, so a flood waits on the app instead of piling up in memory.
+pub const VERSION: u32 = 6;
 pub const MIN_VERSION: u32 = 1;
+/// The first version whose client acks output and whose host holds a session at `WINDOW`.
+pub const FLOW_VERSION: u32 = 6;
+/// Bytes the host sends a session's client past its last ack before it stops reading.
+pub const WINDOW: u64 = 2 << 20;
+/// The client acks once it has taken this many bytes past its last ack.
+pub const ACK_EVERY: u64 = 256 << 10;
 /// A frame longer than this is refused (a broken or hostile peer).
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 
@@ -69,6 +76,8 @@ pub enum Msg {
     /// Version 5, Termurion to the host: this client is leaving on purpose (quit or detach), so
     /// the pipe closing next is not a crash.
     Goodbye,
+    /// Version 6, Termurion to the host: the session's output up to `offset` was taken.
+    Consumed { id: u64, offset: u64 },
 }
 
 /// Field writers: integers little-endian, byte strings with a u32 length.
@@ -197,6 +206,7 @@ pub fn encode(m: &Msg) -> Vec<u8> {
             w.u16(*cols).u16(*rows).u8(*transport)
         }
         Msg::Goodbye => w.u8(22),
+        Msg::Consumed { id, offset } => w.u8(23).u64(*id).u64(*offset),
     };
     let mut out = (w.0.len() as u32).to_le_bytes().to_vec();
     out.extend(w.0);
@@ -249,6 +259,7 @@ fn decode(payload: &[u8]) -> Result<Msg, String> {
             Msg::LaunchWith { tag, cmdline, cwd, env, cols: r.u16()?, rows: r.u16()?, transport: r.u8()? }
         }
         22 => Msg::Goodbye,
+        23 => Msg::Consumed { id: r.u64()?, offset: r.u64()? },
         t => return Err(format!("unknown message {t}")),
     };
     if !r.0.is_empty() {
@@ -367,13 +378,16 @@ mod tests {
             Msg::Signal { id: 9, ctrl_break: true },
             Msg::LaunchWith { tag: 8, cmdline: "ssh.exe host".into(), cwd: String::new(), env: vec![], cols: 100, rows: 30, transport: 1 },
             Msg::Goodbye,
+            Msg::Consumed { id: 9, offset: 1 << 40 },
         ]
     }
 
+    const _: () = assert!(WINDOW > ACK_EVERY);
+
     #[test]
     fn messages_round_trip() {
-        // Version 4 hosts take LaunchWith, version 5 Goodbye; version 1 is still spoken.
-        assert_eq!((VERSION, MIN_VERSION), (5, 1));
+        // Version 4 hosts take LaunchWith, version 5 Goodbye, version 6 Consumed; version 1 is still spoken.
+        assert_eq!((VERSION, MIN_VERSION), (6, 1));
         let mut d = Decoder::default();
         for m in all() {
             d.push(&encode(&m));
@@ -391,7 +405,18 @@ mod tests {
         d.push(&encode(&m));
         assert_eq!(d.next(), Some(Ok(m)));
         assert_eq!(d.next(), None);
-        assert_eq!((VERSION, MIN_VERSION), (5, 1));
+        assert_eq!((VERSION, MIN_VERSION), (6, 1));
+    }
+
+    #[test]
+    fn consumed_round_trips() {
+        let m = Msg::Consumed { id: 9, offset: 1 << 40 };
+        assert!(all().contains(&m));
+        let mut d = Decoder::default();
+        d.push(&encode(&m));
+        assert_eq!(d.next(), Some(Ok(m)));
+        assert_eq!(d.next(), None);
+        assert_eq!(encode(&Msg::Consumed { id: 1, offset: 2 })[4], 23, "wire tag 23");
     }
 
     #[test]

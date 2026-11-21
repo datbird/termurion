@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use crate::platform::pty::PtyApi;
-use crate::host_proto::{Decoder, Live, MIN_VERSION, Msg, Ring, VERSION, encode};
+use crate::host_proto::{Decoder, FLOW_VERSION, Live, MIN_VERSION, Msg, Ring, VERSION, WINDOW, encode};
 use crate::platform::pty::{Pty, Read};
 use crate::ssh_transport::Transport;
 use crate::platform::ipc::{Listener, Pipe};
@@ -48,6 +48,33 @@ struct Session {
     pending: usize,
     /// Its console's password prompt samples, debounced, while the attached Termurion asks.
     prompt: crate::pwm_prompt::Debounce,
+    /// The output offset the attached Termurion has taken up to (`Consumed`).
+    acked: u64,
+    /// When the host first saw the shell's exit while output was still held, and the ring's
+    /// end then.
+    exit_seen: Option<(Instant, u64)>,
+}
+
+/// How long `Exited` waits for held output after the shell ends: a background writer that
+/// outlives the shell must not hold the end for good.
+const EXIT_DRAIN_CAP: Duration = Duration::from_millis(200);
+
+/// What can still sit between the shell and the ring when it exits: the reader's budget, one
+/// read, and the pty's own buffer (well under the rest). Once the ring has grown by more than
+/// this, every byte the shell wrote has been read: what comes now is a background writer's.
+const EXIT_DRAIN_BYTES: u64 = (crate::pty_budget::PTY_BUDGET as u64) + (256 << 10);
+
+/// The session's client is a full window behind: `pump` stops reading it until an ack. Only for
+/// a client that acks (`flow`); a session nobody shows reads into its ring.
+fn held(s: &Session, flow: bool) -> bool {
+    s.attached && flow && s.ring.end().saturating_sub(s.acked) >= WINDOW
+}
+
+/// `Exited` goes now: this pump read everything there was, or the cap since the exit passed and
+/// `since_exit` bytes read after it prove the shell's own output is all out. Time alone is not
+/// enough: an app slower than the cap would see the end before the shell's last bytes.
+fn exit_due(drained: bool, seen: Instant, now: Instant, since_exit: u64) -> bool {
+    drained || (now.saturating_duration_since(seen) >= EXIT_DRAIN_CAP && since_exit > EXIT_DRAIN_BYTES)
 }
 
 struct Client {
@@ -281,10 +308,16 @@ fn reopen_app(exe: &std::path::Path) -> Result<(), String> {
 /// Moves a session's new output into its ring and to the attached Termurion.
 fn pump(host: &Shared, id: u64) {
     let mut h = host.lock().unwrap();
+    let flow = h.client.as_ref().is_some_and(|c| c.version >= FLOW_VERSION);
     let Some(s) = h.sessions.get_mut(&id) else { return };
     let mut msgs = Vec::new();
     if let Some(p) = &s.pty {
-        while let Read::Data(chunk) = p.try_read() {
+        let mut drained = false;
+        while !held(s, flow) {
+            let Read::Data(chunk) = p.try_read() else {
+                drained = true;
+                break;
+            };
             let offset = s.ring.end();
             s.ring.push(&chunk);
             if s.attached {
@@ -296,11 +329,16 @@ fn pump(host: &Shared, id: u64) {
             msgs.push(Msg::Pending { id, bytes: pending as u64 });
         }
         s.pending = pending;
+        // Exited follows the output, unless output still comes long after the shell ended.
         if s.exited.is_none()
             && let Some(code) = p.exit_code() {
-                s.exited = Some(code);
-                if s.attached {
-                    msgs.push(Msg::Exited { id, code });
+                let now = Instant::now();
+                let (seen, end) = *s.exit_seen.get_or_insert((now, s.ring.end()));
+                if exit_due(drained, seen, now, s.ring.end() - end) {
+                    s.exited = Some(code);
+                    if s.attached {
+                        msgs.push(Msg::Exited { id, code });
+                    }
                 }
             }
     }
@@ -364,6 +402,7 @@ fn serve(host: Shared, pipe: Arc<Pipe>, conn: u64, api: PtyApi, wake: mpsc::Send
             }
         }
         let mut h = host.lock().unwrap();
+        let mut unheld = Vec::new();
         if h.client.as_ref().is_some_and(|c| c.conn == conn) {
             h.client = None;
             let live = h.running();
@@ -378,6 +417,12 @@ fn serve(host: Shared, pipe: Arc<Pipe>, conn: u64, api: PtyApi, wake: mpsc::Send
                     p.set_paused(false);
                 }
             }
+            // A session held at the window has a reader waiting for room: pump it into the ring.
+            unheld = h.sessions.keys().copied().collect();
+        }
+        drop(h);
+        for id in unheld {
+            let _ = wake.send(id);
         }
     });
 }
@@ -399,7 +444,7 @@ fn launch(host: &Shared, api: &PtyApi, wake: &mpsc::Sender<u64>, t: Transport, t
         Ok(pty) => {
             let pid = pty.pid();
             let mut h = host.lock().unwrap();
-            h.sessions.insert(id, Session { pty: Some(pty), ring: Ring::new(RING), pid, cmdline, cwd, cols, rows, exited: None, attached: true, pending: 0, prompt: Default::default() });
+            h.sessions.insert(id, Session { pty: Some(pty), ring: Ring::new(RING), pid, cmdline, cwd, cols, rows, exited: None, attached: true, pending: 0, prompt: Default::default(), acked: 0, exit_seen: None });
             h.send(&Msg::Launched { tag, id, pid });
             drop(h);
             // The start size, so a resize line after it shows whether the shell started at its real grid.
@@ -431,6 +476,8 @@ fn handle(host: &Shared, m: Msg, api: &PtyApi, wake: &mpsc::Sender<u64>) {
                 p.set_paused(false);
             }
             let (from, dropped, bytes) = s.ring.since(since);
+            // The replay counts against the window: live output waits for its acks.
+            s.acked = from;
             let exited = s.exited;
             h.send(&Msg::Attached { id, from, dropped });
             if !bytes.is_empty() {
@@ -441,6 +488,15 @@ fn handle(host: &Shared, m: Msg, api: &PtyApi, wake: &mpsc::Sender<u64>) {
             }
         }
         Msg::Write { id, bytes } => with_pty(host, id, |p| p.write(&bytes)),
+        // Version 6. The held session's reader waits for room and will not notify: pump it.
+        Msg::Consumed { id, offset } => {
+            let mut h = host.lock().unwrap();
+            if let Some(s) = h.sessions.get_mut(&id) {
+                s.acked = s.acked.max(offset.min(s.ring.end()));
+                drop(h);
+                let _ = wake.send(id);
+            }
+        }
         Msg::Resize { id, cols, rows } => {
             let mut h = host.lock().unwrap();
             let mut line = None;
@@ -596,7 +652,11 @@ pub(crate) mod tests {
         }
 
         pub(crate) fn hello(&self) -> Vec<Live> {
-            self.send(&Msg::Hello { version: crate::host_proto::VERSION });
+            self.hello_as(crate::host_proto::VERSION)
+        }
+
+        pub(crate) fn hello_as(&self, version: u32) -> Vec<Live> {
+            self.send(&Msg::Hello { version });
             self.wait(|m| match m {
                 Msg::Welcome { sessions, .. } => Some(sessions.clone()),
                 _ => None,
@@ -632,6 +692,191 @@ pub(crate) mod tests {
         pub(crate) fn close(self) {
             self.pipe.shutdown();
         }
+
+        /// Output of session `id` until none comes for `quiet` (or `most` passes): the bytes
+        /// and the offset after the last one (0 when none came).
+        fn output_until_quiet(&self, id: u64, quiet: Duration, most: Duration) -> (u64, u64) {
+            let (mut total, mut end) = (0u64, 0u64);
+            let stop = Instant::now() + most;
+            while let Ok(m) = self.rx.recv_timeout(quiet.min(stop.saturating_duration_since(Instant::now()))) {
+                if let Msg::Output { id: i, offset, bytes } = m
+                    && i == id {
+                        total += bytes.len() as u64;
+                        end = offset + bytes.len() as u64;
+                    }
+                if Instant::now() >= stop {
+                    break;
+                }
+            }
+            (total, end)
+        }
+    }
+
+    /// A program that writes output as fast as it can, for good.
+    fn flood() -> &'static str {
+        crate::platform::by_os(r#"cmd.exe /d /c "for /l %i in (0,0,1) do @echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx""#, "/bin/sh -c yes")
+    }
+
+    fn bare_session(attached: bool) -> Session {
+        Session { pty: None, ring: Ring::new(RING), pid: 1, cmdline: String::new(), cwd: String::new(), cols: 80, rows: 24, exited: None, attached, pending: 0, prompt: Default::default(), acked: 0, exit_seen: None }
+    }
+
+    #[test]
+    fn the_window_holds_only_a_flow_client() {
+        use crate::host_proto::WINDOW;
+        let mut s = bare_session(true);
+        s.ring.push(&vec![b'x'; WINDOW as usize]);
+        assert!(held(&s, true), "a full window unacked holds");
+        s.acked = 1;
+        assert!(!held(&s, true), "one byte short of the window does not");
+        s.acked = 0;
+        assert!(!held(&s, false), "a client below version 6 is never held");
+        s.attached = false;
+        assert!(!held(&s, true), "a detached session is never held");
+    }
+
+    #[test]
+    fn exit_waits_for_the_drain_or_the_cap() {
+        let seen = Instant::now();
+        let past = EXIT_DRAIN_BYTES + 1;
+        assert!(exit_due(true, seen, seen, 0), "drained: at once");
+        assert!(!exit_due(false, seen, seen + Duration::from_millis(199), past));
+        assert!(exit_due(false, seen, seen + EXIT_DRAIN_CAP, past));
+        // A slow app: the shell's last bytes may still be in the pty.
+        assert!(!exit_due(false, seen, seen + Duration::from_secs(60), EXIT_DRAIN_BYTES), "the cap alone never ends a held session");
+    }
+
+    #[test]
+    fn a_flow_client_holds_the_host_at_the_window() {
+        use crate::host_proto::{FLOW_VERSION, WINDOW};
+        let (name, _host) = start_host(Duration::from_secs(1));
+        let c = Conn::open(&name);
+        c.hello_as(FLOW_VERSION);
+        let id = c.launch(flood());
+        let (total, end) = c.output_until_quiet(id, Duration::from_secs(1), Duration::from_secs(1));
+        assert!(total > 0 && total <= WINDOW + 64 * 1024, "the host sent past the window: {total}");
+        c.send(&Msg::Consumed { id, offset: end });
+        let (more, _) = c.output_until_quiet(id, Duration::from_secs(1), Duration::from_secs(1));
+        assert!(more > 0, "an ack lets more through");
+        c.send(&Msg::KillAll);
+    }
+
+    #[test]
+    fn a_version_five_client_is_never_held() {
+        use crate::host_proto::WINDOW;
+        let (name, _host) = start_host(Duration::from_secs(1));
+        let c = Conn::open(&name);
+        c.hello_as(5);
+        let id = c.launch(flood());
+        // A held client never gets past WINDOW plus a read, however long it waits; the 10 s
+        // covers a loaded machine and ConPTY's slower flood.
+        let (mut total, stop) = (0u64, Instant::now() + Duration::from_secs(10));
+        while total <= 2 * WINDOW && Instant::now() < stop {
+            total += c.output_until_quiet(id, Duration::from_secs(1), Duration::from_millis(200)).0;
+        }
+        assert!(total > 2 * WINDOW, "a version 5 client was held: {total}");
+        c.send(&Msg::KillAll);
+    }
+
+    #[test]
+    fn exited_follows_all_output_under_the_window() {
+        use crate::host_proto::{ACK_EVERY, FLOW_VERSION};
+        let (name, _host) = start_host(Duration::from_secs(1));
+        let c = Conn::open(&name);
+        c.hello_as(FLOW_VERSION);
+        // Pipes on Windows: ConPTY would rewrite the bytes.
+        // 100,000 lines of 58 x's and a line end, 60 bytes each.
+        let line = "x".repeat(58);
+        let windows = format!("cmd.exe /d /c \"(for /l %i in (1,1,100000) do @echo {line}) & exit 3\"");
+        let cmdline = crate::platform::by_os(&windows, "/bin/sh -c 'head -c 6000000 /dev/zero | tr \"\\000\" x; exit 3'").to_string();
+        let transport = if cfg!(windows) { 2 } else { 0 };
+        c.send(&Msg::LaunchWith { tag: 1, cmdline, cwd: String::new(), env: vec![], cols: 80, rows: 24, transport });
+        let id = c.wait(|m| match m {
+            Msg::Launched { id, .. } => Some(*id),
+            Msg::LaunchFailed { error, .. } => panic!("{error}"),
+            _ => None,
+        });
+        let (mut end, mut acked) = (0u64, 0u64);
+        let stop = Instant::now() + Duration::from_secs(30);
+        loop {
+            let m = c.rx.recv_timeout(stop.saturating_duration_since(Instant::now())).expect("no Exited in 30 s");
+            match m {
+                Msg::Output { id: i, offset, bytes } if i == id => end = offset + bytes.len() as u64,
+                Msg::Exited { id: i, code } if i == id => {
+                    assert_eq!(end, 6_000_000, "Exited came before all the output");
+                    assert_eq!(code, 3);
+                    break;
+                }
+                _ => {}
+            }
+            if end - acked >= ACK_EVERY {
+                std::thread::sleep(Duration::from_millis(20));
+                c.send(&Msg::Consumed { id, offset: end });
+                acked = end;
+            }
+        }
+        c.send(&Msg::KillAll);
+    }
+
+    #[cfg(unix)] // test: a background writer on the session's pty
+    #[test]
+    fn a_writer_that_outlives_the_shell_still_ends() {
+        use crate::host_proto::{ACK_EVERY, FLOW_VERSION};
+        let (name, _host) = start_host(Duration::from_secs(1));
+        let c = Conn::open(&name);
+        c.hello_as(FLOW_VERSION);
+        let id = c.launch("/bin/sh -c 'yes & exit 0'");
+        let (mut end, mut acked) = (0u64, 0u64);
+        let stop = Instant::now() + Duration::from_secs(2);
+        loop {
+            let m = c.rx.recv_timeout(stop.saturating_duration_since(Instant::now())).expect("no Exited within 2 s");
+            match m {
+                Msg::Output { id: i, offset, bytes } if i == id => end = offset + bytes.len() as u64,
+                Msg::Exited { id: i, code } if i == id => {
+                    assert_eq!(code, 0);
+                    break;
+                }
+                _ => {}
+            }
+            if end - acked >= ACK_EVERY {
+                c.send(&Msg::Consumed { id, offset: end });
+                acked = end;
+            }
+        }
+        c.send(&Msg::KillAll);
+    }
+
+    #[test]
+    fn a_detached_session_reads_into_the_ring() {
+        use crate::host_proto::{FLOW_VERSION, WINDOW};
+        let (name, _host) = start_host(Duration::from_secs(1));
+        let c = Conn::open(&name);
+        c.hello_as(FLOW_VERSION);
+        let id = c.launch(flood());
+        c.output_until_quiet(id, Duration::from_millis(500), Duration::from_secs(2));
+        c.close();
+        std::thread::sleep(Duration::from_secs(1));
+        let c = Conn::open(&name);
+        let live = c.hello_as(FLOW_VERSION);
+        let s = live.iter().find(|l| l.id == id).expect("the session is still there");
+        assert!(s.end > WINDOW + crate::pty_budget::PTY_BUDGET as u64, "a session nobody shows stopped reading: {}", s.end);
+        c.send(&Msg::KillAll);
+    }
+
+    #[test]
+    fn an_ack_past_the_end_is_clamped() {
+        use crate::host_proto::{FLOW_VERSION, WINDOW};
+        let (name, _host) = start_host(Duration::from_secs(1));
+        let c = Conn::open(&name);
+        c.hello_as(FLOW_VERSION);
+        let id = c.launch(flood());
+        let (_, at) = c.output_until_quiet(id, Duration::from_millis(500), Duration::from_secs(5));
+        assert!(at > 0);
+        c.send(&Msg::Consumed { id, offset: u64::MAX });
+        let (more, end) = c.output_until_quiet(id, Duration::from_millis(500), Duration::from_secs(3));
+        assert!(more > 0, "the ack let more through");
+        assert!(end <= at + WINDOW + 64 * 1024, "the window no longer holds: {end} after {at}");
+        c.send(&Msg::KillAll);
     }
 
     #[test]
@@ -728,7 +973,7 @@ pub(crate) mod tests {
             if on {
                 prompt.sample(true, Instant::now(), 0.0);
             }
-            Session { pty: None, ring: Ring::new(16), pid: 1, cmdline: String::new(), cwd: String::new(), cols: 80, rows: 24, exited: None, attached: true, pending: 0, prompt }
+            Session { pty: None, ring: Ring::new(16), pid: 1, cmdline: String::new(), cwd: String::new(), cols: 80, rows: 24, exited: None, attached: true, pending: 0, prompt, acked: 0, exit_seen: None }
         };
         let mut h = Host { sessions: HashMap::new(), next_id: 3, client: None, instance: "t".into(), prompt_debounce: Some(0.2), events: Vec::new() };
         h.sessions.insert(1, session(true));
@@ -746,7 +991,7 @@ pub(crate) mod tests {
         let session = |attached: bool| {
             let pty = crate::platform::pty::spawn(&api, crate::platform::by_os("cmd.exe /d /k", "env PS1=> ENV= /bin/sh -i"), 80, 24).unwrap();
             let pid = pty.pid();
-            Session { pty: Some(pty), ring: Ring::new(16), pid, cmdline: String::new(), cwd: String::new(), cols: 80, rows: 24, exited: None, attached, pending: 0, prompt: Default::default() }
+            Session { pty: Some(pty), ring: Ring::new(16), pid, cmdline: String::new(), cwd: String::new(), cols: 80, rows: 24, exited: None, attached, pending: 0, prompt: Default::default(), acked: 0, exit_seen: None }
         };
         let mut h = Host { sessions: HashMap::new(), next_id: 4, client: None, instance: "t".into(), prompt_debounce: Some(0.2), events: Vec::new() };
         h.sessions.insert(1, session(true));
