@@ -9,15 +9,7 @@ use crate::{AttrsList, BorrowedWithFontSystem, Buffer, Cursor, FontSystem, Motio
 pub use self::editor::*;
 mod editor;
 
-#[cfg(feature = "syntect")]
-pub use self::syntect::*;
-#[cfg(feature = "syntect")]
-mod syntect;
-
-#[cfg(feature = "vi")]
-pub use self::vi::*;
-#[cfg(feature = "vi")]
-mod vi;
+// Termurion patch 5: the syntect highlighter and the vi editor are left out.
 
 /// An action to perform on an [`Editor`]
 #[derive(Clone, Copy, Debug, PartialEq)]

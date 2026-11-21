@@ -26,3 +26,7 @@ and `shape.rs` had an em dash, now a colon. Changes:
 4. `font/system.rs` (`db_mut`): also clears the run cache, as it clears the font match cache, so a
    cached run never names a fallback that a newly loaded font replaces. Test:
    `shape::run_cache_tests::loading_a_font_clears_the_cache`.
+5. `Cargo.toml`, `src/edit/mod.rs`: the `vi` feature, its optional dependencies (`modit`,
+   `syntect`, `cosmic_undo_2`), the docs.rs metadata that enabled it, and `src/edit/vi.rs` and
+   `src/edit/syntect.rs` with their `cfg` lines are left out. Termurion never uses the editor, and
+   a workspace member's optional dependencies are otherwise locked in `Cargo.lock`.
