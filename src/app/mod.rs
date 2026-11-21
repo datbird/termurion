@@ -529,12 +529,14 @@ impl App {
     /// One parse slice for all panes (`PARSE_SLICE` in total), then what follows new output.
     /// Panes take turns going first; unread output leaves `parse_owed` set for the next turn.
     fn pump_panes(&mut self, event_loop: &ActiveEventLoop) {
+        // Output counts as seen when the slice starts, as before the tail was its own function.
+        let at = Instant::now();
+        let deadline = at + crate::pane::PARSE_SLICE;
         self.sync_output_policy();
         self.sync_host_policy();
         let prep = self.pump_prep();
-        let deadline = Instant::now() + crate::pane::PARSE_SLICE;
         let (order, start) = self.pump_order();
-        let mut parsed = parse_meanwhile::Parsed { start, ..Default::default() };
+        let mut parsed = parse_meanwhile::Parsed::new(start, at);
         for (k, id) in order.iter().enumerate() {
             let Some(p) = self.panes.get_mut(id) else { continue };
             parse_meanwhile::prep_for_pump(p, &prep);
@@ -547,8 +549,21 @@ impl App {
     /// What follows a turn of parsing, on the main thread: the rotation, the tmux and SSH
     /// pumps, then everything new output sets off.
     fn pump_tail(&mut self, parsed: parse_meanwhile::Parsed, event_loop: &ActiveEventLoop) {
-        let now = Instant::now();
+        let now = parsed.at;
         let was_owed = std::mem::replace(&mut self.parse_owed, parsed.owed);
+        // Which panes still owe output. A worker's turn reports only its own panes; the others
+        // keep what the last slice said.
+        for (id, r) in &parsed.results {
+            self.owed_panes.retain(|o| o != id);
+            if r.more {
+                self.owed_panes.push(*id);
+            }
+        }
+        if !self.parse_owed {
+            self.owed_panes.clear();
+        }
+        let panes = &self.panes;
+        self.owed_panes.retain(|id| panes.contains_key(id));
         let mut outputs: Vec<PaneId> = parsed.results.iter().filter(|(_, r)| r.changed).map(|(id, _)| *id).collect();
         let mut changed = !outputs.is_empty();
         // The pane that used the slice up goes last next turn, so each one gets to go first.
@@ -611,6 +626,16 @@ impl App {
         order.rotate_left(start);
         (order, start)
     }
+}
+
+/// A parse worker's result. Its panic ends Termurion as a main-thread one does: the panic hook
+/// tears down only on the main thread, and `resume_unwind` skips the hook, so the teardown runs
+/// here first (twice is safe; on this path it runs once).
+fn rejoin<T>(r: std::thread::Result<T>) -> T {
+    r.unwrap_or_else(|e| {
+        teardown_process();
+        std::panic::resume_unwind(e)
+    })
 }
 
 /// The pane after which the next slice starts: past the pane that ran out of time first, else
@@ -704,6 +729,8 @@ pub struct App {
     pump_from: usize,
     /// A slice ran out of time with output unread: the loop parses again after drawing.
     parse_owed: bool,
+    /// The panes whose last parse left output unread (`pump_tail`).
+    owed_panes: Vec<PaneId>,
     /// The frame being drawn may lend the panes to a parse worker (`render_frame`): only the
     /// RedrawRequested arm, which runs `pump_tail` after it, sets it.
     parse_in_frame: bool,
@@ -2598,6 +2625,7 @@ pub fn run() {
         pump_from: 0,
         parse_owed: false,
         parse_in_frame: false,
+        owed_panes: Vec::new(),
         // Above a new window's `painted_at`: its first paint only draws.
         waits: 1,
         jobs,
@@ -7658,8 +7686,6 @@ impl App {
         // The menu bar's theme and view are read only when the bar draws.
         let bar_draws = bar_on || self.gpu.as_ref().is_some_and(|g| g.bar.busy());
         let bar_dark = bar_draws && self.dark();
-        // Owed output is parsed on a worker while this frame draws (Parse While Drawing).
-        let job = (self.parse_in_frame && self.parse_owed && self.fs().parse_while_drawing).then(|| self.parse_job());
         let Some(gpu) = self.gpu.as_mut() else { return None };
         // Only a changed title goes out: the compositor hears every set_title (H2).
         if let Some(title) = &title {
@@ -7695,6 +7721,10 @@ impl App {
             gpu.pace_fx(fx_now, focused_window, fx_pacing, true);
             return None;
         }
+        // Owed output in panes the worker may parse is parsed while this frame draws (Parse
+        // While Drawing). Output owed elsewhere stays owed for the loop's slices.
+        let (plain_owed, other_owed) = parse_meanwhile::owed_split(&self.panes, &self.owed_panes);
+        let job = (self.parse_in_frame && self.parse_owed && plain_owed && self.fs().parse_while_drawing).then(|| self.parse_job());
         // The drawing and the present: nothing in it reads a pane, so a worker may parse them
         // meanwhile (`the_scope_reads_no_pane`).
         let draw = || {
@@ -7822,8 +7852,8 @@ impl App {
                         let _stop = parse_meanwhile::StopOnDrop(&stop);
                         draw()
                     };
-                    let parsed = worker.map(|w| w.join().unwrap_or_else(|e| std::panic::resume_unwind(e)));
-                    (chosen, parsed.map(|p| parse_meanwhile::Parsed { start, ..p }))
+                    let parsed = worker.map(|w| rejoin(w.join()));
+                    (chosen, parsed.map(|p| parse_meanwhile::Parsed { start, at: Instant::now(), owed: p.owed || other_owed, ..p }))
                 })
             }
         };
@@ -8886,11 +8916,14 @@ impl ApplicationHandler<UserEvent> for App {
                     self.relayout();
                 }
                 let parsed = self.render_parsing();
-                // The IME's candidate window follows the caret of the frame just drawn.
-                self.ime_area();
-                // Last: what follows the output parsed during the frame can close this window.
+                // What follows the output parsed during the frame, before anything else.
                 if let Some(parsed) = parsed {
                     self.pump_tail(parsed, event_loop);
+                }
+                // The IME's candidate window follows the caret, after that output; the tail can
+                // close this window and make another current.
+                if self.gpu.as_ref().is_some_and(|g| g.window.id() == id) {
+                    self.ime_area();
                 }
             }
             // The IME's composition and commits; the Settings and tool windows (egui) keep

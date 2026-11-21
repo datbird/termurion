@@ -705,6 +705,13 @@ impl Pane {
         }
     }
 
+    /// Test seam: an exit seen with output unread waits for the last byte however slow the run
+    /// is (`END_DRAIN_CAP` would record it anyway once passed).
+    #[cfg(test)]
+    pub(crate) fn hold_exit_cap_for_test(&mut self) {
+        self.exit_unread = Some(Instant::now() + Duration::from_secs(3600));
+    }
+
     /// Test seam: one read through the hooks.
     #[cfg(test)]
     pub(crate) fn hook_output_for_test(&mut self, bytes: &[u8]) {
@@ -1038,7 +1045,8 @@ impl Pane {
     pub fn replay_gap(&mut self, now: Instant, visible: bool, last_output: Option<Instant>, prefs: &crate::cadence::Prefs, low_power: bool) -> Duration {
         let idle = !self.got_output && last_output.is_none_or(|t| now.saturating_duration_since(t) > crate::cadence::idle_after(self.idle_time));
         let alt = self.own().alt_screen();
-        let state = crate::cadence::State { active: false, idle, visible, alt_screen: alt, throughput: self.throughput.estimate(now), low_power };
+        // Capture keeps the slow flood rate under Parse While Drawing: the same history and work.
+        let state = crate::cadence::State { active: false, idle, visible, alt_screen: alt, throughput: self.throughput.estimate(now), low_power, worker_parses: false };
         crate::cadence::interval(state, prefs)
     }
 
@@ -2900,6 +2908,22 @@ mod tests {
         assert_eq!(p.replay_gap(now, true, last, &prefs, false), fast, "5 s quiet is not idle after 10 s");
         p.idle_time = Duration::from_secs(2);
         assert_eq!(p.replay_gap(now, true, last, &prefs, false), bg, "5 s quiet is idle after 2 s");
+    }
+
+    /// Parse While Drawing raises a plain pane's flood draws to 60 fps; Instant Replay keeps
+    /// capturing a flood at 30, so its history and work stay as they were.
+    #[test]
+    fn replay_keeps_the_slow_flood_rate_under_parse_while_drawing() {
+        let prefs = crate::cadence::Prefs { parse_while_drawing: true, ..crate::cadence::Prefs::default() };
+        let now = Instant::now();
+        let mut p = chunked(vec![b"x".to_vec()]);
+        assert!(p.parses_alone());
+        p.got_output = true;
+        for i in 0..5 {
+            p.throughput.add(now - Duration::from_millis(30 * i), 100_000);
+        }
+        let us = |d: Duration| (d.as_secs_f64() * 1e6).round() as i64;
+        assert_eq!(us(p.replay_gap(now, true, Some(now), &prefs, false)), 32_333);
     }
 
     /// The cadence a pane records at (`UC:145-191`) and the recorder's clock: frames never

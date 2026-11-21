@@ -37,7 +37,7 @@ pub fn idle_time(seconds: Option<f64>) -> Duration {
 /// Replay's tests were written against.
 #[allow(dead_code)]
 pub fn frame_gap(visible: bool, idle: bool, alt_screen: bool, throughput: i64) -> Duration {
-    interval(State { active: false, idle, visible, alt_screen, throughput, low_power: false }, &Prefs::default())
+    interval(State { active: false, idle, visible, alt_screen, throughput, low_power: false, worker_parses: false }, &Prefs::default())
 }
 
 /// The update cadence settings (`iTermAdvancedSettingsModel`, `iTermPreferences`). The two
@@ -100,6 +100,10 @@ pub struct State {
     pub throughput: i64,
     /// Windows battery saver (`lowPowerMode`).
     pub low_power: bool,
+    /// Parse While Drawing can take this pane's output (`Pane::parses_alone`): its flood may
+    /// draw at the full rate. A tmux, SSH integration or coprocess pane, and Instant Replay's
+    /// capture, keep the slow rate.
+    pub worker_parses: bool,
 }
 
 /// Typed echoes draw at once under this many bytes a second (`UC:84`).
@@ -123,7 +127,7 @@ pub fn interval(s: State, p: &Prefs) -> Duration {
         low_power(rate(p.active_update_cadence))
     } else if s.throughput > 0 && s.throughput < p.threshold {
         low_power(rate(p.maximum_frame_rate))
-    } else if p.parse_while_drawing {
+    } else if p.parse_while_drawing && s.worker_parses {
         low_power(rate(p.maximum_frame_rate))
     } else {
         low_power(1.0 / p.metal_slow_frame_rate)
@@ -136,8 +140,9 @@ pub fn shortest_interval(p: &Prefs) -> Duration {
     let rate = |fps: f64| 1.0 / fps.max(1.0);
     // Each branch's gap as `interval` finishes it, so an odd setting (NaN) floors the same way.
     // The adaptive rates only count with Maximize Throughput on.
-    let heavy = if p.parse_while_drawing { rate(p.maximum_frame_rate) } else { 1.0 / p.metal_slow_frame_rate };
-    let adaptive = if p.maximize_throughput { [rate(p.maximum_frame_rate), heavy] } else { [1.0, 1.0] };
+    // Parse While Drawing gives heavy output `maximum_frame_rate`, already counted, but only in
+    // panes the worker parses: the others keep `metal_slow_frame_rate`.
+    let adaptive = if p.maximize_throughput { [rate(p.maximum_frame_rate), 1.0 / p.metal_slow_frame_rate] } else { [1.0, 1.0] };
     [1.0, rate(p.active_update_cadence)]
         .into_iter()
         .chain(adaptive)
@@ -149,7 +154,7 @@ pub fn shortest_interval(p: &Prefs) -> Duration {
 /// A window has one surface, so it draws at the fastest rate any of its visible panes asks for
 /// (none: the background period).
 pub fn window_interval(states: &[State], p: &Prefs) -> Duration {
-    states.iter().map(|s| interval(*s, p)).min().unwrap_or_else(|| interval(State { active: false, idle: true, visible: false, alt_screen: false, throughput: 0, low_power: false }, p))
+    states.iter().map(|s| interval(*s, p)).min().unwrap_or_else(|| interval(State { active: false, idle: true, visible: false, alt_screen: false, throughput: 0, low_power: false, worker_parses: false }, p))
 }
 
 /// When a window may draw again after pane output: iTerm2 updates the display on a timer at
@@ -282,7 +287,7 @@ mod tests {
     }
 
     fn state() -> State {
-        State { active: false, idle: false, visible: true, alt_screen: false, throughput: 500, low_power: false }
+        State { active: false, idle: false, visible: true, alt_screen: false, throughput: 500, low_power: false, worker_parses: true }
     }
 
     #[test]
@@ -326,9 +331,9 @@ mod tests {
         for p in prefs {
             let floor = shortest_interval(&p);
             let mut fastest = Duration::MAX;
-            for bits in 0..32u32 {
+            for bits in 0..64u32 {
                 for throughput in [0, 500, 10_000, 50_000] {
-                    let s = State { active: bits & 1 != 0, idle: bits & 2 != 0, visible: bits & 4 != 0, alt_screen: bits & 8 != 0, throughput, low_power: bits & 16 != 0 };
+                    let s = State { active: bits & 1 != 0, idle: bits & 2 != 0, visible: bits & 4 != 0, alt_screen: bits & 8 != 0, throughput, low_power: bits & 16 != 0, worker_parses: bits & 32 != 0 };
                     fastest = fastest.min(interval(s, &p));
                 }
             }
@@ -344,6 +349,9 @@ mod tests {
         assert_eq!(us(interval(s, &on)), 15_667, "MaximumFrameRate while the worker parses");
         assert_eq!(us(interval(s, &Prefs { parse_while_drawing: false, ..on })), 32_333, "MetalSlowFrameRate without it");
         assert_eq!(us(interval(State { low_power: true, ..s }, &on)), 32_333, "battery saver still caps it");
+        assert_eq!(us(interval(State { worker_parses: false, ..s }, &on)), 32_333, "a pane the worker cannot parse keeps MetalSlowFrameRate");
+        let window = [State { worker_parses: false, ..s }, State { throughput: 0, idle: true, ..s }];
+        assert_eq!(us(window_interval(&window, &on)), 32_333, "a tmux flood beside an idle plain pane");
         let mut g = crate::globals::Globals::empty(std::path::Path::new("none.toml"));
         assert!(Prefs::from_globals(&g).parse_while_drawing, "on by default");
         g.set("ParseWhileDrawing", toml::Value::Boolean(false));

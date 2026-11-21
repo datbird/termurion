@@ -39,8 +39,22 @@ pub(super) fn eligible(p: &Pane) -> bool {
     p.parses_alone()
 }
 
+/// Whether owed output is in a pane the worker may parse, and whether it is in any other:
+/// a frame lends the panes only for the first, and the second stays owed for the slices.
+pub(super) fn owed_split(panes: &HashMap<PaneId, Pane>, owed: &[PaneId]) -> (bool, bool) {
+    let (mut plain, mut other) = (false, false);
+    for p in owed.iter().filter_map(|id| panes.get(id)) {
+        if eligible(p) {
+            plain = true;
+        } else {
+            other = true;
+        }
+    }
+    (plain, other)
+}
+
 /// What one turn of parsing did, for `App::pump_tail`.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct Parsed {
     /// Each pane parsed, once, in the order it was parsed.
     pub results: Vec<(PaneId, Pump)>,
@@ -50,9 +64,15 @@ pub(super) struct Parsed {
     pub first_more: Option<usize>,
     /// Where the rotation started (`App::pump_from`).
     pub start: usize,
+    /// The time the tail counts the output at: before a slice, after a worker's join.
+    pub at: Instant,
 }
 
 impl Parsed {
+    pub fn new(start: usize, at: Instant) -> Parsed {
+        Parsed { results: Vec::new(), owed: false, first_more: None, start, at }
+    }
+
     /// Records pane number `k` of the rotation.
     pub fn note(&mut self, k: usize, id: PaneId, r: Pump) {
         self.owed |= r.more;
@@ -63,7 +83,7 @@ impl Parsed {
     }
 }
 
-/// The worker: the eligible panes of `order` (the rotation, `start` left to the caller) in
+/// The worker: the eligible panes of `order` (the rotation; `start` and `at` are the caller's) in
 /// turn, up to `PARSE_SLICE` each, round after round until `stop` is set or nothing is
 /// left unread. It reads one chunk a call, so a stop waits for one chunk at most.
 pub(super) fn parse_meanwhile(panes: &mut HashMap<PaneId, Pane>, order: &[PaneId], prep: &PumpPrep, stop: &AtomicBool) -> Parsed {
@@ -101,7 +121,7 @@ pub(super) fn parse_meanwhile(panes: &mut HashMap<PaneId, Pane>, order: &[PaneId
             break 'rounds;
         }
     }
-    let mut parsed = Parsed::default();
+    let mut parsed = Parsed::new(0, Instant::now());
     for (k, (id, r)) in order.iter().zip(seen).enumerate() {
         if let Some(r) = r {
             parsed.note(k, *id, r);
@@ -243,12 +263,14 @@ mod tests {
     #[test]
     fn an_exit_seen_by_the_worker_waits_for_the_tail() {
         let ids = [1];
-        let mut panes: HashMap<PaneId, Pane> = HashMap::from([(1, flood_pane(1))]);
-        let mut saw_owed = false;
-        // Past END_DRAIN_CAP an exit is recorded even with output unread (a writer that
-        // outlives the shell), so the check holds only within it.
-        let started = Instant::now();
-        for _ in 0..100_000 {
+        let mut pane = flood_pane(1);
+        // The drain cap would record the exit however much is unread once it passed.
+        pane.hold_exit_cap_for_test();
+        let mut panes: HashMap<PaneId, Pane> = HashMap::from([(1, pane)]);
+        let mut rounds = 0;
+        loop {
+            rounds += 1;
+            assert!(rounds < 100_000, "the worker never caught up");
             let stop = AtomicBool::new(false);
             let parsed = std::thread::scope(|s| {
                 let w = s.spawn(|| parse_meanwhile(&mut panes, &ids, &PREP, &stop));
@@ -256,20 +278,61 @@ mod tests {
                 stop.store(true, Ordering::Release);
                 w.join().unwrap()
             });
-            if parsed.owed {
-                saw_owed = true;
-                if started.elapsed() < Duration::from_millis(150) {
-                    assert_eq!(panes[&1].exited, None, "no exit while output is unread");
-                }
-                continue;
+            let p = &panes[&1];
+            if p.waiting_chunks_for_test() > 0 {
+                assert!(parsed.owed, "unread output is owed");
+                assert_eq!(p.exited, None, "no exit while output is unread");
             }
-            break;
+            if !parsed.owed {
+                break;
+            }
         }
-        assert!(saw_owed);
+        assert!(rounds > 1, "the stop came before the end at least once");
         let p = &panes[&1];
         assert_eq!(p.waiting_chunks_for_test(), 0);
         assert_eq!(p.exited, Some(0), "seen once everything was read");
-        assert!(!p.ended, "the end action waits for pump_tail's handle_ended");
+        assert!(!p.ended, "the worker never handles the end");
+        // The end action runs only on the main thread, after a turn's output: in pump_tail and
+        // the end timer, never in the worker.
+        let live = include_str!("mod.rs").split("#[cfg(test)]\nmod tests").next().unwrap();
+        let tail = live.split("fn pump_tail(").nth(1).unwrap().split("\n    }\n").next().unwrap();
+        assert!(tail.contains("self.handle_ended(event_loop)"));
+        let worker = include_str!("parse_meanwhile.rs").split("#[cfg(test)]\nmod tests").next().unwrap();
+        assert!(!worker.contains("handle_ended") && !worker.contains("session_exited"));
+    }
+
+    #[test]
+    fn only_owed_plain_panes_lend_the_frame() {
+        let mut panes: HashMap<PaneId, Pane> = HashMap::from([(1, Pane::chunked_for_test(1, vec![])), (2, Pane::chunked_for_test(2, vec![]))]);
+        panes.get_mut(&2).unwrap().gateway = true;
+        assert_eq!(owed_split(&panes, &[]), (false, false));
+        assert_eq!(owed_split(&panes, &[1]), (true, false));
+        assert_eq!(owed_split(&panes, &[2]), (false, true), "a tmux gateway flood spawns no worker");
+        assert_eq!(owed_split(&panes, &[1, 2, 9]), (true, true), "a closed pane counts for nothing");
+        let render = render_frame_src();
+        let job = render.split("let job = ").nth(1).unwrap().split(';').next().unwrap();
+        assert!(job.contains("plain_owed"), "the worker only for owed plain panes");
+        assert!(render.contains("owed: p.owed || other_owed"), "output owed elsewhere stays owed");
+    }
+
+    #[test]
+    fn a_worker_panic_still_tears_down() {
+        let live = include_str!("mod.rs").split("#[cfg(test)]\nmod tests").next().unwrap();
+        let render = render_frame_src();
+        assert!(render.contains("rejoin(w.join())"), "the worker joins through rejoin");
+        let rejoin = live.split("fn rejoin<T>(").nth(1).unwrap().split("\n}\n").next().unwrap();
+        let (down, up) = (rejoin.find("teardown_process();").expect("teardown"), rejoin.find("resume_unwind(e)").expect("re-raise"));
+        assert!(down < up, "teardown before the re-raise, which skips the hook");
+        assert_eq!(live.matches("resume_unwind(").count(), 1, "no other re-raise skips it");
+    }
+
+    #[test]
+    fn the_job_waits_for_the_frames_that_skip() {
+        let render = render_frame_src();
+        let job = render.find("let job = ").unwrap();
+        for skip in ["if skip_gpu(&skip) {", "if still {"] {
+            assert!(render.find(skip).unwrap() < job, "{skip} returns before the job is made");
+        }
     }
 
     fn render_frame_src() -> &'static str {
@@ -320,7 +383,9 @@ mod tests {
         assert!(pump.trim_end().ends_with("self.pump_tail(parsed, event_loop);"), "pump_panes ends in the tail");
         // The one frame that may parse runs the tail on what it parsed.
         let arm = live.split("let parsed = self.render_parsing();").nth(1).expect("the RedrawRequested arm");
-        assert!(arm[..arm.find("\n            }\n").unwrap()].contains("self.pump_tail(parsed, event_loop);"));
+        let arm = &arm[..arm.find("\n            }\n").unwrap()];
+        let (tail, ime) = (arm.find("self.pump_tail(parsed, event_loop);").expect("the tail"), arm.find("self.ime_area();").expect("the IME"));
+        assert!(tail < ime && arm[tail..ime].contains("g.window.id() == id"), "the IME follows the tail, in a window that is still there");
         assert_eq!(live.matches("self.render_parsing()").count(), 1);
     }
 }

@@ -60,7 +60,7 @@ impl App {
             // A tick with no new output does not run the estimator again (it mutates).
             let throughput = if with_output { p.throughput.estimate(now) } else { 0 };
             reading.typing |= output && cadence::typing_now(throughput, last_key, now);
-            reading.states.push(State { active, idle, visible: true, alt_screen: p.own().alt_screen(), throughput, low_power });
+            reading.states.push(State { active, idle, visible: true, alt_screen: p.own().alt_screen(), throughput, low_power, worker_parses: p.parses_alone() });
         }
         reading
     }
