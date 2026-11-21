@@ -3226,13 +3226,16 @@ pub(crate) mod tests {
     fn the_shape_cache_draws_the_same_glyphs_and_pixels() {
         let (device, queue) = device();
         let mut r = fixture_renderer(&device, &queue);
-        // 832, not 800: a texture copy's rows are 256-byte aligned.
-        let (w, h) = (832u32, 480u32);
-        let tex = target(&device, w, h);
-        let view = tex.create_view(&Default::default());
         let ligature_font = ["Fira Code", "Cascadia Code", "JetBrains Mono"].into_iter().find(|f| r.has_family(f));
         if ligature_font.is_none() {
             println!("skip: no ligature font installed");
+        }
+        // AAT (morx) fonts, the macOS defaults the cache was made for.
+        let aat_fonts: Vec<&str> = ["Menlo", "SF Mono"].into_iter().filter(|f| r.has_family(f)).collect();
+        for f in ["Menlo", "SF Mono"] {
+            if !aat_fonts.contains(&f) {
+                println!("skip: {f} is not installed");
+            }
         }
         for spacing in [1.0f32, 1.25] {
             r.set_fonts(LIGATURE_TEST, Some(RTL_TEST), 16.0, spacing, 1.0);
@@ -3249,6 +3252,13 @@ pub(crate) mod tests {
                 for level in [0, 2] {
                     rows.push((vec![Span { ligatures: level, ..terminal_span("a->b != c <=> d |> e", false, false) }], face));
                 }
+            }
+            for f in &aat_fonts {
+                let face = r.face(&FaceKey::new(f, None, 16.0, spacing, 1.0));
+                for level in [0, 2] {
+                    rows.push((vec![Span { ligatures: level, ..terminal_span("flood the renderer fi -> != 0001234", false, false) }], face));
+                }
+                rows.push((vec![terminal_span("bold text", true, false), terminal_span(" italic text", false, true)], face));
             }
             for (bold, italic) in [(true, false), (false, true), (true, true)] {
                 rows.push((vec![terminal_span("Wide Bold text", bold, italic)], wide));
@@ -3272,30 +3282,71 @@ pub(crate) mod tests {
             rows.push((vec![Span { prose: true, ..terminal_span("the renderer keeps", false, false) }], DEFAULT_FACE));
             rows.push((vec![terminal_span("word ", false, false), Span { color: rgb(0, 205, 0), ..terminal_span("word", false, false) }], DEFAULT_FACE));
             rows.push((vec![terminal_span(&"x".repeat(300), false, false)], DEFAULT_FACE));
-            assert!(rows.len() * 24 <= h as usize, "{} rows", rows.len());
-            let frame = Frame { clear: rgba(rgb(0, 0, 0), 1.0), rows: rows.into_iter().enumerate().map(|(i, (spans, face))| slot_row(i, spans, face)).collect(), ..Default::default() };
-            let shot = |r: &mut Renderer| {
-                r.buffers.clear();
-                r.draw(&frame, &view, w, h).unwrap();
-                (every_layout_glyph(r), read(&device, &queue, &tex, w, h))
-            };
+            let frame = gate_frame(rows);
             r.set_shape_cache(false);
-            let off = shot(&mut r);
+            let off = gate_shot(&mut r, &frame);
             assert_eq!(r.shape_cache_stats(), (0, 0, 0), "spacing {spacing}: the off draw stores nothing");
             r.set_shape_cache(true);
-            let cold = shot(&mut r);
+            let cold = gate_shot(&mut r, &frame);
             let (_, hits, misses) = r.shape_cache_stats();
-            let warm = shot(&mut r);
+            let warm = gate_shot(&mut r, &frame);
             let (_, warm_hits, warm_misses) = r.shape_cache_stats();
             assert!(warm_hits > hits, "spacing {spacing}: the warm draw reuses words");
             assert_eq!(warm_misses - misses, 1, "spacing {spacing}: only the run too long to keep misses warm");
-            for (name, (glyphs, pixels)) in [("cold", &cold), ("warm", &warm)] {
-                assert_eq!(glyphs.len(), off.0.len());
-                for (slot, (a, b)) in off.0.iter().zip(glyphs).enumerate() {
-                    assert_eq!(a, b, "spacing {spacing}: slot {slot} lays out other glyphs {name}");
-                }
-                assert!(*pixels == off.1, "spacing {spacing}: the {name} draw has other pixels");
+            assert_same_draws(&format!("spacing {spacing}"), &off, &[("cold", &cold), ("warm", &warm)]);
+        }
+        // Words cached in one face are found again in faces of another spacing and size, two of
+        // them in one frame, with nothing cleared between the draws.
+        let face = |r: &mut Renderer, px: f32, spacing: f32| r.face(&FaceKey::new(LIGATURE_TEST, Some(RTL_TEST), px, spacing, 1.0));
+        let (a, b, c) = (face(&mut r, 16.0, 1.0), face(&mut r, 16.0, 1.25), face(&mut r, 20.0, 1.0));
+        let texts = ["flood the renderer keeps", "a->b != c", "\u{5e9}\u{5dc}\u{5d5}\u{5dd} <> (12)"];
+        let rows_in = |faces: &[u16]| -> Vec<(Vec<Span>, u16)> {
+            faces.iter().flat_map(|&f| texts.iter().map(move |t| (vec![Span { alt_font: !t.is_ascii(), ligatures: 1, ..terminal_span(t, false, false) }], f))).collect()
+        };
+        let (first, mixed) = (gate_frame(rows_in(&[a])), gate_frame(rows_in(&[b, c])));
+        r.set_shape_cache(false);
+        let off = gate_shot(&mut r, &mixed);
+        r.set_shape_cache(true);
+        gate_shot(&mut r, &first);
+        let (len, hits, _) = r.shape_cache_stats();
+        assert!(len > 0);
+        let warm = gate_shot(&mut r, &mixed);
+        assert!(r.shape_cache_stats().1 > hits, "the other faces reuse the first face's words");
+        assert_same_draws("across faces", &off, &[("warm", &warm)]);
+    }
+
+    /// The gate's frame: one row per 24 px band on black.
+    fn gate_frame(rows: Vec<(Vec<Span>, u16)>) -> Frame {
+        Frame { clear: rgba(rgb(0, 0, 0), 1.0), rows: rows.into_iter().enumerate().map(|(i, (spans, face))| slot_row(i, spans, face)).collect(), ..Default::default() }
+    }
+
+    /// Draws `frame` from fresh row buffers on a texture as tall as its rows: every layout glyph
+    /// and the pixels. 832 wide, not 800: a texture copy's rows are 256-byte aligned.
+    fn gate_shot(r: &mut Renderer, frame: &Frame) -> (Vec<String>, Vec<u8>) {
+        let (w, h) = (832u32, frame.rows.len() as u32 * 24);
+        let (device, queue) = (r.device.clone(), r.queue.clone());
+        let tex = target(&device, w, h);
+        let view = tex.create_view(&Default::default());
+        r.buffers.clear();
+        r.draw(frame, &view, w, h).unwrap();
+        let px = read(&device, &queue, &tex, w, h);
+        // Every row band drew something: equal blank frames would prove nothing.
+        let band_bytes = 24 * w as usize * 4;
+        for band in 0..frame.rows.len() {
+            let rows = &px[band * band_bytes..(band + 1) * band_bytes];
+            assert!(rows.chunks(4).any(|p| p[..3] != [0, 0, 0]), "row {band} drew nothing");
+        }
+        (every_layout_glyph(r), px)
+    }
+
+    /// The same layout glyphs in every slot and the same pixels as the uncached draw.
+    fn assert_same_draws(pass: &str, off: &(Vec<String>, Vec<u8>), others: &[(&str, &(Vec<String>, Vec<u8>))]) {
+        for (name, (glyphs, pixels)) in others {
+            assert_eq!(glyphs.len(), off.0.len());
+            for (slot, (a, b)) in off.0.iter().zip(glyphs.iter()).enumerate() {
+                assert_eq!(a, b, "{pass}: slot {slot} lays out other glyphs {name}");
             }
+            assert!(*pixels == off.1, "{pass}: the {name} draw has other pixels");
         }
     }
 
