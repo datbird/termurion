@@ -1783,7 +1783,7 @@ impl<T: EventListener> Handler for Term<T> {
                 self.echo_point = Some(self.grid.cursor.point);
             }
             if let Some((top, bottom, left, right)) = self.print_watch {
-                if (top..=bottom).contains(&line.0) && col <= right && col + n > left {
+                if (top..=bottom).contains(&line.0) && left <= right && col <= right && col + n > left {
                     self.watch_hit = true;
                 }
             }
