@@ -867,7 +867,11 @@ mod tests {
     fn the_socket_buffers_are_raised() {
         // Linux keeps at most its sysctl cap and reports double what it keeps.
         #[cfg(target_os = "linux")]
-        let want = |cap: &str| 2 * SOCKET_BUFFER.min(std::fs::read_to_string(format!("/proc/sys/net/core/{cap}")).unwrap().trim().parse().unwrap());
+        let want = |cap: &str| {
+            let path = format!("/proc/sys/net/core/{cap}");
+            let max: usize = std::fs::read_to_string(&path).ok().and_then(|s| s.trim().parse().ok()).unwrap_or_else(|| panic!("cannot read the kernel's socket buffer cap {path}"));
+            2 * SOCKET_BUFFER.min(max)
+        };
         #[cfg(not(target_os = "linux"))]
         let want = |_: &str| SOCKET_BUFFER;
         let name = test_name("buffers");
