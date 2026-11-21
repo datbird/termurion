@@ -141,6 +141,22 @@ fn set_nonblocking(fd: RawFd, on: bool) -> std::io::Result<()> {
     Ok(())
 }
 
+/// What each end of a connection asks for its send and receive buffers. macOS gives a local
+/// stream socket 8 KiB by default, so a 64 KiB output frame took eight sends and as many reads.
+/// Linux caps the ask at `net.core.wmem_max` and `rmem_max` (and reports twice what it keeps).
+pub const SOCKET_BUFFER: usize = 1 << 20;
+
+/// Asks for `SOCKET_BUFFER` both ways. A refusal only costs speed: logged and ignored.
+fn raise_buffers(fd: RawFd) {
+    let size = SOCKET_BUFFER as libc::c_int;
+    for (opt, name) in [(libc::SO_SNDBUF, "SO_SNDBUF"), (libc::SO_RCVBUF, "SO_RCVBUF")] {
+        let r = unsafe { libc::setsockopt(fd, libc::SOL_SOCKET, opt, (&size as *const libc::c_int).cast(), std::mem::size_of::<libc::c_int>() as libc::socklen_t) };
+        if r < 0 {
+            crate::host_base::log(&format!("ipc: {name} refused: {}", std::io::Error::last_os_error()));
+        }
+    }
+}
+
 /// Linux makes the fd close-on-exec in the same call that creates it.
 #[cfg(target_os = "linux")]
 fn new_socket() -> std::io::Result<OwnedFd> {
@@ -148,6 +164,7 @@ fn new_socket() -> std::io::Result<OwnedFd> {
     if fd < 0 {
         return Err(std::io::Error::last_os_error());
     }
+    raise_buffers(fd);
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
@@ -160,7 +177,9 @@ fn new_socket() -> std::io::Result<OwnedFd> {
     if fd < 0 {
         return Err(std::io::Error::last_os_error());
     }
-    finish_fd(unsafe { OwnedFd::from_raw_fd(fd) })
+    let fd = finish_fd(unsafe { OwnedFd::from_raw_fd(fd) })?;
+    raise_buffers(fd.as_raw_fd());
+    Ok(fd)
 }
 
 /// macOS: close-on-exec, and no SIGPIPE from a write to a gone peer.
@@ -453,6 +472,7 @@ impl Listener {
         };
         // Sockets accepted from a non-blocking listener may inherit that (BSD).
         set_nonblocking(fd.as_raw_fd(), false).map_err(|e| format!("fcntl failed: {e}"))?;
+        raise_buffers(fd.as_raw_fd());
         let pipe = Pipe { fd };
         match pipe.peer_ids().and_then(|(uid, _)| same_user(uid, euid())) {
             Ok(()) => Ok(Some(pipe)),
@@ -834,6 +854,30 @@ mod tests {
         p.shutdown();
         assert_eq!(c.read(&mut buf).unwrap(), 0, "a closed peer reads as 0");
         assert_eq!(c.read_timeout(&mut buf, Duration::from_millis(50)).unwrap(), Some(0));
+    }
+
+    fn buffer(fd: RawFd, opt: libc::c_int) -> usize {
+        let mut v: libc::c_int = 0;
+        let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        assert_eq!(unsafe { libc::getsockopt(fd, libc::SOL_SOCKET, opt, (&mut v as *mut libc::c_int).cast(), &mut len) }, 0);
+        v as usize
+    }
+
+    #[test]
+    fn the_socket_buffers_are_raised() {
+        // Linux keeps at most its sysctl cap and reports double what it keeps.
+        #[cfg(target_os = "linux")]
+        let want = |cap: &str| 2 * SOCKET_BUFFER.min(std::fs::read_to_string(format!("/proc/sys/net/core/{cap}")).unwrap().trim().parse().unwrap());
+        #[cfg(not(target_os = "linux"))]
+        let want = |_: &str| SOCKET_BUFFER;
+        let name = test_name("buffers");
+        let mut l = Listener::bind(&name).unwrap();
+        let c = connect_owned(&name, Duration::from_secs(1)).unwrap().expect("connects");
+        let p = l.accept(Duration::from_secs(1)).unwrap().expect("accepted");
+        for (end, fd) in [("client", c.fd.as_raw_fd()), ("host", p.fd.as_raw_fd())] {
+            assert!(buffer(fd, libc::SO_SNDBUF) >= want("wmem_max"), "{end} send buffer {}", buffer(fd, libc::SO_SNDBUF));
+            assert!(buffer(fd, libc::SO_RCVBUF) >= want("rmem_max"), "{end} receive buffer {}", buffer(fd, libc::SO_RCVBUF));
+        }
     }
 
     #[test]
