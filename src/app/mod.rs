@@ -67,6 +67,7 @@ mod menu_inputs;
 mod fx_ui;
 mod scene_cache;
 mod frame_settings;
+mod parse_meanwhile;
 mod gpu_capture;
 mod paste_ui;
 mod edit_session_ui;
@@ -528,45 +529,31 @@ impl App {
     /// One parse slice for all panes (`PARSE_SLICE` in total), then what follows new output.
     /// Panes take turns going first; unread output leaves `parse_owed` set for the next turn.
     fn pump_panes(&mut self, event_loop: &ActiveEventLoop) {
-        let mut changed = false;
-        let mut outputs = Vec::new();
-        let now = Instant::now();
-        let deadline = now + crate::pane::PARSE_SLICE;
-        let was_owed = std::mem::replace(&mut self.parse_owed, false);
         self.sync_output_policy();
         self.sync_host_policy();
-        // The prompt state machine follows View > Auto Composer before it reads output (the
-        // Task 3 contract: every pane, new ones included).
-        let (auto_composer, smart_logging, always_line_marks) = {
-            let fs = self.fs();
-            (fs.auto_composer, fs.smart_logging, fs.always_line_marks)
-        };
-        let mut order: Vec<PaneId> = self.panes.keys().copied().collect();
-        order.sort_unstable();
-        let start = if order.is_empty() { 0 } else { self.pump_from % order.len() };
-        order.rotate_left(start);
-        let mut first_more = None;
+        let prep = self.pump_prep();
+        let deadline = Instant::now() + crate::pane::PARSE_SLICE;
+        let (order, start) = self.pump_order();
+        let mut parsed = parse_meanwhile::Parsed { start, ..Default::default() };
         for (k, id) in order.iter().enumerate() {
             let Some(p) = self.panes.get_mut(id) else { continue };
-            p.own_mut().prompt_state.enabled = auto_composer;
-            p.log_compact = (smart_logging, auto_composer);
-            // New prompt marks are line-style with Auto Composer or AlwaysUseLineStyleMarks
-            // (`S:18934`); marks already made keep their style.
-            p.screen.line_style_marks = auto_composer || always_line_marks;
-            let r = p.pump_until(deadline);
+            parse_meanwhile::prep_for_pump(p, &prep);
             // Parsing goes on while the window is hidden; only the redraws are held back there.
-            self.parse_owed |= r.more;
-            if r.more && first_more.is_none() {
-                first_more = Some(k);
-            }
-            if r.changed {
-                outputs.push(*id);
-            }
-            changed |= r.changed;
+            parsed.note(k, *id, p.pump_until(deadline));
         }
+        self.pump_tail(parsed, event_loop);
+    }
+
+    /// What follows a turn of parsing, on the main thread: the rotation, the tmux and SSH
+    /// pumps, then everything new output sets off.
+    fn pump_tail(&mut self, parsed: parse_meanwhile::Parsed, event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
+        let was_owed = std::mem::replace(&mut self.parse_owed, parsed.owed);
+        let mut outputs: Vec<PaneId> = parsed.results.iter().filter(|(_, r)| r.changed).map(|(id, _)| *id).collect();
+        let mut changed = !outputs.is_empty();
         // The pane that used the slice up goes last next turn, so each one gets to go first.
-        if !order.is_empty() {
-            self.pump_from = next_pump_start(order.len(), start, first_more);
+        if !self.panes.is_empty() {
+            self.pump_from = next_pump_start(self.panes.len(), parsed.start, parsed.first_more);
         }
         changed |= self.ssh_pump();
         changed |= self.tmux_pump(event_loop);
@@ -608,6 +595,21 @@ impl App {
             self.pump_panes(event_loop);
             self.pump_from = from;
         }
+    }
+
+    /// The settings `prep_for_pump` gives each pane.
+    fn pump_prep(&self) -> parse_meanwhile::PumpPrep {
+        let fs = self.fs();
+        parse_meanwhile::PumpPrep { auto_composer: fs.auto_composer, smart_logging: fs.smart_logging, always_line_marks: fs.always_line_marks }
+    }
+
+    /// Every pane, in the rotation that starts at `pump_from`, and where it starts.
+    fn pump_order(&self) -> (Vec<PaneId>, usize) {
+        let mut order: Vec<PaneId> = self.panes.keys().copied().collect();
+        order.sort_unstable();
+        let start = if order.is_empty() { 0 } else { self.pump_from % order.len() };
+        order.rotate_left(start);
+        (order, start)
     }
 }
 
