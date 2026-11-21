@@ -1,0 +1,30 @@
+[2J[Hdrwxr-xr-x  5 user staff   160 Nov 20 09:12 src
+-rw-r--r--  1 user staff  2048 Nov 20 09:12 Cargo.toml
+   Compiling termurion v1.1.10
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.20s
+     Running unittests src/lib.rs
+test scene::tests::rows_keep_their_order ... ok
+test render::tests::glyphs_stay_put ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored
+
+> git status
+On branch main
+nothing to commit, working tree clean
+drwxr-xr-x  5 user staff   160 Nov 20 09:12 src
+-rw-r--r--  1 user staff  2048 Nov 20 09:12 Cargo.toml
+   Compiling termurion v1.1.10
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.20s
+     Running unittests src/lib.rs
+test scene::tests::rows_keep_their_order ... ok
+test render::tests::glyphs_stay_put ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored
+
+──────────────────────────────┼─────────────────────────────────────────────────────────────────────
+  build: 12 crates, 0 warnings
+  tests: 214 passed
+> make test VERBOSE=1
+────────── "logs" ──────────────────────────────────────────────────────────────────────────────────
+  tail -f target/test.log
+  (waiting for output)
+
+[25;22H

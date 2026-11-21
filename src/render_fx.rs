@@ -127,8 +127,9 @@ pub enum RegionTerm {
     InputBox(f32),
     /// The whole window for this long after the cursor changes.
     FullAfterChange(Duration),
-    /// Looks outside the other terms that follow only the terminal's picture, never the time
-    /// (Cyber tints sent prompts anywhere): a frame with a new picture runs the full pass.
+    /// Looks outside the other terms that follow the terminal's picture and the cursor, never
+    /// the time (Cyber tints sent prompts anywhere): a frame with a new picture runs the full
+    /// pass. A cursor change is covered only by `FullAfterChange` beside it.
     StillLooks,
 }
 
@@ -224,10 +225,15 @@ pub fn region_rects(terms: &[RegionTerm], u: &Uniforms, cell_h: f32, size: (u32,
                 let m = u.prompt_mark;
                 if m[2] > 0.5 {
                     boxes.push(grow([m[0], m[1], m[0] + m[3], m[1] + cell_h], *p));
+                } else {
+                    boxes.push(mark_search_box(u, cell_h));
                 }
             }
             RegionTerm::InputBox(p) => {
                 let (top, bottom, z) = (u.input_box[0], u.input_box[1], u.input_box[2]);
+                if z < 0.5 {
+                    boxes.push(line_search_band(u, cell_h, sw));
+                }
                 let (l, r) = if u.input_box_x[1] > 0.0 { (u.input_box_x[0], u.input_box_x[1]) } else { (0.0, sw) };
                 if z > 1.5 {
                     boxes.push(grow([l, top, r, bottom], *p));
@@ -241,6 +247,28 @@ pub fn region_rects(terms: &[RegionTerm], u: &Uniforms, cell_h: f32, size: (u32,
         }
     }
     Some(round_and_merge(boxes, (sw, sh)))
+}
+
+/// Where the built-ins' linesLook tints box lines it finds itself (Termurion found no box, so
+/// `iInputBox` is zero): any line across the window from 6.5 cursor heights above the cursor's
+/// top to 2.6 below it (`p.y < cur.y - 2.6 * h || p.y > cur.y + 6.5 * h` in y-up pixels, `cur.y`
+/// the top). A cell height more on each side, and `unit` (`pad_unit`, at least the cursor's
+/// height) for `h`.
+fn line_search_band(u: &Uniforms, unit: f32, width: f32) -> [f32; 4] {
+    let top = u.current_cursor[1] - u.current_cursor[3];
+    [0.0, top - 7.5 * unit, width, top + 3.6 * unit]
+}
+
+/// Where the built-ins' promptLook restyles a mark it finds itself (Termurion found none, so
+/// `iPromptMark` is zero): nothing right of `9 * w + 0.4 * h` from the window's left edge; on
+/// the cursor's row within 0.9 h of its middle, or on a wrapped prompt's first row up to 10.5 h
+/// above the cursor's top. `w` is a cell (`cellWOf`, at most the cursor's width or half of
+/// `unit`), `h` the cursor's height (at most `unit`); a cell more on each side.
+fn mark_search_box(u: &Uniforms, unit: f32) -> [f32; 4] {
+    let c = u.current_cursor;
+    let top = c[1] - c[3];
+    let w = c[2].max(0.5 * unit);
+    [0.0, top - 11.5 * unit, 10.0 * w + 0.4 * unit, top + 2.4 * unit]
 }
 
 /// The unit region pads are in: the built-ins size their looks in the cursor's
@@ -1176,9 +1204,11 @@ mod tests {
 
     #[test]
     fn prompt_mark_rects() {
-        let mut u = Uniforms::default();
+        let mut u = cursor_uniforms([200.0, 300.0, 10.0, 20.0]);
         let t = [RegionTerm::PromptMark(0.5)];
-        assert_eq!(region_rects(&t, &u, 20.0, (800, 600)), Some(vec![]));
+        // No mark found: where the shaders look for one, the first 10 cells of the cursor's row
+        // and of the rows above it (the cursor's top is 300).
+        assert_eq!(region_rects(&t, &u, 20.0, (800, 600)).unwrap(), [PxRect { x: 0, y: 70, w: 108, h: 278 }]);
         u.prompt_mark = [40.0, 100.0, 1.0, 10.0];
         assert_eq!(region_rects(&t, &u, 20.0, (800, 600)).unwrap(), [PxRect { x: 30, y: 90, w: 30, h: 40 }]);
     }
@@ -1230,8 +1260,10 @@ mod tests {
 
     #[test]
     fn input_box_lines_and_band() {
-        let mut u = Uniforms::default();
-        assert_eq!(region_rects(&[RegionTerm::InputBox(1.0)], &u, 20.0, (800, 600)), Some(vec![]));
+        let mut u = cursor_uniforms([200.0, 400.0, 10.0, 20.0]);
+        // No box found: where the shaders look for lines across the window, 7.5 cells above
+        // the cursor's top (400) to 3.6 below it.
+        assert_eq!(region_rects(&[RegionTerm::InputBox(1.0)], &u, 20.0, (800, 600)).unwrap(), [PxRect { x: 0, y: 250, w: 800, h: 222 }]);
         u.input_box = [100.0, 300.0, 1.0, 0.0];
         let r = region_rects(&[RegionTerm::InputBox(0.0)], &u, 20.0, (800, 600)).unwrap();
         assert_eq!(r, [PxRect { x: 0, y: 90, w: 800, h: 20 }, PxRect { x: 0, y: 290, w: 800, h: 20 }]);
@@ -1279,7 +1311,7 @@ mod tests {
         assert_eq!(frame_region(&f, &now, &playing, (8.0, 20.0), false, (800, 600)), None);
         assert_eq!(frame_region(&f, &playing, &now, (8.0, 20.0), false, (800, 600)), None);
         // Nothing to draw in either: nothing shaded, never the full pass.
-        assert_eq!(frame_region(&[RegionTerm::InputBox(1.0)], &now, &last, (8.0, 20.0), false, (800, 600)), Some(vec![]));
+        assert_eq!(frame_region(&[], &now, &last, (8.0, 20.0), false, (800, 600)), Some(vec![]));
     }
 
     #[test]

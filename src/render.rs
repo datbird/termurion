@@ -4007,7 +4007,9 @@ pub(crate) mod tests {
         let cell = r.cell;
         let (w, h) = ((100.0 * cell.0).ceil() as u32, (30.0 * cell.1).ceil() as u32);
         let rect = crate::layout::Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
-        let draw = crate::scene::DrawPrefs { fx_cursor: Some(rgb(preset[0], preset[1], preset[2])), ..Default::default() };
+        // A `.marks` file lists the profile's prompt marks in place of the stock ones.
+        let fx_rules = std::fs::read_to_string(format!("{dir}{name}.marks")).ok().map(|m| std::sync::Arc::new(crate::fx_profile::FxRules { prompt_marks: m.trim().chars().collect(), ..Default::default() }));
+        let draw = crate::scene::DrawPrefs { fx_cursor: Some(rgb(preset[0], preset[1], preset[2])), fx_rules, ..Default::default() };
         let mut frame = Frame { clear: rgba(s.palette.bg, 1.0), fade: 1.0, ..Default::default() };
         crate::scene::pane_with(&mut frame, &s, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE, None);
         (frame, (w, h), s.palette.bg)
@@ -4659,7 +4661,10 @@ pub(crate) mod tests {
         crate::render_fx::discover(None).0.into_iter().filter(|p| p.manifest.region.as_ref().is_some_and(|t| !t.contains(&crate::render_fx::RegionTerm::Full))).collect()
     }
 
-    const AGENT_SCREENS: [&str; 14] = ["agy", "codex", "codex-after", "hermes", "hermes-after", "opencode", "opencode-after", "tmux-other-has-box", "tmux-split-band", "tmux-split-left", "tmux-split-right", "tmux-stacked", "tmux-three", "tmux-title-row"];
+    /// `shell-rules`: a shell with full-width rules around the cursor that are no box lines to
+    /// Termurion (a junction, a title) and a `>` prompt its profile does not list, the cursor far
+    /// right of it. The shaders find both themselves.
+    const AGENT_SCREENS: [&str; 15] = ["agy", "codex", "codex-after", "hermes", "hermes-after", "opencode", "opencode-after", "tmux-other-has-box", "tmux-split-band", "tmux-split-left", "tmux-split-right", "tmux-stacked", "tmux-three", "tmux-title-row", "shell-rules"];
 
     /// Runs `check` for every shipped effect with a region (or only TERMURION_REGION_ONLY), one
     /// thread each: lavapipe runs one submission on few cores. Returns the shots and the misses.
@@ -4722,6 +4727,18 @@ pub(crate) mod tests {
         assert!(bad.is_empty(), "{} misses in {runs} region frames:\n{}", bad.len(), bad.join("\n"));
     }
 
+    /// The `shell-rules` screen keeps its point: Termurion finds no input box and no prompt mark
+    /// there, so the region must cover where the shaders search for them.
+    #[test]
+    fn the_shell_rules_screen_has_no_box_or_mark() {
+        let (device, queue) = device();
+        let r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let (frame, _, _) = agent_frame(&r, "shell-rules", [255, 0, 0]);
+        let fx = frame.fx.unwrap();
+        assert!(fx.input_box.is_none() && fx.prompt_mark.is_none(), "{:?} {:?}", fx.input_box, fx.prompt_mark);
+        assert!(fx.cursor.unwrap().rect[0] > 20.0 * r.cell.0, "the cursor sits far right of the mark");
+    }
+
     /// A frame drawn anew shades only its own region over the new picture: the same timeline as
     /// `region_frames_match_full_frames_for_every_shipped_plugin`, but every frame built with
     /// its rows switched to the next agent screen's and back, byte-equal to the full pass. Each
@@ -4761,11 +4778,12 @@ pub(crate) mod tests {
             let (mut built, mut animated, mut bad) = (0, 0, Vec::new());
             let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
             let preset = preset_of(p);
-            for (i, (name, next)) in [("hermes", "codex"), ("codex", "tmux-split-band")].iter().enumerate() {
+            for (i, (name, next)) in [("hermes", "codex"), ("codex", "tmux-split-band"), ("shell-rules", "hermes")].iter().enumerate() {
                 let (frame, size, bg) = agent_frame(&r, name, preset);
                 let next = agent_frame(&r, next, preset).0;
                 for kind in CHAIN_KINDS {
-                    let plan = Plan { events: i == 0, hold: 1000, every: 50, built: 2, changed: Some(next.clone()), ..Default::default() };
+                    // The box lines take the cursor's color a second after it settles: shell-rules holds longer.
+                    let plan = Plan { events: i == 0, hold: if *name == "shell-rules" { 2000 } else { 1000 }, every: 50, built: 2, changed: Some(next.clone()), ..Default::default() };
                     let shots = region_shots(&mut r, p, &frame, size, bg, preset, kind, &plan);
                     check_shots(&shots, kind, size, &format!("{} mixed {name}", p.id), &mut bad);
                     built += shots.iter().filter(|s| s.region_path && s.built).count();
