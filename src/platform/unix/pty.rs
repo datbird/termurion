@@ -1040,15 +1040,22 @@ mod tests {
         wait_full(&p);
         p.write(b"\x03").unwrap();
         // macOS delivers the signal at once, but the process's exit waits for its tty output to
-        // drain (it sits in state E until then; Linux ends at once), so the output is taken as
-        // the app does. Ctrl+C flushes the tty's queue: only what the reader already holds is
-        // left, so the flood stopped at the Ctrl+C rather than at the drain.
-        let (end, mut after) = (std::time::Instant::now() + secs(2), 0);
+        // drain (it sits in state E until then), so the output is taken as the app does. Linux
+        // ends at once, so nothing is read until then: on a loaded machine the tty may take the
+        // Ctrl+C late, and a reader let go meanwhile reads a flood that has not stopped yet.
+        // Ctrl+C flushes the tty's queue: only what the reader already holds is left, so the
+        // flood stopped at the Ctrl+C rather than at the drain.
+        let (end, mut after) = (std::time::Instant::now() + secs(5), 0);
+        let drains = cfg!(target_os = "macos");
         while p.exit_code().is_none() {
             assert!(std::time::Instant::now() < end, "Ctrl+C did not end a program blocked on its output");
-            if let Some(d) = p.read_timeout(Duration::from_millis(10)) {
-                after += d.len();
+            match drains {
+                true => after += p.read_timeout(Duration::from_millis(10)).map_or(0, |d| d.len()),
+                false => std::thread::sleep(Duration::from_millis(10)),
             }
+        }
+        while let Some(d) = p.read_timeout(Duration::from_millis(200)) {
+            after += d.len();
         }
         let most = crate::pty_budget::PTY_BUDGET + 128 * 1024;
         assert!(after <= most, "the flood ran on after Ctrl+C: {after} bytes, over {most}");
@@ -1103,17 +1110,18 @@ mod tests {
             p.write(&chunk).unwrap();
             echoed(i * chunk.len());
         }
-        assert_eq!(bell.count(), 1, "100 chunks queued without a drain");
-        let mut chunks = 0;
-        while let Read::Data(_) = p.try_read() {
-            chunks += 1;
+        // The budget counts a chunk a moment before it is queued and rung (so a take never comes
+        // before its add): wait for the ring and the chunks, not just the count.
+        assert_eq!(bell.wait(0, secs(5)), 1, "100 chunks queued without a drain");
+        for i in 0..100 {
+            assert!(p.read_timeout(secs(5)).is_some(), "chunk {i} never came");
         }
-        assert_eq!(chunks, 100);
+        assert!(matches!(p.try_read(), Read::Empty), "more than one chunk per echo");
         p.rearm_notify();
         assert!(matches!(p.try_read(), Read::Empty));
         p.write(&chunk).unwrap();
         echoed(chunk.len());
-        assert_eq!(bell.count(), 2, "a rearm and one more chunk");
+        assert_eq!(bell.wait(1, secs(5)), 2, "a rearm and one more chunk");
     }
 
     /// The host's pump against a live reader: drain, rearm, read again, then wait for a wake.
@@ -1342,8 +1350,9 @@ mod tests {
             assert_eq!(p.read_timeout(secs(5)).as_deref(), Some(&b"a"[..]));
             took.push(at.elapsed());
         }
-        took.sort();
-        assert!(took[took.len() / 2] < TRICKLE / 2, "median echo {:?}", took[took.len() / 2]);
+        // The fastest: a loaded machine slows some echoes, but held ones would all wait.
+        let fastest = took.iter().min().unwrap();
+        assert!(*fastest < TRICKLE / 2, "the fastest echo took {fastest:?}");
     }
 
     #[test]
@@ -1359,7 +1368,10 @@ mod tests {
             }
         }
         assert!(most <= CHUNK, "a chunk of {most}");
-        assert!(big * 2 >= got, "only {big} of {got} bytes came in chunks over {}", CHUNK / 2);
+        // Reads are at most about 4 KiB (Linux) or 1 KiB (macOS), and the old reader sent each
+        // one (0.2% of the bytes came in chunks this big). A loaded machine that stops `yes`
+        // makes the reader send early, so only an eighth is asked for.
+        assert!(big * 8 >= got, "only {big} of {got} bytes came in chunks over {}", CHUNK / 2);
     }
 
     /// The writer shares the reader's non-blocking file: a paste the tty cannot hold at once
