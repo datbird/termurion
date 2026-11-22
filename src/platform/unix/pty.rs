@@ -14,7 +14,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -72,6 +72,8 @@ fn registry<T>(f: impl FnOnce(&mut HashMap<u32, Arc<OwnedFd>>) -> T) -> T {
 struct Exit {
     code: Mutex<Option<u32>>,
     done: Condvar,
+    /// Set before `code`, for the reader, which must not take the lock per read.
+    ended: AtomicBool,
 }
 
 pub struct Pty {
@@ -93,6 +95,10 @@ pub struct Pty {
     edge: Arc<EdgeWake>,
     /// Writing to it wakes the reader out of its poll.
     wake: OwnedFd,
+    /// What the reader is doing (`BUSY`, `ASLEEP`, `DONE`), for `output_settled`.
+    settled: Arc<AtomicU8>,
+    /// What the reader reads (the master, or the output pipe).
+    out: Arc<OwnedFd>,
     exit: Arc<Exit>,
     /// Something kept alive as long as the pty.
     held: Option<Box<dyn std::any::Any + Send>>,
@@ -184,7 +190,7 @@ fn spawn_with_env(inherited: Vec<(OsString, OsString)>, t: Transport, cmdline: &
     drop(_gate);
     let pid = child.id();
     let paused = Arc::new(AtomicBool::new(false));
-    let exit = Arc::new(Exit { code: Mutex::new(None), done: Condvar::new() });
+    let exit = Exit::new();
     let (read_fd, tty) = match master {
         Source::Tty(m) => {
             registry(|r| r.insert(pid, m.clone()));
@@ -194,11 +200,15 @@ fn spawn_with_env(inherited: Vec<(OsString, OsString)>, t: Transport, cmdline: &
     };
     let budget = Budget::new();
     let edge = Arc::new(EdgeWake::default());
-    let (output, _reader) = start_reader(read_fd, wake_r, notify.clone(), paused.clone(), budget.clone(), edge.clone());
+    let nonblocking = set_nonblocking(&read_fd);
+    let settled = Arc::new(AtomicU8::new(BUSY));
+    let shared = Shared { paused: paused.clone(), budget: budget.clone(), edge: edge.clone(), exit: exit.clone(), settled: settled.clone() };
+    let out = read_fd.clone();
+    let (output, _reader) = start_reader(read_fd, wake_r, nonblocking, notify.clone(), shared);
     let pending = Arc::new(AtomicUsize::new(0));
     let (writer, write_error) = start_writer(input, pending.clone(), notify.clone());
     start_waiter(child, exit.clone(), notify);
-    Ok(Pty { pid, tty, writer: Some(writer), write_error, pending, paused, output, budget, edge, wake, exit, held: None })
+    Ok(Pty { pid, tty, writer: Some(writer), write_error, pending, paused, output, budget, edge, wake, settled, out, exit, held: None })
 }
 
 enum Source {
@@ -392,7 +402,15 @@ fn start_writer(fd: OwnedFd, pending: Arc<AtomicUsize>, notify: Notify) -> (mpsc
                         // timeout only bounds a missed wake.
                         std::io::ErrorKind::WouldBlock => {
                             let mut w = [libc::pollfd { fd: fd.as_raw_fd(), events: libc::POLLOUT, revents: 0 }];
-                            poll(&mut w, 100);
+                            // A failed poll or a hung up tty would turn this into a spin.
+                            if !poll(&mut w, 100) {
+                                *seen.lock().unwrap() = Some(os_err("poll"));
+                                break 'chunks;
+                            }
+                            if w[0].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+                                *seen.lock().unwrap() = Some("write failed: the pty hung up".to_string());
+                                break 'chunks;
+                            }
                             continue;
                         }
                         _ => {}
@@ -466,13 +484,15 @@ impl Gather {
         self.fill >= CHUNK || now - since >= TRICKLE
     }
 
-    fn missed(&mut self) -> Miss {
+    /// A read found nothing. After the child `ended`, nothing more is joined: its last bytes
+    /// go out at once, ahead of its exit.
+    fn missed(&mut self, ended: bool) -> Miss {
         self.misses += 1;
         if self.misses > SPINS {
             self.misses = 0;
             return Miss::Poll;
         }
-        if self.fresh && self.fill > 0 {
+        if (self.fresh || ended) && self.fill > 0 {
             return Miss::Send;
         }
         Miss::Spin
@@ -490,18 +510,42 @@ impl Gather {
     }
 }
 
+/// Sets `O_NONBLOCK` on the reader's open file (so also on the writer's dup of a pty master).
+/// False: it stays blocking, and the reader polls before every read as it did before.
+fn set_nonblocking(fd: &OwnedFd) -> bool {
+    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+    if flags >= 0 && unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } >= 0 {
+        return true;
+    }
+    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+    crate::rlog!("pty: the master stays blocking, fcntl failed with errno {}", errno);
+    false
+}
+
+/// The reader's states: it may hold read bytes, it holds none and sleeps in its poll, or it has
+/// ended and sent everything.
+const BUSY: u8 = 0;
+const ASLEEP: u8 = 1;
+const DONE: u8 = 2;
+
+/// What the reader shares with its `Pty`.
+struct Shared {
+    paused: Arc<AtomicBool>,
+    budget: Arc<Budget>,
+    edge: Arc<EdgeWake>,
+    exit: Arc<Exit>,
+    settled: Arc<AtomicU8>,
+}
+
 /// Drains the child's output on its own thread. While paused, or while `budget` is full, it
 /// reads nothing, so the child blocks once the pty's buffer is full (as on Windows). EOF, EIO
-/// or a write to `wake` ends it.
-fn start_reader(fd: Arc<OwnedFd>, wake: OwnedFd, notify: Notify, paused: Arc<AtomicBool>, budget: Arc<Budget>, edge: Arc<EdgeWake>) -> (Receiver<Vec<u8>>, JoinHandle<()>) {
+/// or a write to `wake` ends it. A `nonblocking` file is read without a poll per read
+/// (`Gather`); a blocking one polls first, so a read never waits with bytes held.
+fn start_reader(fd: Arc<OwnedFd>, wake: OwnedFd, nonblocking: bool, notify: Notify, sh: Shared) -> (Receiver<Vec<u8>>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
     let reader = std::thread::spawn(move || {
         let raw = fd.as_raw_fd();
-        // On the open file, so the writer's dup of a pty master is non-blocking too.
-        unsafe {
-            let flags = libc::fcntl(raw, libc::F_GETFL);
-            libc::fcntl(raw, libc::F_SETFL, flags | libc::O_NONBLOCK);
-        }
+        let Shared { paused, budget, edge, exit, settled } = sh;
         let mut buf = vec![0u8; CHUNK];
         let mut g = Gather::default();
         let pfd = |fd: RawFd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
@@ -523,6 +567,19 @@ fn start_reader(fd: Arc<OwnedFd>, wake: OwnedFd, notify: Notify, paused: Arc<Ato
             }
             true
         };
+        // Sleeps until the master has something (true) or the wake pipe says stop. Nothing is
+        // held here, so the consumer may count an empty queue as all of the output; once the
+        // child has ended it gets a notify to look again (`output_settled`).
+        let sleep = || {
+            settled.store(ASLEEP, Ordering::SeqCst);
+            if exit.ended.load(Ordering::SeqCst) {
+                notify();
+            }
+            let mut fds = [pfd(raw), pfd(wake.as_raw_fd())];
+            let go = poll(&mut fds, -1) && fds[1].revents == 0;
+            settled.store(BUSY, Ordering::SeqCst);
+            go
+        };
         loop {
             // While paused, what was read waits here and nothing more is read.
             if paused.load(Ordering::Acquire) {
@@ -540,12 +597,15 @@ fn start_reader(fd: Arc<OwnedFd>, wake: OwnedFd, notify: Notify, paused: Arc<Ato
                 }
                 g.sent();
             }
+            if !nonblocking && !sleep() {
+                break;
+            }
             let n = unsafe { libc::read(raw, buf[g.fill..].as_mut_ptr().cast(), CHUNK - g.fill) };
             if n < 0 {
                 match std::io::Error::last_os_error().kind() {
                     std::io::ErrorKind::Interrupted => continue,
                     std::io::ErrorKind::WouldBlock => {
-                        let miss = g.missed();
+                        let miss = g.missed(exit.ended.load(Ordering::Relaxed));
                         if !matches!(miss, Miss::Spin) {
                             if !send(&buf[..g.fill]) {
                                 break;
@@ -556,8 +616,7 @@ fn start_reader(fd: Arc<OwnedFd>, wake: OwnedFd, notify: Notify, paused: Arc<Ato
                             std::hint::spin_loop();
                             continue;
                         }
-                        let mut fds = [pfd(raw), pfd(wake.as_raw_fd())];
-                        if !poll(&mut fds, -1) || fds[1].revents != 0 {
+                        if !sleep() {
                             break;
                         }
                         g.woke();
@@ -571,7 +630,7 @@ fn start_reader(fd: Arc<OwnedFd>, wake: OwnedFd, notify: Notify, paused: Arc<Ato
                 send(&buf[..g.fill]);
                 break;
             }
-            if g.got(n as usize, Instant::now()) && !paused.load(Ordering::Acquire) {
+            if (g.got(n as usize, Instant::now()) || !nonblocking) && !paused.load(Ordering::Acquire) {
                 // A flood never reaches the poll, so the close is looked for here.
                 if !send(&buf[..g.fill]) || woken(0) {
                     break;
@@ -580,6 +639,7 @@ fn start_reader(fd: Arc<OwnedFd>, wake: OwnedFd, notify: Notify, paused: Arc<Ato
             }
         }
         drop(tx);
+        settled.store(DONE, Ordering::SeqCst);
         notify();
     });
     (rx, reader)
@@ -597,6 +657,7 @@ fn start_waiter(mut child: std::process::Child, exit: Arc<Exit>, notify: Notify)
                 break;
             }
         }
+        exit.ended.store(true, Ordering::SeqCst);
         let mut code = exit.code.lock().unwrap();
         let status = child.wait();
         *code = Some(status.map(|s| s.code().map_or_else(|| 128 + s.signal().unwrap_or(0) as u32, |c| c as u32)).unwrap_or(1));
@@ -607,6 +668,10 @@ fn start_waiter(mut child: std::process::Child, exit: Arc<Exit>, notify: Notify)
 }
 
 impl Exit {
+    fn new() -> Arc<Exit> {
+        Arc::new(Exit { code: Mutex::new(None), done: Condvar::new(), ended: AtomicBool::new(false) })
+    }
+
     /// Sends `sig` to `pid` (or its group) only while the child has not been reaped.
     fn signal(&self, pid: u32, group: bool, sig: libc::c_int) {
         let code = self.code.lock().unwrap();
@@ -760,6 +825,21 @@ impl Pty {
     /// `try_read` once more after it: a chunk that came just before did not notify.
     pub fn rearm_notify(&self) {
         self.edge.rearm();
+    }
+
+    /// No output waits in the tty or in the reader: everything read is in the queue. Once the
+    /// child has ended, this and then an empty `try_read` mean all of its output was taken (the
+    /// reader joins reads, so an empty queue alone does not). If it says no after the child
+    /// ended, a notify follows once the reader holds nothing.
+    pub fn output_settled(&self) -> bool {
+        let mut w = [libc::pollfd { fd: self.out.as_raw_fd(), events: libc::POLLIN, revents: 0 }];
+        // The tty first: what it still holds was read by nobody yet.
+        let unread = !poll(&mut w, 0) || w[0].revents != 0;
+        match self.settled.load(Ordering::SeqCst) {
+            DONE => true,
+            ASLEEP => !unread,
+            _ => false,
+        }
     }
 
     /// The shell's process id.
@@ -1316,11 +1396,11 @@ mod tests {
         let mut g = Gather::default();
         g.got(1, std::time::Instant::now());
         for _ in 0..SPINS {
-            assert!(matches!(g.missed(), Miss::Spin), "polled before {SPINS} misses");
+            assert!(matches!(g.missed(false), Miss::Spin), "polled before {SPINS} misses");
         }
-        assert!(matches!(g.missed(), Miss::Poll));
+        assert!(matches!(g.missed(false), Miss::Poll));
         g.got(1, std::time::Instant::now());
-        assert!(matches!(g.missed(), Miss::Spin), "a read starts the count again");
+        assert!(matches!(g.missed(false), Miss::Spin), "a read starts the count again");
     }
 
     /// A key echo after a sleep in `poll` goes out at the first read that finds nothing more,
@@ -1329,12 +1409,20 @@ mod tests {
     fn a_burst_after_a_poll_goes_out_at_its_first_miss() {
         let (mut g, t) = (Gather::default(), std::time::Instant::now());
         g.woke();
-        assert!(matches!(g.missed(), Miss::Spin), "nothing read yet");
+        assert!(matches!(g.missed(false), Miss::Spin), "nothing read yet");
         g.got(1, t);
-        assert!(matches!(g.missed(), Miss::Send));
+        assert!(matches!(g.missed(false), Miss::Send));
         g.sent();
         g.got(1024, t);
-        assert!(matches!(g.missed(), Miss::Spin), "a burst under way joins across misses");
+        assert!(matches!(g.missed(false), Miss::Spin), "a burst under way joins across misses");
+    }
+
+    #[test]
+    fn an_ended_child_sends_at_the_first_miss() {
+        let mut g = Gather::default();
+        assert!(matches!(g.missed(true), Miss::Spin), "nothing to send");
+        g.got(1024, std::time::Instant::now());
+        assert!(matches!(g.missed(true), Miss::Send), "its last bytes are not joined on");
     }
 
     /// A key the tty echoes comes back as its own chunk, without waiting for the trickle cap.
@@ -1445,5 +1533,101 @@ mod tests {
         }
         assert_eq!(got.len(), 5_000_000);
         assert!(got == b"y\n".repeat(2_500_000), "every byte, in order");
+    }
+
+    /// A reader on `fd` as `spawn` starts one, with the write end of its wake pipe.
+    fn reader_on(fd: OwnedFd, nonblocking: bool) -> (Receiver<Vec<u8>>, JoinHandle<()>, OwnedFd, Arc<Budget>) {
+        let (wake_r, wake_w) = make_pipe().unwrap();
+        let budget = Budget::new();
+        let sh = Shared { paused: Arc::new(AtomicBool::new(false)), budget: budget.clone(), edge: Arc::new(EdgeWake::default()), exit: Exit::new(), settled: Arc::new(AtomicU8::new(BUSY)) };
+        let (rx, reader) = start_reader(Arc::new(fd), wake_r, nonblocking, Arc::new(|| {}), sh);
+        (rx, reader, wake_w, budget)
+    }
+
+    fn ends_within(reader: &JoinHandle<()>, most: Duration) {
+        let at = std::time::Instant::now();
+        while !reader.is_finished() {
+            assert!(at.elapsed() < most, "the reader still runs {most:?} after the wake");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Only the wake pipe can end this reader: its source never runs dry, so it never polls,
+    /// and its receiver stays alive, so every send works.
+    #[test]
+    fn a_wake_ends_a_reader_whose_flood_never_stops() {
+        let zero = OwnedFd::from(std::fs::File::open("/dev/zero").unwrap());
+        assert!(set_nonblocking(&zero));
+        let (rx, reader, wake, budget) = reader_on(zero, true);
+        let taker = std::thread::spawn(move || {
+            while let Ok(c) = rx.recv() {
+                budget.take(c.len());
+            }
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!reader.is_finished());
+        unsafe { libc::write(wake.as_raw_fd(), [0u8].as_ptr().cast(), 1) };
+        ends_within(&reader, secs(1));
+        taker.join().unwrap();
+    }
+
+    /// A master left blocking (the flag could not be set) is polled before every read, so a lone
+    /// echo goes out and is never held behind a read that waits.
+    #[test]
+    fn a_blocking_source_still_sends_each_read() {
+        let (r, w) = make_pipe().unwrap();
+        let (rx, reader, wake, _budget) = reader_on(r, false);
+        for key in [b"a", b"b"] {
+            unsafe { libc::write(w.as_raw_fd(), key.as_ptr().cast(), 1) };
+            assert_eq!(rx.recv_timeout(secs(2)).as_deref(), Ok(&key[..]), "the echo was held");
+        }
+        unsafe { libc::write(wake.as_raw_fd(), [0u8].as_ptr().cast(), 1) };
+        ends_within(&reader, secs(1));
+    }
+
+    /// The host's order: the exit, then `output_settled`, then the queue. On Linux nothing reports
+    /// the end (a background `sleep` keeps the tty open), so an empty queue alone must not count
+    /// as all of the output.
+    #[test]
+    fn an_ended_childs_output_is_all_queued_once_settled() {
+        // The sleep ignores the hangup the shell's exit sends its group.
+        let line = "/bin/sh -c 'stty -opost -echo; trap \"\" HUP; sleep 5 & echo READY; read go; yes | head -c 200'";
+        let p = spawn(&PtyApi, line, 80, 24).unwrap();
+        p.read_until(b"READY\n", secs(5)).unwrap_or_else(|got| panic!("{:?}", text(&got)));
+        p.set_paused(true);
+        std::thread::sleep(Duration::from_millis(50));
+        p.write(b"go\n").unwrap();
+        if cfg!(target_os = "macos") {
+            // macOS holds an exit until the tty's output is read, so the tail never waits there.
+            std::thread::sleep(Duration::from_millis(200));
+            assert_eq!(p.exit_code(), None, "the shell ended with its output unread");
+        } else {
+            // Linux ends the shell with its tail still in the tty, behind the paused reader.
+            assert!(p.wait_exit(secs(5)).is_some(), "the shell did not end");
+            assert!(!p.output_settled(), "the tail is still in the tty");
+        }
+        p.set_paused(false);
+        let (mut got, end) = (Vec::new(), std::time::Instant::now() + secs(10));
+        loop {
+            assert!(std::time::Instant::now() < end, "never settled: {} bytes", got.len());
+            let mut done = p.exit_code().is_some() && p.output_settled();
+            loop {
+                match p.try_read() {
+                    Read::Data(c) => got.extend(c),
+                    Read::Empty => break,
+                    // macOS revokes the tty when its session leader ends; Linux leaves it open.
+                    Read::Closed if cfg!(target_os = "macos") => {
+                        done = true;
+                        break;
+                    }
+                    Read::Closed => panic!("the tty closed under a background sleep"),
+                }
+            }
+            if done {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert!(got == b"y\n".repeat(100), "{} bytes before the end", got.len());
     }
 }

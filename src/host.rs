@@ -82,6 +82,11 @@ pub const MERGE_CAP: usize = 64 << 10;
 trait OutputSource {
     fn try_read(&self) -> Read;
     fn rearm_notify(&self);
+    /// An empty queue now holds all the output there is: asked before the reads, so a Unix
+    /// reader's joined bytes are never taken for the end.
+    fn settled(&self) -> bool {
+        true
+    }
 }
 
 impl OutputSource for Pty {
@@ -92,13 +97,21 @@ impl OutputSource for Pty {
     fn rearm_notify(&self) {
         Pty::rearm_notify(self)
     }
+
+    // The exit first, so the reader's answer covers every byte the child wrote.
+    #[cfg(unix)]
+    fn settled(&self) -> bool {
+        self.exit_code().is_some() && self.output_settled()
+    }
 }
 
-/// Reads `src` into `ring` until it is empty (true) or the window holds it. An attached session's
+/// Reads `src` into `ring` until it is empty or the window holds it. True: it closed, or it is
+/// empty and `settled` (nothing more of an ended child's output can come). An attached session's
 /// bytes go out as `Output` frames of at most `MERGE_CAP`, offsets contiguous.
 fn drain(src: &impl OutputSource, ring: &mut Ring, acked: u64, attached: bool, flow: bool, id: u64, msgs: &mut Vec<Msg>) -> bool {
     let mut frame: Option<(u64, Vec<u8>)> = None;
     let mut drained = false;
+    let settled = src.settled();
     while !at_window(ring, acked, attached, flow) {
         let chunk = match src.try_read() {
             Read::Data(c) => c,
@@ -112,8 +125,12 @@ fn drain(src: &impl OutputSource, ring: &mut Ring, acked: u64, attached: bool, f
                 src.rearm_notify();
                 match src.try_read() {
                     Read::Data(c) => c,
-                    _ => {
+                    Read::Closed => {
                         drained = true;
+                        break;
+                    }
+                    Read::Empty => {
+                        drained = settled;
                         break;
                     }
                 }
