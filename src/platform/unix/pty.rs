@@ -3,9 +3,10 @@
 //! `login`, and ties exit detection to its own event loop, none of which fits the `Pty` contract
 //! (pause, pending, exit code, `read_until`) the pane and the session host use.
 //!
-//! One reader thread polls the master and a wake pipe, one writer thread writes a dup of the
-//! master, and one waiter thread per child collects its exit. A process wide `SIGCHLD` handler
-//! would reap children `std::process::Command` waits on elsewhere (git, curl), so none is used.
+//! One reader thread reads the master non-blocking (it polls the master and a wake pipe only
+//! once reads run dry), one writer thread writes a dup of the master, and one waiter thread per
+//! child collects its exit. A process wide `SIGCHLD` handler would reap children
+//! `std::process::Command` waits on elsewhere (git, curl), so none is used.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -17,7 +18,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::platform::pty::{EdgeWake, Notify, Read};
 use crate::pty_budget::Budget;
@@ -385,8 +386,16 @@ fn start_writer(fd: OwnedFd, pending: Arc<AtomicUsize>, notify: Notify) -> (mpsc
                 let rest = &chunk[done..];
                 let n = unsafe { libc::write(fd.as_raw_fd(), rest.as_ptr().cast(), rest.len()) };
                 if n < 0 {
-                    if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-                        continue;
+                    match std::io::Error::last_os_error().kind() {
+                        std::io::ErrorKind::Interrupted => continue,
+                        // The reader made the shared file non-blocking: wait for room. The
+                        // timeout only bounds a missed wake.
+                        std::io::ErrorKind::WouldBlock => {
+                            let mut w = [libc::pollfd { fd: fd.as_raw_fd(), events: libc::POLLOUT, revents: 0 }];
+                            poll(&mut w, 100);
+                            continue;
+                        }
+                        _ => {}
                     }
                     *seen.lock().unwrap() = Some(os_err("write"));
                     break 'chunks;
@@ -417,19 +426,105 @@ fn poll(fds: &mut [libc::pollfd], ms: i32) -> bool {
     }
 }
 
+/// Joined reads go out as one chunk of at most this many bytes.
+const CHUNK: usize = 16 * 1024;
+/// Reads in a row that find nothing before the reader sleeps in `poll`.
+const SPINS: u32 = 16;
+/// A part filled chunk goes out this long after its first byte at the latest.
+const TRICKLE: Duration = Duration::from_millis(2);
+
+/// What the reader does after a read that found nothing.
+enum Miss {
+    /// Read again.
+    Spin,
+    /// Send what is joined, then read again.
+    Send,
+    /// Send what is joined, then sleep in `poll`.
+    Poll,
+}
+
+/// When the reader sends what it joined. A macOS pty read returns at most 1 KiB, and a poll per
+/// read costs as much as the read, so a flood is read without polls and sent in `CHUNK`s.
+#[derive(Default)]
+struct Gather {
+    /// Bytes read and not yet sent.
+    fill: usize,
+    /// When the first of them was read.
+    since: Option<Instant>,
+    /// Reads in a row that found nothing.
+    misses: u32,
+    /// Woken from `poll` and nothing sent since: a typed key's echo, sent without the spins.
+    fresh: bool,
+}
+
+impl Gather {
+    /// `n` more bytes were read at `now`. True: send the chunk now.
+    fn got(&mut self, n: usize, now: Instant) -> bool {
+        self.misses = 0;
+        self.fill += n;
+        let since = *self.since.get_or_insert(now);
+        self.fill >= CHUNK || now - since >= TRICKLE
+    }
+
+    fn missed(&mut self) -> Miss {
+        self.misses += 1;
+        if self.misses > SPINS {
+            self.misses = 0;
+            return Miss::Poll;
+        }
+        if self.fresh && self.fill > 0 {
+            return Miss::Send;
+        }
+        Miss::Spin
+    }
+
+    /// `poll` said there is something to read.
+    fn woke(&mut self) {
+        self.fresh = true;
+    }
+
+    fn sent(&mut self) {
+        self.fill = 0;
+        self.since = None;
+        self.fresh = false;
+    }
+}
+
 /// Drains the child's output on its own thread. While paused, or while `budget` is full, it
 /// reads nothing, so the child blocks once the pty's buffer is full (as on Windows). EOF, EIO
 /// or a write to `wake` ends it.
 fn start_reader(fd: Arc<OwnedFd>, wake: OwnedFd, notify: Notify, paused: Arc<AtomicBool>, budget: Arc<Budget>, edge: Arc<EdgeWake>) -> (Receiver<Vec<u8>>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
     let reader = std::thread::spawn(move || {
-        let mut buf = vec![0u8; 64 * 1024];
+        let raw = fd.as_raw_fd();
+        // On the open file, so the writer's dup of a pty master is non-blocking too.
+        unsafe {
+            let flags = libc::fcntl(raw, libc::F_GETFL);
+            libc::fcntl(raw, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+        let mut buf = vec![0u8; CHUNK];
+        let mut g = Gather::default();
         let pfd = |fd: RawFd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
         let woken = |ms: i32| {
             let mut w = [pfd(wake.as_raw_fd())];
             poll(&mut w, ms) && w[0].revents != 0
         };
-        'read: loop {
+        // False: nobody takes chunks any more.
+        let send = |chunk: &[u8]| {
+            if chunk.is_empty() {
+                return true;
+            }
+            budget.add(chunk.len());
+            if tx.send(chunk.to_vec()).is_err() {
+                return false;
+            }
+            if edge.queued() {
+                notify();
+            }
+            true
+        };
+        loop {
+            // While paused, what was read waits here and nothing more is read.
             if paused.load(Ordering::Acquire) {
                 if woken(20) {
                     break;
@@ -438,32 +533,50 @@ fn start_reader(fd: Arc<OwnedFd>, wake: OwnedFd, notify: Notify, paused: Arc<Ato
             }
             // Drop closes the budget, so this never outlives the pty.
             budget.wait_for_room(Duration::from_millis(100), || false);
-            let mut fds = [pfd(fd.as_raw_fd()), pfd(wake.as_raw_fd())];
-            if !poll(&mut fds, -1) || fds[1].revents != 0 {
-                break;
+            if g.fill == CHUNK {
+                // Full when a pause came.
+                if !send(&buf[..g.fill]) {
+                    break;
+                }
+                g.sent();
             }
-            if fds[0].revents == 0 {
-                continue;
-            }
-            let n = unsafe { libc::read(fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
-            if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            if n <= 0 {
-                break;
-            }
-            // While paused, a chunk already read waits here and nothing more is read.
-            while paused.load(Ordering::Acquire) {
-                if woken(20) {
-                    break 'read;
+            let n = unsafe { libc::read(raw, buf[g.fill..].as_mut_ptr().cast(), CHUNK - g.fill) };
+            if n < 0 {
+                match std::io::Error::last_os_error().kind() {
+                    std::io::ErrorKind::Interrupted => continue,
+                    std::io::ErrorKind::WouldBlock => {
+                        let miss = g.missed();
+                        if !matches!(miss, Miss::Spin) {
+                            if !send(&buf[..g.fill]) {
+                                break;
+                            }
+                            g.sent();
+                        }
+                        if !matches!(miss, Miss::Poll) {
+                            std::hint::spin_loop();
+                            continue;
+                        }
+                        let mut fds = [pfd(raw), pfd(wake.as_raw_fd())];
+                        if !poll(&mut fds, -1) || fds[1].revents != 0 {
+                            break;
+                        }
+                        g.woke();
+                        continue;
+                    }
+                    _ => {}
                 }
             }
-            budget.add(n as usize);
-            if tx.send(buf[..n as usize].to_vec()).is_err() {
+            if n <= 0 {
+                // The end: every byte read goes out first.
+                send(&buf[..g.fill]);
                 break;
             }
-            if edge.queued() {
-                notify();
+            if g.got(n as usize, Instant::now()) && !paused.load(Ordering::Acquire) {
+                // A flood never reaches the poll, so the close is looked for here.
+                if !send(&buf[..g.fill]) || woken(0) {
+                    break;
+                }
+                g.sent();
             }
         }
         drop(tx);
@@ -1162,5 +1275,163 @@ mod tests {
         drop(p);
         assert!(registry(|r| r.get(&pid).is_some_and(|e| Arc::ptr_eq(e, &newer))), "the newer entry was removed");
         registry(|r| r.remove(&pid));
+    }
+
+    #[test]
+    fn reads_join_up_to_a_chunk() {
+        let (mut g, t) = (Gather::default(), std::time::Instant::now());
+        for _ in 0..CHUNK / 1024 - 1 {
+            assert!(!g.got(1024, t), "sent before the chunk filled: {}", g.fill);
+        }
+        assert!(g.got(1024, t), "a full chunk goes out");
+        assert_eq!(g.fill, CHUNK);
+        g.sent();
+        assert_eq!(g.fill, 0);
+        assert!(!g.got(1, t), "the next chunk starts empty");
+    }
+
+    #[test]
+    fn a_trickle_goes_out_within_the_cap() {
+        // One byte every 50 us that never misses: the clock alone sends it.
+        let (mut g, t0) = (Gather::default(), std::time::Instant::now());
+        let mut at = t0;
+        while !g.got(1, at) {
+            at += Duration::from_micros(50);
+            assert!(at - t0 <= TRICKLE, "held {:?}", at - t0);
+        }
+        g.sent();
+        assert!(!g.got(1, at + Duration::from_micros(50)), "the cap starts again at the next byte");
+    }
+
+    #[test]
+    fn misses_fall_back_to_poll_after_the_spins() {
+        let mut g = Gather::default();
+        g.got(1, std::time::Instant::now());
+        for _ in 0..SPINS {
+            assert!(matches!(g.missed(), Miss::Spin), "polled before {SPINS} misses");
+        }
+        assert!(matches!(g.missed(), Miss::Poll));
+        g.got(1, std::time::Instant::now());
+        assert!(matches!(g.missed(), Miss::Spin), "a read starts the count again");
+    }
+
+    /// A key echo after a sleep in `poll` goes out at the first read that finds nothing more,
+    /// not after all the spins. Later in a burst, misses join on.
+    #[test]
+    fn a_burst_after_a_poll_goes_out_at_its_first_miss() {
+        let (mut g, t) = (Gather::default(), std::time::Instant::now());
+        g.woke();
+        assert!(matches!(g.missed(), Miss::Spin), "nothing read yet");
+        g.got(1, t);
+        assert!(matches!(g.missed(), Miss::Send));
+        g.sent();
+        g.got(1024, t);
+        assert!(matches!(g.missed(), Miss::Spin), "a burst under way joins across misses");
+    }
+
+    /// A key the tty echoes comes back as its own chunk, without waiting for the trickle cap.
+    #[test]
+    fn a_typed_key_echoes_at_once() {
+        let p = spawn(&PtyApi, "sleep 30", 80, 24).unwrap();
+        let mut took = Vec::new();
+        for _ in 0..50 {
+            // Keys come apart, so the reader is back asleep in its poll as between real keys.
+            std::thread::sleep(TRICKLE);
+            let at = std::time::Instant::now();
+            p.write(b"a").unwrap();
+            assert_eq!(p.read_timeout(secs(5)).as_deref(), Some(&b"a"[..]));
+            took.push(at.elapsed());
+        }
+        took.sort();
+        assert!(took[took.len() / 2] < TRICKLE / 2, "median echo {:?}", took[took.len() / 2]);
+    }
+
+    #[test]
+    fn a_flood_arrives_in_joined_chunks() {
+        let p = spawn(&PtyApi, "/bin/sh -c 'exec yes'", 80, 24).unwrap();
+        let (mut got, mut big, mut most) = (0, 0, 0);
+        while got < 4 << 20 {
+            let c = p.read_timeout(secs(5)).expect("the flood stalled");
+            got += c.len();
+            most = most.max(c.len());
+            if c.len() > CHUNK / 2 {
+                big += c.len();
+            }
+        }
+        assert!(most <= CHUNK, "a chunk of {most}");
+        assert!(big * 2 >= got, "only {big} of {got} bytes came in chunks over {}", CHUNK / 2);
+    }
+
+    /// The writer shares the reader's non-blocking file: a paste the tty cannot hold at once
+    /// waits for room and arrives whole and in order.
+    #[test]
+    fn a_paste_larger_than_the_tty_queue_arrives_whole() {
+        let p = spawn(&PtyApi, "/bin/sh -c 'stty raw -echo; echo READY; exec cat'", 80, 24).unwrap();
+        p.read_until(b"READY", secs(5)).unwrap_or_else(|got| panic!("{:?}", text(&got)));
+        while p.read_timeout(Duration::from_millis(100)).is_some() {}
+        let paste: Vec<u8> = (0..100_000u32).flat_map(|i| format!("{i:07}\n").into_bytes()).collect();
+        p.write(&paste).unwrap();
+        let mut got = Vec::new();
+        let end = std::time::Instant::now() + secs(20);
+        while got.len() < paste.len() {
+            assert!(std::time::Instant::now() < end, "{} of {} bytes came back, write error {:?}", got.len(), paste.len(), p.write_error.lock().unwrap());
+            if let Some(c) = p.read_timeout(Duration::from_millis(100)) {
+                got.extend(c);
+            }
+        }
+        assert!(got == paste, "every byte, in order");
+        assert_eq!(p.pending(), 0);
+    }
+
+    #[test]
+    fn a_close_during_a_flood_ends_the_reader() {
+        // The flood ignores the hangup, so only the reader's own check can end it.
+        let p = spawn(&PtyApi, "/bin/sh -c 'trap \"\" HUP; exec yes'", 80, 24).unwrap();
+        let end = std::time::Instant::now() + Duration::from_millis(300);
+        while std::time::Instant::now() < end {
+            p.read_timeout(Duration::from_millis(10));
+        }
+        let master = Arc::downgrade(p.tty.as_ref().unwrap());
+        let at = std::time::Instant::now();
+        drop(p);
+        while master.upgrade().is_some() {
+            assert!(at.elapsed() < Duration::from_millis(500), "the reader still runs after the close");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn a_kill_during_a_flood_ends_the_reader() {
+        let p = spawn(&PtyApi, "/bin/sh -c 'exec yes'", 80, 24).unwrap();
+        assert!(p.read_timeout(secs(5)).is_some());
+        p.terminate();
+        let end = std::time::Instant::now() + secs(5);
+        loop {
+            assert!(std::time::Instant::now() < end, "the reader still runs after the kill");
+            match p.try_read() {
+                Read::Closed => break,
+                Read::Data(_) => {}
+                Read::Empty => std::thread::sleep(Duration::from_millis(1)),
+            }
+        }
+    }
+
+    /// Every byte of a flood that ends with the program comes out before the end.
+    #[test]
+    fn an_exit_during_a_flood_drains_every_byte() {
+        // No output processing: a macOS tty sometimes doubles the "\r" it adds before a "\n"
+        // when its queue fills between the two (the old reader saw it too).
+        let p = spawn(&PtyApi, "/bin/sh -c 'stty -opost; yes | head -c 5000000'", 80, 24).unwrap();
+        let (mut got, end) = (Vec::new(), std::time::Instant::now() + secs(30));
+        loop {
+            assert!(std::time::Instant::now() < end, "{} bytes in 30 s", got.len());
+            match p.try_read() {
+                Read::Closed => break,
+                Read::Data(c) => got.extend(c),
+                Read::Empty => std::thread::sleep(Duration::from_millis(1)),
+            }
+        }
+        assert_eq!(got.len(), 5_000_000);
+        assert!(got == b"y\n".repeat(2_500_000), "every byte, in order");
     }
 }
