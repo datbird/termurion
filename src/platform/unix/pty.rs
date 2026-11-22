@@ -166,6 +166,7 @@ fn spawn_with_env(inherited: Vec<(OsString, OsString)>, t: Transport, cmdline: &
                     Ok(())
                 });
             }
+            set_nonblocking(master.as_raw_fd())?;
             let master = Arc::new(master);
             let input = clone_fd(&master)?;
             let child = cmd.spawn().map_err(|e| spawn_error(cmdline, cwd, &e))?;
@@ -175,6 +176,7 @@ fn spawn_with_env(inherited: Vec<(OsString, OsString)>, t: Transport, cmdline: &
             let (stdin_r, stdin_w) = make_pipe()?;
             let (out_r, out_w) = make_pipe()?;
             let err_w = clone_fd(&out_w)?;
+            set_nonblocking(out_r.as_raw_fd())?;
             cmd.stdin(Stdio::from(stdin_r)).stdout(Stdio::from(out_w)).stderr(Stdio::from(err_w));
             unsafe {
                 cmd.pre_exec(move || {
@@ -200,11 +202,10 @@ fn spawn_with_env(inherited: Vec<(OsString, OsString)>, t: Transport, cmdline: &
     };
     let budget = Budget::new();
     let edge = Arc::new(EdgeWake::default());
-    let nonblocking = set_nonblocking(&read_fd);
     let settled = Arc::new(AtomicU8::new(BUSY));
     let shared = Shared { paused: paused.clone(), budget: budget.clone(), edge: edge.clone(), exit: exit.clone(), settled: settled.clone() };
     let out = read_fd.clone();
-    let (output, _reader) = start_reader(read_fd, wake_r, nonblocking, notify.clone(), shared);
+    let (output, _reader) = start_reader(read_fd, wake_r, notify.clone(), shared);
     let pending = Arc::new(AtomicUsize::new(0));
     let (writer, write_error) = start_writer(input, pending.clone(), notify.clone());
     start_waiter(child, exit.clone(), notify);
@@ -510,16 +511,17 @@ impl Gather {
     }
 }
 
-/// Sets `O_NONBLOCK` on the reader's open file (so also on the writer's dup of a pty master).
-/// False: it stays blocking, and the reader polls before every read as it did before.
-fn set_nonblocking(fd: &OwnedFd) -> bool {
-    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
-    if flags >= 0 && unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } >= 0 {
-        return true;
+/// Sets `O_NONBLOCK` on what the reader reads, before the child starts. On a pty master it is
+/// on the open file, so the writer's dup is non-blocking too. The reader needs it: a blocking
+/// read would wait with joined bytes held.
+fn set_nonblocking(fd: RawFd) -> Result<(), String> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags >= 0 && unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } >= 0 {
+        return Ok(());
     }
-    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-    crate::rlog!("pty: the master stays blocking, fcntl failed with errno {}", errno);
-    false
+    let e = std::io::Error::last_os_error();
+    crate::rlog!("pty: fcntl(O_NONBLOCK) failed with errno {}", e.raw_os_error().unwrap_or(0));
+    Err(format!("fcntl(O_NONBLOCK) failed: {e}"))
 }
 
 /// The reader's states: it may hold read bytes, it holds none and sleeps in its poll, or it has
@@ -539,9 +541,9 @@ struct Shared {
 
 /// Drains the child's output on its own thread. While paused, or while `budget` is full, it
 /// reads nothing, so the child blocks once the pty's buffer is full (as on Windows). EOF, EIO
-/// or a write to `wake` ends it. A `nonblocking` file is read without a poll per read
-/// (`Gather`); a blocking one polls first, so a read never waits with bytes held.
-fn start_reader(fd: Arc<OwnedFd>, wake: OwnedFd, nonblocking: bool, notify: Notify, sh: Shared) -> (Receiver<Vec<u8>>, JoinHandle<()>) {
+/// or a write to `wake` ends it. `fd` is non-blocking: it is read without a poll per read
+/// (`Gather`).
+fn start_reader(fd: Arc<OwnedFd>, wake: OwnedFd, notify: Notify, sh: Shared) -> (Receiver<Vec<u8>>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
     let reader = std::thread::spawn(move || {
         let raw = fd.as_raw_fd();
@@ -597,9 +599,6 @@ fn start_reader(fd: Arc<OwnedFd>, wake: OwnedFd, nonblocking: bool, notify: Noti
                 }
                 g.sent();
             }
-            if !nonblocking && !sleep() {
-                break;
-            }
             let n = unsafe { libc::read(raw, buf[g.fill..].as_mut_ptr().cast(), CHUNK - g.fill) };
             if n < 0 {
                 match std::io::Error::last_os_error().kind() {
@@ -630,7 +629,7 @@ fn start_reader(fd: Arc<OwnedFd>, wake: OwnedFd, nonblocking: bool, notify: Noti
                 send(&buf[..g.fill]);
                 break;
             }
-            if (g.got(n as usize, Instant::now()) || !nonblocking) && !paused.load(Ordering::Acquire) {
+            if g.got(n as usize, Instant::now()) && !paused.load(Ordering::Acquire) {
                 // A flood never reaches the poll, so the close is looked for here.
                 if !send(&buf[..g.fill]) || woken(0) {
                     break;
@@ -1134,7 +1133,9 @@ mod tests {
                 false => std::thread::sleep(Duration::from_millis(10)),
             }
         }
+        let end = std::time::Instant::now() + secs(5);
         while let Some(d) = p.read_timeout(Duration::from_millis(200)) {
+            assert!(std::time::Instant::now() < end, "output still came 5 s after the end");
             after += d.len();
         }
         let most = crate::pty_budget::PTY_BUDGET + 128 * 1024;
@@ -1536,11 +1537,11 @@ mod tests {
     }
 
     /// A reader on `fd` as `spawn` starts one, with the write end of its wake pipe.
-    fn reader_on(fd: OwnedFd, nonblocking: bool) -> (Receiver<Vec<u8>>, JoinHandle<()>, OwnedFd, Arc<Budget>) {
+    fn reader_on(fd: OwnedFd) -> (Receiver<Vec<u8>>, JoinHandle<()>, OwnedFd, Arc<Budget>) {
         let (wake_r, wake_w) = make_pipe().unwrap();
         let budget = Budget::new();
         let sh = Shared { paused: Arc::new(AtomicBool::new(false)), budget: budget.clone(), edge: Arc::new(EdgeWake::default()), exit: Exit::new(), settled: Arc::new(AtomicU8::new(BUSY)) };
-        let (rx, reader) = start_reader(Arc::new(fd), wake_r, nonblocking, Arc::new(|| {}), sh);
+        let (rx, reader) = start_reader(Arc::new(fd), wake_r, Arc::new(|| {}), sh);
         (rx, reader, wake_w, budget)
     }
 
@@ -1557,8 +1558,8 @@ mod tests {
     #[test]
     fn a_wake_ends_a_reader_whose_flood_never_stops() {
         let zero = OwnedFd::from(std::fs::File::open("/dev/zero").unwrap());
-        assert!(set_nonblocking(&zero));
-        let (rx, reader, wake, budget) = reader_on(zero, true);
+        set_nonblocking(zero.as_raw_fd()).unwrap();
+        let (rx, reader, wake, budget) = reader_on(zero);
         let taker = std::thread::spawn(move || {
             while let Ok(c) = rx.recv() {
                 budget.take(c.len());
@@ -1571,18 +1572,15 @@ mod tests {
         taker.join().unwrap();
     }
 
-    /// A master left blocking (the flag could not be set) is polled before every read, so a lone
-    /// echo goes out and is never held behind a read that waits.
+    /// Without `O_NONBLOCK` the reader would hold joined bytes in a read that waits, so a
+    /// failure to set it is the spawn's error.
     #[test]
-    fn a_blocking_source_still_sends_each_read() {
-        let (r, w) = make_pipe().unwrap();
-        let (rx, reader, wake, _budget) = reader_on(r, false);
-        for key in [b"a", b"b"] {
-            unsafe { libc::write(w.as_raw_fd(), key.as_ptr().cast(), 1) };
-            assert_eq!(rx.recv_timeout(secs(2)).as_deref(), Ok(&key[..]), "the echo was held");
-        }
-        unsafe { libc::write(wake.as_raw_fd(), [0u8].as_ptr().cast(), 1) };
-        ends_within(&reader, secs(1));
+    fn a_failed_nonblocking_flag_is_an_error() {
+        let e = set_nonblocking(-1).unwrap_err();
+        assert!(e.contains("O_NONBLOCK"), "{e}");
+        let (r, _w) = make_pipe().unwrap();
+        set_nonblocking(r.as_raw_fd()).unwrap();
+        assert_ne!(unsafe { libc::fcntl(r.as_raw_fd(), libc::F_GETFL) } & libc::O_NONBLOCK, 0);
     }
 
     /// The host's order: the exit, then `output_settled`, then the queue. On Linux nothing reports
