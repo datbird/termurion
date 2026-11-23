@@ -21,7 +21,10 @@ work around each animation frame is the cost.
 | Termurion, 13 effects (range) | 8.4 to 9.6 | 12.6 to 16.8 | 11.3 to 12.8 | 27.4 to 27.9 |
 
 CPU per animation frame: Termurion about 3.2 ms, Ghostty about 0.9 ms.
-Termurion also draws only about 28 frames/s where Ghostty draws 60.
+Termurion draws about 28 frames/s because the default "Effects animation"
+setting (Balanced) caps effects at 30 frames/s and pauses them after 2
+minutes idle. Ghostty draws 60. At 60 frames/s Termurion's effect would
+cost about 19% idle CPU today, so the per-frame cost is the real target.
 
 A profile shows the time goes to:
 
@@ -36,8 +39,9 @@ A profile shows the time goes to:
 1. Every row of the table above meets or beats Ghostty, with and without an
    effect, on macOS. On a row where a doable major change can beat Ghostty
    by a clear margin, take it.
-2. Effects animate at the display rate (60 or 120 Hz), not about 28 frames/s,
-   and still cost less CPU than now.
+2. Per-frame CPU drops to Ghostty's level or below (about 0.9 ms), so
+   every "Effects animation" choice gets cheaper. At the new 60 frames/s
+   default, every effect row meets or beats Ghostty's effect row.
 3. Windows and Linux get the shared effect fixes and a measured gain.
 4. One matching 1.1.12 release on all 3 OSes, installed on EXTREME, W541 and
    the owner's Mac.
@@ -65,6 +69,7 @@ A profile shows the time goes to:
   present. ("everything on macOS, go full Metal")
 - Windows and Linux are included, with matching releases on all 3 OSes.
 - Target: the Ghostty numbers, unless a doable major change does better.
+- Default effect rate: a new 60 frames/s cap, even on 120 Hz screens.
 - The README is updated to reflect reality and spotlights the many days of
   optimization, performance and accurate-rendering work. It links a new
   `docs/PERFORMANCE.md` with tables that compare terminals and name no
@@ -82,7 +87,12 @@ A profile shows the time goes to:
 - During the move, the wgpu path stays on macOS behind a hidden switch, so
   every bench and pixel test can run A/B. The switch and the wgpu macOS path
   are removed before 1.1.12 ships.
-- A Metal start failure shows an error dialog with the reason.
+- A Metal start failure shows an error dialog with the reason, and the
+  app does not try another API. GPU-lost recovery on macOS remakes the
+  Metal device; if that fails, the existing "restart Termurion" banner
+  shows. (my call)
+- Screenshot, promo-shot and readback paths also run on Metal, so tests
+  see what users see. (my call)
 
 ### All OSes: shared effect fixes
 
@@ -90,8 +100,10 @@ A profile shows the time goes to:
   cut the copy passes.
 - An animation-only frame (no cell changed) skips the `App::render`
   bookkeeping and reuses the last frame's cell data.
-- Remove whatever holds effects near 28 frames/s, so they follow the
-  display rate under "Match the display refresh rate".
+- "Effects animation" gets a new choice, capped at 60 frames/s even on
+  a 120 Hz screen, and it becomes the default (owner's decision). This
+  matches Ghostty frame for frame. Full (display rate), Balanced (30) and
+  Light (15) stay.
 
 ## Proof
 
@@ -125,8 +137,25 @@ A profile shows the time goes to:
   and WezTerm. Linux: Ghostty, Alacritty and the desktop terminal (Ptyxis on
   the W541).
 - PERFORMANCE.md includes the 1.1.0 to 1.1.12 history.
+- Pixel proof: the reference images come from a 1.1.11 build on the same
+  OS. The target is an exact match. Where only float rounding in the MSL
+  compile differs, at most 1 step per color channel is allowed, and every
+  such difference is listed in the ledger. Any larger difference is a bug.
+- Copy-pass cuts: the renderer reads from naga IR whether an effect
+  samples the scene texture. Effects that do keep a scene copy; effects
+  that do not draw straight into the surface. No manifest change, so user
+  plugins keep working unchanged.
+- Animation-only frames: the builder audits all 13 effects for per-frame
+  cell, cursor or selection inputs, and keeps those inputs updated.
+- A backend-neutral layer is split out of `App::render` only as far as
+  Metal and wgpu need to share it.
 - naga MSL translation runs at build time if that is simpler and keeps
   plugin loading working for user plugins. Otherwise at load time.
+
+- The new choice is named "Smooth" and stored as a new setting value, so
+  the old values keep their meaning. A user who saved a choice keeps it.
+  Smooth pauses after 2 minutes idle, like Balanced. Help docs and the
+  iTerm2 label table get the new choice.
 
 ## Left to the builder
 
