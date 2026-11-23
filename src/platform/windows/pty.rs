@@ -974,16 +974,19 @@ pub(crate) mod tests {
             let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let s2 = stop.clone();
             let reader = std::thread::spawn(move || {
+                let mut attached = 0;
                 while !s2.load(Ordering::SeqCst) {
-                    let _ = console_mode(pid);
+                    attached += usize::from(console_mode(pid).is_ok());
                     // Room for the close to take the lock (the watcher reads twice a second).
                     std::thread::sleep(Duration::from_millis(1));
                 }
+                attached
             });
             std::thread::sleep(Duration::from_millis(30));
             drop(pty);
             stop.store(true, Ordering::SeqCst);
-            reader.join().unwrap();
+            // Reads after the close fail; the ones before it attached, so the close met attaches.
+            assert!(reader.join().unwrap() > 0, "no read attached before the close");
         }
     }
 
@@ -1104,16 +1107,17 @@ pub(crate) mod tests {
     fn a_close_never_happens_while_attached() {
         use std::os::windows::process::CommandExt;
         const DETACHED_PROCESS: u32 = 0x0000_0008;
-        // What the child prints when it panics, for the failure message.
-        let _td = TempDir::new("close-child-log");
-        let log = _td.to_path_buf();
+        // What the child prints (its test result, and its panic if any), for the checks below.
+        let td = TempDir::new("close-child-log");
+        let log = td.file("child.log");
+        let out = std::fs::File::create(&log).unwrap();
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "pty::tests::close_while_reading_child", "--ignored", "--test-threads=1", "--nocapture"])
+            .args(["--exact", "platform::windows::pty::tests::close_while_reading_child", "--ignored", "--test-threads=1", "--nocapture"])
             .env("TERMURION_CLOSE_CHILD", "1")
             .creation_flags(DETACHED_PROCESS)
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::fs::File::create(&log).unwrap())
+            .stdout(out.try_clone().unwrap())
+            .stderr(out)
             .spawn()
             .unwrap();
         // A hang fails the suite instead of holding it.
@@ -1130,7 +1134,8 @@ pub(crate) mod tests {
             std::thread::sleep(Duration::from_millis(50));
         };
         let said = std::fs::read_to_string(&log).unwrap_or_default();
-        assert!(status.success(), "the reading process survived every close: {status:?}: {said}");
+        // "1 passed": the child ran its body, not an empty filter.
+        assert!(status.success() && said.contains("1 passed"), "the reading process survived every close: {status:?}: {said}");
     }
 
     #[test]
