@@ -181,7 +181,7 @@ a0=$(all); c0=$(cpu $P); w0=$(cpu $ws); t0=$(perl -MTime::HiRes=time -e 'printf 
 # The writer has exited before the second count, so its CPU is in neither: not noise.
 bytes=$(perl "$B/writer.pl" "$wl" "$(cat "$tty")" "$secs")
 a1=$(all); c1=$(cpu $P); w1=$(cpu $ws); t1=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
-rss=$(ps -o rss= -p "$(echo $P | tr ' ' ,)" 2>/dev/null | awk '{ s += $1 } END { printf "%.0f", s / 1024 }')
+rss=$(ps -o rss= -p "$(echo $P | tr ' ' ,)" 2>/dev/null | awk '{ s += $1 } END { if (NR) printf "%.0f", s / 1024 }')
 wait "$dt"
 wait
 f1=$(front)
@@ -317,8 +317,8 @@ done
 
 # The table: the median over passes of each config and workload.
 echo
-awk -F'\t' 'NR > 1 { k = $1 "\t" $2; n[k]++; cpu[k, n[k]] = $5; ws[k, n[k]] = $6; fps[k, n[k]] = $7; mb[k, n[k]] = $8; rs[k, n[k]] = $12; if (!(k in seen)) { seen[k] = 1; order[++m] = k } }
+awk -F'\t' 'NR > 1 { k = $1 "\t" $2; n[k]++; cpu[k, n[k]] = $5; ws[k, n[k]] = $6; fps[k, n[k]] = $7; mb[k, n[k]] = $8; if ($12 != "") rs[k, ++nr[k]] = $12; if (!(k in seen)) { seen[k] = 1; order[++m] = k } }
     function med(a, k, c,   i, j, t, v) { for (i = 1; i <= c; i++) v[i] = a[k, i]; for (i = 1; i <= c; i++) for (j = i + 1; j <= c; j++) if (v[j] < v[i]) { t = v[i]; v[i] = v[j]; v[j] = t } return c % 2 ? v[(c + 1) / 2] : (v[c / 2] + v[c / 2 + 1]) / 2 }
     END { printf "| config | workload | CPU %% | WindowServer %% | frames/s | MB/s | RSS MB |\n|---|---|---|---|---|---|---|\n"
-          for (i = 1; i <= m; i++) { k = order[i]; split(k, p, "\t"); printf "| %s | %s | %.1f | %.1f | %.1f | %.2f | %.0f |\n", p[1], p[2], med(cpu, k, n[k]), med(ws, k, n[k]), med(fps, k, n[k]), med(mb, k, n[k]), med(rs, k, n[k]) } }' "$results" | tee "$out/table.md"
+          for (i = 1; i <= m; i++) { k = order[i]; split(k, p, "\t"); printf "| %s | %s | %.1f | %.1f | %.1f | %.2f | %s |\n", p[1], p[2], med(cpu, k, n[k]), med(ws, k, n[k]), med(fps, k, n[k]), med(mb, k, n[k]), nr[k] ? sprintf("%.0f", med(rs, k, nr[k])) : "" } }' "$results" | tee "$out/table.md"
 echo "draw-bench: results in $out" >&2
