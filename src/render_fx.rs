@@ -59,12 +59,16 @@ pub enum Animation {
     Off,
 }
 
+/// A capped frame is admitted this much before its gap is up, so a loop that wakes on the
+/// vsync just short of the gap (16.667 ms against two 120 Hz vsyncs) still lands on it.
+const FRAME_SLACK: Duration = Duration::from_millis(2);
+
 /// How hard animated effects may drive the GPU ("Effects animation", General > GPU Renderer).
 /// An `Always` effect redraws the whole window every frame, which keeps an older GPU busy with
-/// nobody at the machine; Balanced and Light cap the frame rate and pause it when idle.
+/// nobody at the machine; Smooth, Balanced and Light cap the frame rate and pause it when idle.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Pacing {
-    /// As fast as the GPU allows, never paused (before 1.1.4).
+    /// As fast as the display refreshes, never paused (before 1.1.4).
     Full,
     /// Up to 30 frames a second; pauses after 2 minutes with no change.
     Balanced,
@@ -960,7 +964,7 @@ impl Clock {
             return None;
         }
         Some(match (pacing.frame_gap(), self.last) {
-            (Some(gap), Some(last)) => (last + gap).max(now),
+            (Some(gap), Some(last)) => (last + gap - FRAME_SLACK).max(now),
             _ => now,
         })
     }
@@ -969,8 +973,11 @@ impl Clock {
     /// it, a frame due at once (Full pacing) would spin the loop, so the next one waits a frame
     /// gap (Full: 60 frames a second).
     pub fn next_after_still(&self, animation: Animation, now: Instant, focused: bool, pacing: Pacing) -> Option<Instant> {
-        let gap = pacing.frame_gap().unwrap_or(Duration::from_micros(16_667));
-        self.next_frame(animation, now, focused, pacing).map(|t| t.max(now + gap))
+        let wait = match pacing.frame_gap() {
+            Some(gap) => gap - FRAME_SLACK,
+            None => Duration::from_micros(16_667),
+        };
+        self.next_frame(animation, now, focused, pacing).map(|t| t.max(now + wait))
     }
 
     /// Whether another frame should be drawn now only for the animation.
@@ -1522,12 +1529,13 @@ mod tests {
         let mut clock = Clock::default();
         let mut u = Uniforms::default();
         clock.frame(&mut u, t0, (10, 10), None, true);
-        for pacing in [Pacing::Full, Pacing::Balanced, Pacing::Light] {
+        for pacing in [Pacing::Full, Pacing::Balanced, Pacing::Light, Pacing::Smooth] {
             let due = clock.next_after_still(Animation::Always, t0, true, pacing).expect("an always animation");
             assert!(due > t0, "{pacing:?} sets a due time after now");
         }
         assert_eq!(clock.next_after_still(Animation::Always, t0, true, Pacing::Full), Some(t0 + Duration::from_micros(16_667)));
-        assert_eq!(clock.next_after_still(Animation::Always, t0, true, Pacing::Light), Some(t0 + Duration::from_micros(66_667)));
+        assert_eq!(clock.next_after_still(Animation::Always, t0, true, Pacing::Light), Some(t0 + Duration::from_micros(66_667) - FRAME_SLACK));
+        assert_eq!(clock.next_after_still(Animation::Always, t0, true, Pacing::Smooth), Some(t0 + Duration::from_micros(16_667) - FRAME_SLACK));
         assert_eq!(clock.next_after_still(Animation::Off, t0, true, Pacing::Full), None);
     }
 
@@ -1538,8 +1546,9 @@ mod tests {
         let mut u = Uniforms::default();
         clock.frame(&mut u, t0, (10, 10), None, true);
         assert_eq!(clock.next_frame(Animation::Always, t0, true, Pacing::Full), Some(t0), "full draws at once");
-        assert_eq!(clock.next_frame(Animation::Always, t0, true, Pacing::Balanced), Some(t0 + Duration::from_micros(33_333)));
-        assert_eq!(clock.next_frame(Animation::Always, t0, true, Pacing::Light), Some(t0 + Duration::from_micros(66_667)));
+        assert_eq!(clock.next_frame(Animation::Always, t0, true, Pacing::Balanced), Some(t0 + Duration::from_micros(33_333) - FRAME_SLACK));
+        assert_eq!(clock.next_frame(Animation::Always, t0, true, Pacing::Light), Some(t0 + Duration::from_micros(66_667) - FRAME_SLACK));
+        assert_eq!(clock.next_frame(Animation::Always, t0, true, Pacing::Smooth), Some(t0 + Duration::from_micros(16_667) - FRAME_SLACK));
         let late = t0 + Duration::from_millis(500);
         assert_eq!(clock.next_frame(Animation::Always, late, true, Pacing::Light), Some(late), "an overdue frame draws now");
         assert_eq!(clock.next_frame(Animation::Off, t0, true, Pacing::Light), None);
@@ -1574,22 +1583,53 @@ mod tests {
         assert_eq!(Pacing::default(), Pacing::Smooth);
     }
 
-    #[test]
-    fn smooth_caps_at_sixty_on_a_fast_screen() {
+    /// Frames drawn in one second by an Always animation asked at each tick (ns from the start).
+    fn drawn_in_a_second(pacing: Pacing, ticks: impl Iterator<Item = u64>) -> u32 {
         let t0 = Instant::now();
         let mut clock = Clock::default();
         let mut u = Uniforms::default();
         clock.frame(&mut u, t0, (10, 10), None, true);
-        // A 120 Hz screen asks every 8.333 ms for one second (rounded up so two asks clear the 16.667 ms gap).
         let mut drawn = 0;
-        for i in 1..=120u64 {
-            let now = t0 + Duration::from_nanos(i * 8_334_000);
-            if clock.next_frame(Animation::Always, now, true, Pacing::Smooth).is_some_and(|due| due <= now) {
+        for ns in ticks {
+            let now = t0 + Duration::from_nanos(ns);
+            if clock.next_frame(Animation::Always, now, true, pacing).is_some_and(|due| due <= now) {
                 clock.frame(&mut u, now, (10, 10), None, true);
                 drawn += 1;
             }
         }
+        drawn
+    }
+
+    #[test]
+    fn smooth_caps_at_sixty_on_a_fast_screen() {
+        // A 120 Hz screen asks every 8.333 ms for one second.
+        let drawn = drawn_in_a_second(Pacing::Smooth, (1..=120u64).map(|i| i * 8_333_333));
         assert!((59..=61).contains(&drawn), "drew {drawn} frames in a second");
+    }
+
+    #[test]
+    fn smooth_holds_sixty_with_jitter() {
+        // Each 120 Hz tick moves by a fixed pseudo-random offset in [-1 ms, +1 ms].
+        let mut x = 12345u64;
+        let ticks = (1..=120u64).map(move |i| {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let off = (x >> 33) % 2_000_001;
+            (i * 8_333_333 + off).saturating_sub(1_000_000)
+        });
+        let drawn = drawn_in_a_second(Pacing::Smooth, ticks);
+        assert!((59..=61).contains(&drawn), "drew {drawn} frames in a second");
+    }
+
+    #[test]
+    fn smooth_never_passes_sixty_on_240hz() {
+        let drawn = drawn_in_a_second(Pacing::Smooth, (1..=240u64).map(|i| i * 4_166_667));
+        assert!(drawn <= 61, "drew {drawn} frames in a second");
+    }
+
+    #[test]
+    fn balanced_holds_thirty_on_120hz() {
+        let drawn = drawn_in_a_second(Pacing::Balanced, (1..=120u64).map(|i| i * 8_333_333));
+        assert!((29..=31).contains(&drawn), "drew {drawn} frames in a second");
     }
 
     #[test]
