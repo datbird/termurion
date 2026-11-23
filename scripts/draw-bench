@@ -10,6 +10,7 @@
 #          iTerm2) or -[CALayer setContents:] (Ghostty, which draws to IOSurfaces)
 #   MB/s   bytes the workload got into the tty (only the flood is limited by the terminal)
 #   other% CPU of every other process in the VM during the run (noise)
+#   RSS MB resident memory of the terminal's processes (app plus its session host) at the run's end
 # GPU busy is not measured: the VM's paravirtual GPU reports no utilization and powermetrics has
 # no GPU sampler for it.
 #
@@ -56,7 +57,7 @@ workloads=(idle stream20 claude flood)
 out="${out:-$repo/target/draw-bench/$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$out"
 results="$out/results.tsv"
-printf 'config\tworkload\tpass\twall_s\tcpu_pct\tws_pct\tfps\tmb_s\tother_pct\tfront\tnote\n' > "$results"
+printf 'config\tworkload\tpass\twall_s\tcpu_pct\tws_pct\tfps\tmb_s\tother_pct\tfront\tnote\trss_mb\n' > "$results"
 
 vm() { ssh -o BatchMode=yes "$host" "$@"; }
 # The sudo password goes over stdin only, never on a command line.
@@ -180,14 +181,15 @@ a0=$(all); c0=$(cpu $P); w0=$(cpu $ws); t0=$(perl -MTime::HiRes=time -e 'printf 
 # The writer has exited before the second count, so its CPU is in neither: not noise.
 bytes=$(perl "$B/writer.pl" "$wl" "$(cat "$tty")" "$secs")
 a1=$(all); c1=$(cpu $P); w1=$(cpu $ws); t1=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
+rss=$(ps -o rss= -p "$(echo $P | tr ' ' ,)" 2>/dev/null | awk '{ s += $1 } END { printf "%.0f", s / 1024 }')
 wait "$dt"
 wait
 f1=$(front)
 n=$(awk '$1 == "next" { print $2 }' "$B/frames"); c=$(awk '$1 == "contents" { print $2 }' "$B/frames")
 frames=${n:-0}; [ "$frames" -gt 0 ] || frames=${c:-0}
 ok=yes; { [ "$f0" = "$name" ] && [ "$f1" = "$name" ]; } || ok="no($f0/$f1)"
-awk -v a0="$a0" -v a1="$a1" -v c0="$c0" -v c1="$c1" -v w0="$w0" -v w1="$w1" -v t0="$t0" -v t1="$t1" -v fr="$frames" -v secs="$secs" -v b="$bytes" -v ok="$ok" \
-    'BEGIN { wall = t1 - t0; printf "RESULT\t%.2f\t%.1f\t%.1f\t%.1f\t%.2f\t%.1f\t%s\n", wall, 100 * (c1 - c0) / wall, 100 * (w1 - w0) / wall, fr / secs, b / wall / 1e6, 100 * ((a1 - a0) - (c1 - c0) - (w1 - w0)) / wall, ok }'
+awk -v a0="$a0" -v a1="$a1" -v c0="$c0" -v c1="$c1" -v w0="$w0" -v w1="$w1" -v t0="$t0" -v t1="$t1" -v fr="$frames" -v secs="$secs" -v b="$bytes" -v ok="$ok" -v rss="$rss" \
+    'BEGIN { wall = t1 - t0; printf "RESULT\t%.2f\t%.1f\t%.1f\t%.1f\t%.2f\t%.1f\t%s\t%s\n", wall, 100 * (c1 - c0) / wall, 100 * (w1 - w0) / wall, fr / secs, b / wall / 1e6, 100 * ((a1 - a0) - (c1 - c0) - (w1 - w0)) / wall, ok, rss }'
 EOF
 
 # --- terminal settings, saved and put back -------------------------------------------------
@@ -306,7 +308,7 @@ for pass in $(seq 1 "$passes"); do
                 echo "draw-bench: $cfg $wl try $try: front $front, other processes ${other}% of a core; again" >&2
                 [ "$try" = 8 ] && note="${note:+$note,}noisy"
             done
-            printf '%s\t%s\t%s\t%s\t%s\n' "$cfg" "$wl" "$pass" "$(printf '%s' "$line" | cut -f2-8)" "$note" >> "$results"
+            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$cfg" "$wl" "$pass" "$(printf '%s' "$line" | cut -f2-8)" "$note" "$(printf '%s' "$line" | cut -f9)" >> "$results"
             printf '%-13s %-9s pass %s: %s\n' "$cfg" "$wl" "$pass" "$(printf '%s' "$line" | cut -f2-8 | awk -F'\t' '{printf "cpu %s%%  ws %s%%  fps %s  %s MB/s  other %s%%  front %s", $2, $3, $4, $5, $6, $7}')" >&2
             if [ "$want" = 1 ]; then vm "cat ~/termbench/sample-$cfg-$wl.txt" > "$out/sample-$cfg-$wl.txt"; fi
         done
@@ -315,8 +317,8 @@ done
 
 # The table: the median over passes of each config and workload.
 echo
-awk -F'\t' 'NR > 1 { k = $1 "\t" $2; n[k]++; cpu[k, n[k]] = $5; ws[k, n[k]] = $6; fps[k, n[k]] = $7; mb[k, n[k]] = $8; if (!(k in seen)) { seen[k] = 1; order[++m] = k } }
+awk -F'\t' 'NR > 1 { k = $1 "\t" $2; n[k]++; cpu[k, n[k]] = $5; ws[k, n[k]] = $6; fps[k, n[k]] = $7; mb[k, n[k]] = $8; rs[k, n[k]] = $12; if (!(k in seen)) { seen[k] = 1; order[++m] = k } }
     function med(a, k, c,   i, j, t, v) { for (i = 1; i <= c; i++) v[i] = a[k, i]; for (i = 1; i <= c; i++) for (j = i + 1; j <= c; j++) if (v[j] < v[i]) { t = v[i]; v[i] = v[j]; v[j] = t } return c % 2 ? v[(c + 1) / 2] : (v[c / 2] + v[c / 2 + 1]) / 2 }
-    END { printf "| config | workload | CPU %% | WindowServer %% | frames/s | MB/s |\n|---|---|---|---|---|---|\n"
-          for (i = 1; i <= m; i++) { k = order[i]; split(k, p, "\t"); printf "| %s | %s | %.1f | %.1f | %.1f | %.2f |\n", p[1], p[2], med(cpu, k, n[k]), med(ws, k, n[k]), med(fps, k, n[k]), med(mb, k, n[k]) } }' "$results" | tee "$out/table.md"
+    END { printf "| config | workload | CPU %% | WindowServer %% | frames/s | MB/s | RSS MB |\n|---|---|---|---|---|---|---|\n"
+          for (i = 1; i <= m; i++) { k = order[i]; split(k, p, "\t"); printf "| %s | %s | %.1f | %.1f | %.1f | %.2f | %.0f |\n", p[1], p[2], med(cpu, k, n[k]), med(ws, k, n[k]), med(fps, k, n[k]), med(mb, k, n[k]), med(rs, k, n[k]) } }' "$results" | tee "$out/table.md"
 echo "draw-bench: results in $out" >&2
