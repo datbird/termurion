@@ -67,19 +67,22 @@ pub enum Pacing {
     /// As fast as the GPU allows, never paused (before 1.1.4).
     Full,
     /// Up to 30 frames a second; pauses after 2 minutes with no change.
-    #[default]
     Balanced,
     /// Up to 15 frames a second; pauses after 30 seconds. For older hardware.
     Light,
+    /// Up to 60 frames a second, even on a faster screen; pauses after 2 minutes with no change.
+    #[default]
+    Smooth,
 }
 
 impl Pacing {
-    /// The `EffectsAnimation` setting's value: 0 Full, 1 Balanced, 2 Light.
+    /// The `EffectsAnimation` setting's value: 0 Full, 1 Balanced, 2 Light, 3 Smooth.
     pub fn from_setting(v: i64) -> Pacing {
         match v {
             0 => Pacing::Full,
+            1 => Pacing::Balanced,
             2 => Pacing::Light,
-            _ => Pacing::Balanced,
+            _ => Pacing::Smooth,
         }
     }
 
@@ -89,6 +92,7 @@ impl Pacing {
             Pacing::Full => None,
             Pacing::Balanced => Some(Duration::from_micros(33_333)),
             Pacing::Light => Some(Duration::from_micros(66_667)),
+            Pacing::Smooth => Some(Duration::from_micros(16_667)),
         }
     }
 
@@ -99,6 +103,7 @@ impl Pacing {
             Pacing::Full => None,
             Pacing::Balanced => Some(Duration::from_secs(120)),
             Pacing::Light => Some(Duration::from_secs(30)),
+            Pacing::Smooth => Some(Duration::from_secs(120)),
         }
     }
 }
@@ -1564,8 +1569,41 @@ mod tests {
         assert_eq!(Pacing::from_setting(0), Pacing::Full);
         assert_eq!(Pacing::from_setting(1), Pacing::Balanced);
         assert_eq!(Pacing::from_setting(2), Pacing::Light);
-        assert_eq!(Pacing::from_setting(7), Pacing::Balanced, "an unknown value takes the default");
-        assert_eq!(Pacing::default(), Pacing::Balanced);
+        assert_eq!(Pacing::from_setting(3), Pacing::Smooth);
+        assert_eq!(Pacing::from_setting(9), Pacing::Smooth, "an unknown value takes the default");
+        assert_eq!(Pacing::default(), Pacing::Smooth);
+    }
+
+    #[test]
+    fn smooth_caps_at_sixty_on_a_fast_screen() {
+        let t0 = Instant::now();
+        let mut clock = Clock::default();
+        let mut u = Uniforms::default();
+        clock.frame(&mut u, t0, (10, 10), None, true);
+        // A 120 Hz screen asks every 8.333 ms for one second (rounded up so two asks clear the 16.667 ms gap).
+        let mut drawn = 0;
+        for i in 1..=120u64 {
+            let now = t0 + Duration::from_nanos(i * 8_334_000);
+            if clock.next_frame(Animation::Always, now, true, Pacing::Smooth).is_some_and(|due| due <= now) {
+                clock.frame(&mut u, now, (10, 10), None, true);
+                drawn += 1;
+            }
+        }
+        assert!((59..=61).contains(&drawn), "drew {drawn} frames in a second");
+    }
+
+    #[test]
+    fn smooth_pauses_when_idle() {
+        let t0 = Instant::now();
+        let mut clock = Clock::default();
+        let mut u = Uniforms::default();
+        clock.frame(&mut u, t0, (10, 10), None, true);
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        assert!(clock.next_frame(Animation::Always, at(119), true, Pacing::Smooth).is_some());
+        assert_eq!(clock.next_frame(Animation::Always, at(120), true, Pacing::Smooth), None, "smooth pauses after 2 min");
+        let c = Cursor { rect: [1.0, 1.0, 1.0, 1.0], color: [1.0; 4], style: 0, visible: true };
+        clock.frame(&mut u, at(200), (10, 10), Some(c), true);
+        assert!(clock.next_frame(Animation::Always, at(201), true, Pacing::Smooth).is_some(), "a cursor change wakes it");
     }
 
     #[test]
