@@ -1444,23 +1444,53 @@ mod tests {
         assert!(*fastest < TRICKLE / 2, "the fastest echo took {fastest:?}");
     }
 
+    /// A real pty flood never makes a chunk over CHUNK, and a flood that stays ahead of the
+    /// reader is joined into full chunks. The joining is shown on prefilled 1 KiB datagrams, one
+    /// per read: a macOS pty holds about 1 KiB, so on a loaded machine a descheduled `yes` lets it
+    /// run dry and the reader rightly sends early, which says nothing about the joining.
     #[test]
     fn a_flood_arrives_in_joined_chunks() {
         let p = spawn(&PtyApi, "/bin/sh -c 'exec yes'", 80, 24).unwrap();
-        let (mut got, mut big, mut most) = (0, 0, 0);
+        let (mut got, mut most) = (0, 0);
         while got < 4 << 20 {
             let c = p.read_timeout(secs(5)).expect("the flood stalled");
             got += c.len();
             most = most.max(c.len());
-            if c.len() > CHUNK / 2 {
-                big += c.len();
-            }
         }
         assert!(most <= CHUNK, "a chunk of {most}");
-        // Reads are at most about 4 KiB (Linux) or 1 KiB (macOS), and the old reader sent each
-        // one (0.2% of the bytes came in chunks this big). A loaded machine that stops `yes`
-        // makes the reader send early, so only an eighth is asked for.
-        assert!(big * 8 >= got, "only {big} of {got} bytes came in chunks over {}", CHUNK / 2);
+        drop(p);
+
+        const READ: usize = 1024;
+        const READS: usize = 8 * CHUNK / READ;
+        let mut fds = [0 as RawFd; 2];
+        assert_eq!(unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_DGRAM, 0, fds.as_mut_ptr()) }, 0);
+        let (src, sink) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        // Room for every datagram at once (macOS counts the receiver's buffer, Linux the sender's).
+        let room: libc::c_int = 4 << 20;
+        for (fd, opt) in [(src.as_raw_fd(), libc::SO_RCVBUF), (sink.as_raw_fd(), libc::SO_SNDBUF)] {
+            let len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+            assert_eq!(unsafe { libc::setsockopt(fd, libc::SOL_SOCKET, opt, (&room as *const libc::c_int).cast(), len) }, 0);
+        }
+        set_nonblocking(sink.as_raw_fd()).unwrap();
+        for i in 0..READS {
+            let n = unsafe { libc::write(sink.as_raw_fd(), [b'y'; READ].as_ptr().cast(), READ) };
+            assert_eq!(n, READ as isize, "datagram {i}: {}", std::io::Error::last_os_error());
+        }
+        set_nonblocking(src.as_raw_fd()).unwrap();
+        let (rx, reader, wake, _budget) = reader_on(src);
+        let (mut got, mut sizes) = (0, Vec::new());
+        while got < READS * READ {
+            let c = rx.recv_timeout(secs(5)).expect("the datagram flood stalled");
+            got += c.len();
+            sizes.push(c.len());
+        }
+        unsafe { libc::write(wake.as_raw_fd(), [0u8].as_ptr().cast(), 1) };
+        ends_within(&reader, secs(1));
+        assert!(sizes.iter().all(|&n| n <= CHUNK && n % READ == 0), "{sizes:?}");
+        // Sent per read, there would be no full chunk. Only a reader stopped for the trickle cap
+        // (2 ms) mid chunk sends one early, so half the bytes in full chunks is a wide margin.
+        let full = sizes.iter().filter(|&&n| n == CHUNK).count();
+        assert!(full * CHUNK * 2 >= got, "{full} full chunks: {sizes:?}");
     }
 
     /// The writer shares the reader's non-blocking file: a paste the tty cannot hold at once
