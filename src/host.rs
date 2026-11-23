@@ -98,10 +98,12 @@ impl OutputSource for Pty {
         Pty::rearm_notify(self)
     }
 
-    // The exit first, so the reader's answer covers every byte the child wrote.
+    // The exit first, so the reader's answer covers every byte the child wrote. A paused reader
+    // holds what it has until it is unpaused, so it never settles: its end is told at once, as
+    // on Windows, and what it held follows the unpause.
     #[cfg(unix)]
     fn settled(&self) -> bool {
-        self.exit_code().is_some() && self.output_settled()
+        self.exit_code().is_some() && (self.is_paused() || self.output_settled())
     }
 }
 
@@ -1233,6 +1235,56 @@ pub(crate) mod tests {
         c.hello();
         c.send(&Msg::Attach { id, since: 0 });
         c.output_until(id, "after-pause");
+        c.send(&Msg::KillAll);
+    }
+
+    /// A session paused for Undo Close that ends says so at once, as on Windows, and what its
+    /// reader holds comes only once it is unpaused. macOS holds a shell's exit until its tty
+    /// output is read, so there a paused shell that wrote more ends only after the unpause.
+    #[test]
+    fn a_paused_session_reports_its_exit_at_once() {
+        let (name, _host) = start_host(Duration::from_secs(1));
+        let c = Conn::open(&name);
+        c.hello();
+        // Output (true) or the exit code (false), up to Exited.
+        let until_exit = |id: u64, wait: Duration| {
+            let (mut seen, stop) = (Vec::new(), Instant::now() + wait);
+            while let Ok(m) = c.rx.recv_timeout(stop.saturating_duration_since(Instant::now())) {
+                match m {
+                    Msg::Output { id: i, bytes, .. } if i == id => seen.push((true, String::from_utf8_lossy(&bytes).to_string())),
+                    Msg::Exited { id: i, code } if i == id => {
+                        seen.push((false, code.to_string()));
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            seen
+        };
+        let exited = |seen: &[(bool, String)]| seen.iter().find(|(out, _)| !out).map(|(_, code)| code.clone());
+        let text = |seen: &[(bool, String)]| seen.iter().filter(|(out, _)| *out).map(|(_, t)| t.as_str()).collect::<String>();
+        // Nothing written after the pause: Exited at once on every OS.
+        let id = c.launch(crate::platform::by_os("cmd.exe /d /c echo ready & ping -n 2 127.0.0.1 >nul & exit 4", "/bin/sh -c 'echo ready; sleep 1; exit 4'"));
+        c.output_until(id, "ready");
+        c.send(&Msg::Pause { id, paused: true });
+        assert_eq!(exited(&until_exit(id, Duration::from_secs(10))).as_deref(), Some("4"), "a paused session's end was not told");
+        // Written after the pause: held until the unpause.
+        let id = c.launch(crate::platform::by_os("cmd.exe /d /c echo ready & ping -n 2 127.0.0.1 >nul & echo held-text & exit 3", "/bin/sh -c 'echo ready; sleep 1; echo held-text; exit 3'"));
+        c.output_until(id, "ready");
+        c.send(&Msg::Pause { id, paused: true });
+        let paused = until_exit(id, Duration::from_secs(if cfg!(target_os = "macos") { 3 } else { 10 }));
+        assert!(!text(&paused).contains("held-text"), "a paused session's output came early: {paused:?}");
+        if cfg!(target_os = "macos") {
+            assert_eq!(exited(&paused), None, "macOS ended the shell with its output unread");
+            c.send(&Msg::Pause { id, paused: false });
+            let after = until_exit(id, Duration::from_secs(10));
+            assert!(text(&after).contains("held-text"), "{after:?}");
+            assert_eq!(exited(&after).as_deref(), Some("3"), "{after:?}");
+        } else {
+            assert_eq!(exited(&paused).as_deref(), Some("3"));
+            c.send(&Msg::Pause { id, paused: false });
+            c.output_until(id, "held-text");
+        }
         c.send(&Msg::KillAll);
     }
 
