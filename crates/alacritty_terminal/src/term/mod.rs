@@ -3917,28 +3917,34 @@ mod tests {
 
     #[test]
     fn shrink_lines_updates_inactive_cursor_pos() {
-        let mut size = TermSize::new(100, 10);
-        let mut term = Term::new(Config::default(), &size, VoidListener);
+        // Termurion patch 24: the alternate screen keeps scrollback by default, so the 5 rows the
+        // shrink pushes off the alternate screen join the main history on leaving (15 + 5).
+        // Without it (upstream), only the main screen's own 5 rows are added.
+        for (alt_scrollback, history) in [(true, 20), (false, 15)] {
+            let mut size = TermSize::new(100, 10);
+            let mut term = Term::new(Config::default(), &size, VoidListener);
+            term.set_alt_scrollback(alt_scrollback);
 
-        // Create 10 lines of scrollback.
-        for _ in 0..19 {
-            term.newline();
+            // Create 10 lines of scrollback.
+            for _ in 0..19 {
+                term.newline();
+            }
+            assert_eq!(term.history_size(), 10);
+            assert_eq!(term.grid.cursor.point, Point::new(Line(9), Column(0)));
+
+            // Enter alt screen.
+            term.set_private_mode(NamedPrivateMode::SwapScreenAndSetRestoreCursor.into());
+
+            // Increase visible lines.
+            size.screen_lines = 5;
+            term.resize(size);
+
+            // Leave alt screen.
+            term.unset_private_mode(NamedPrivateMode::SwapScreenAndSetRestoreCursor.into());
+
+            assert_eq!(term.history_size(), history, "alt scrollback {alt_scrollback}");
+            assert_eq!(term.grid.cursor.point, Point::new(Line(4), Column(0)));
         }
-        assert_eq!(term.history_size(), 10);
-        assert_eq!(term.grid.cursor.point, Point::new(Line(9), Column(0)));
-
-        // Enter alt screen.
-        term.set_private_mode(NamedPrivateMode::SwapScreenAndSetRestoreCursor.into());
-
-        // Increase visible lines.
-        size.screen_lines = 5;
-        term.resize(size);
-
-        // Leave alt screen.
-        term.unset_private_mode(NamedPrivateMode::SwapScreenAndSetRestoreCursor.into());
-
-        assert_eq!(term.history_size(), 15);
-        assert_eq!(term.grid.cursor.point, Point::new(Line(4), Column(0)));
     }
 
     #[test]
