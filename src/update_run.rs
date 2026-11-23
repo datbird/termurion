@@ -394,23 +394,39 @@ mod tests {
     #[test]
     fn quitting_cancels_a_running_fetch() {
         let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        // A server that accepts and never answers.
+        // A server that accepts and never answers. It says when curl has connected, so the cancel
+        // ends a fetch that is running, and it holds the connection until the test is done.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let (connected, on_connect) = std::sync::mpsc::channel();
+        let (done, on_done) = std::sync::mpsc::channel::<()>();
         let holder = std::thread::spawn(move || {
-            let conn = listener.accept().ok();
-            std::thread::sleep(Duration::from_secs(6));
-            drop(conn);
+            // Never a blocking accept: a curl that never connects must not hang the test.
+            let until = Instant::now() + Duration::from_secs(60);
+            while Instant::now() < until {
+                match listener.accept() {
+                    Ok((conn, _)) => {
+                        let _ = connected.send(());
+                        let _ = on_done.recv_timeout(Duration::from_secs(60));
+                        drop(conn);
+                        return;
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(10)),
+                }
+            }
         });
         let url = format!("http://127.0.0.1:{port}/");
-        let started = Instant::now();
         let worker = std::thread::spawn(move || fetch_with(&curl(), &url));
-        std::thread::sleep(Duration::from_millis(800));
+        on_connect.recv_timeout(Duration::from_secs(60)).expect("curl connected to the server");
+        let cancelled = Instant::now();
         cancel_running();
         let got = worker.join().unwrap();
-        assert!(started.elapsed() < Duration::from_secs(5), "curl was ended, not waited out");
+        // The server never answers and curl's own limit is 30 s: only the cancel ends it this soon.
+        assert!(cancelled.elapsed() < Duration::from_secs(5), "curl was ended, not waited out");
         assert!(matches!(&got, Fetched::Transport(t) if t.contains("cancel")), "{got:?}");
-        let _ = holder.join();
+        drop(done);
+        holder.join().unwrap();
     }
 
     #[test]
