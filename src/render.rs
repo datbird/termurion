@@ -4679,6 +4679,40 @@ pub(crate) mod tests {
         assert!(!three.frame_kept(), "a third pass writes the frame texture");
     }
 
+    /// Whether the test device has view formats (not on GL). Kinds with `views: true` need them.
+    fn views_supported() -> bool {
+        let (_, adapter, _, _) = super::test_gpu::shared_all();
+        crate::render_fx_gpu::view_formats_supported(&adapter)
+    }
+
+    /// GL has one context behind a lock that panics after a second ("most-likely a deadlock"), so
+    /// region tests queued on it abort the run. On GL each region test thread takes this lock
+    /// once, on first use, and keeps it until the test ends: they run one at a time.
+    fn serial_on_gl() {
+        use std::cell::RefCell;
+        use std::sync::{Mutex, MutexGuard};
+        static ONE: Mutex<()> = Mutex::new(());
+        thread_local!(static HELD: RefCell<Option<MutexGuard<'static, ()>>> = const { RefCell::new(None) });
+        if views_supported() {
+            return;
+        }
+        HELD.with(|h| {
+            let mut h = h.borrow_mut();
+            if h.is_none() {
+                *h = Some(ONE.lock().unwrap_or_else(|e| e.into_inner()));
+            }
+        });
+    }
+
+    /// True when `kind` can run here; otherwise prints why it was skipped, so a skip is never silent.
+    fn runs_here(kind: ChainKind, test: &str) -> bool {
+        if kind.views && !views_supported() {
+            eprintln!("SKIPPED {test} {kind:?}: this backend has no view formats");
+            return false;
+        }
+        true
+    }
+
     /// A window texture for the region tests: the sRGB format with its raw twin, read back.
     struct Window {
         tex: wgpu::Texture,
@@ -4689,7 +4723,9 @@ pub(crate) mod tests {
 
     impl Window {
         fn new(device: &wgpu::Device, (w, h): (u32, u32)) -> Window {
+            serial_on_gl();
             let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+            let (views, twin) = (views_supported(), [format.remove_srgb_suffix()]);
             let tex = device.create_texture(&wgpu::TextureDescriptor {
                 label: None,
                 size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -4698,10 +4734,15 @@ pub(crate) mod tests {
                 dimension: wgpu::TextureDimension::D2,
                 format,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[format.remove_srgb_suffix()],
+                // GL cannot make a raw twin of an sRGB texture: leave it out there, and only the views-off kinds run.
+                view_formats: if views { &twin } else { &[] },
             });
             let srgb = tex.create_view(&Default::default());
-            let raw = tex.create_view(&wgpu::TextureViewDescriptor { format: Some(format.remove_srgb_suffix()), ..Default::default() });
+            let raw = if views {
+                tex.create_view(&wgpu::TextureViewDescriptor { format: Some(format.remove_srgb_suffix()), ..Default::default() })
+            } else {
+                tex.create_view(&Default::default())
+            };
             Window { tex, srgb, raw, size: (w, h) }
         }
 
@@ -4744,6 +4785,18 @@ pub(crate) mod tests {
         ChainKind { views: true, keep_alpha: true, live_lines: true },
         ChainKind { views: false, keep_alpha: true, live_lines: false },
     ];
+
+    /// The kinds this backend can run. A kind that needs view formats is left out on GL, and
+    /// the skip is printed so nothing passes silently with nothing checked.
+    fn kinds() -> Vec<ChainKind> {
+        serial_on_gl();
+        CHAIN_KINDS.into_iter().filter(|k| runs_here(*k, "region tests")).collect()
+    }
+
+    fn pick(i: usize) -> ChainKind {
+        let all = kinds();
+        all[i % all.len()]
+    }
 
     fn compiled_for(p: &crate::render_fx::Plugin, kind: ChainKind) -> Vec<crate::render_fx::Compiled> {
         p.compile_with(&[("LINE_EFFECT", kind.live_lines)]).unwrap()
@@ -4961,6 +5014,14 @@ pub(crate) mod tests {
     fn per_region_plugin(check: &(dyn Fn(&crate::render_fx::Plugin) -> (usize, Vec<String>) + Sync)) -> (usize, Vec<String>) {
         let only = std::env::var("TERMURION_REGION_ONLY").ok();
         let plugins: Vec<_> = region_plugins().into_iter().filter(|p| only.as_deref().is_none_or(|o| o == p.id)).collect();
+        // GL keeps one context behind a lock that gives up after a while ("most-likely a deadlock"):
+        // many threads queued on it abort the run, so there the plugins go one after another.
+        if !views_supported() {
+            return plugins.iter().map(check).fold((0, Vec::new()), |(n, mut bad), (m, b)| {
+                bad.extend(b);
+                (n + m, bad)
+            });
+        }
         std::thread::scope(|scope| {
             let runs: Vec<_> = plugins.iter().map(|p| scope.spawn(move || check(p))).collect();
             runs.into_iter().map(|h| h.join().unwrap()).fold((0, Vec::new()), |(n, mut bad), (m, b)| {
@@ -5002,7 +5063,7 @@ pub(crate) mod tests {
                 let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", px);
                 let preset = preset_of(p);
                 for (i, name) in screens.iter().enumerate() {
-                    let kind = CHAIN_KINDS[(i + p.id.len()) % CHAIN_KINDS.len()];
+                    let kind = pick(i + p.id.len());
                     let (frame, size, bg) = agent_frame(&r, name, preset);
                     let shots = region_shots(&mut r, p, &frame, size, bg, preset, kind, &plan);
                     regions += check_shots(&shots, kind, size, &format!("{} {px}px {name}", p.id), &mut bad);
@@ -5040,7 +5101,7 @@ pub(crate) mod tests {
         let preset = preset_of(&p);
         let (frame, size, bg) = agent_frame(&r, "shell-rules", preset);
         let plain = plain_through_chain(&mut r, &frame, size);
-        let shots = region_shots(&mut r, &p, &frame, size, bg, preset, CHAIN_KINDS[0], &Plan { hold: 100, every: 50, ..Default::default() });
+        let shots = region_shots(&mut r, &p, &frame, size, bg, preset, kinds()[0], &Plan { hold: 100, every: 50, ..Default::default() });
         let full = &shots.last().expect("a shot").full;
         let c = frame.fx.as_ref().unwrap().cursor.unwrap().rect;
         let pad = 3.0 * r.cell.1.max(2.0 * r.cell.0).max(c[3]);
@@ -5062,7 +5123,7 @@ pub(crate) mod tests {
             let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
             let preset = preset_of(p);
             for (i, name) in AGENT_SCREENS.iter().enumerate() {
-                let kind = CHAIN_KINDS[(i + p.id.len()) % CHAIN_KINDS.len()];
+                let kind = pick(i + p.id.len());
                 let (frame, size, bg) = agent_frame(&r, name, preset);
                 let next = agent_frame(&r, AGENT_SCREENS[(i + 1) % AGENT_SCREENS.len()], preset).0;
                 let plan = Plan { events: true, hold: 1000, every: 50, built: 1, changed: Some(next), ..Default::default() };
@@ -5096,7 +5157,7 @@ pub(crate) mod tests {
                 let (frame, size, bg) = agent_frame(&r, name, preset);
                 let next = agent_frame(&r, next, preset).0;
                 let (mut on_built, mut on_screen) = (0, 0);
-                for kind in CHAIN_KINDS {
+                for kind in kinds() {
                     let plan = Plan { events: i == 0, hold, every: 50, built: 2, changed: Some(next.clone()), ..Default::default() };
                     let shots = region_shots(&mut r, p, &frame, size, bg, preset, kind, &plan);
                     check_shots(&shots, kind, size, &format!("{} mixed {name}", p.id), &mut bad);
@@ -5132,7 +5193,7 @@ pub(crate) mod tests {
             let preset = preset_of(&p);
             let (frame, size, bg) = agent_frame(&r, "hermes", preset);
             let next = agent_frame(&r, "codex", preset).0;
-            for kind in CHAIN_KINDS {
+            for kind in kinds() {
                 let plan = Plan { events: true, hold: 300, every: 50, built: 2, changed: Some(next.clone()), then: Some(then.clone()), ..Default::default() };
                 let shots = region_shots(&mut r, &p, &frame, size, bg, preset, kind, &plan);
                 check_shots(&shots, kind, size, &format!("{a}+{b}"), &mut bad);
@@ -5155,7 +5216,7 @@ pub(crate) mod tests {
             let preset = preset_of(p);
             let plan = Plan { hold: 6000, every: 100, ..Default::default() };
             for (i, name) in ["hermes", "codex"].iter().enumerate() {
-                let kind = CHAIN_KINDS[(i * 2 + p.id.len()) % CHAIN_KINDS.len()];
+                let kind = pick(i * 2 + p.id.len());
                 let (frame, size, bg) = agent_frame(&r, name, preset);
                 let shots = region_shots(&mut r, p, &frame, size, bg, preset, kind, &plan);
                 regions += check_shots(&shots, kind, size, &format!("{} {name}", p.id), &mut bad);
@@ -5182,8 +5243,8 @@ pub(crate) mod tests {
         let (frame, size, bg) = agent_frame(&r, "hermes", preset);
         let plan = Plan { hold: 6000, every: 50, underline: true, ..Default::default() };
         let mut bad = Vec::new();
-        let shots = region_shots(&mut r, &p, &frame, size, bg, preset, CHAIN_KINDS[0], &plan);
-        let regions = check_shots(&shots, CHAIN_KINDS[0], size, "shockwave wide", &mut bad);
+        let shots = region_shots(&mut r, &p, &frame, size, bg, preset, kinds()[0], &plan);
+        let regions = check_shots(&shots, kinds()[0], size, "shockwave wide", &mut bad);
         assert!(regions > 0, "no frame shaded only its region");
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
@@ -5200,8 +5261,8 @@ pub(crate) mod tests {
         let (frame, size, bg) = agent_frame(&r, "hermes", preset);
         let plan = Plan { hold: 6000, every: 50, underline: true, wide: true, ..Default::default() };
         let mut bad = Vec::new();
-        let shots = region_shots(&mut r, &p, &frame, size, bg, preset, CHAIN_KINDS[0], &plan);
-        assert!(check_shots(&shots, CHAIN_KINDS[0], size, "shockwave wide underline", &mut bad) > 0, "no frame shaded only its region");
+        let shots = region_shots(&mut r, &p, &frame, size, bg, preset, kinds()[0], &plan);
+        assert!(check_shots(&shots, kinds()[0], size, "shockwave wide underline", &mut bad) > 0, "no frame shaded only its region");
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
@@ -5220,8 +5281,8 @@ pub(crate) mod tests {
         let terms = vec![crate::render_fx::RegionTerm::FullAfterChange(std::time::Duration::from_millis(1300)), crate::render_fx::RegionTerm::Cursor(2.75)];
         let plan = Plan { hold: 6000, every: 50, wide: true, terms: Some(terms), ..Default::default() };
         let mut bad = Vec::new();
-        let shots = region_shots(&mut r, &p, &frame, size, bg, preset, CHAIN_KINDS[0], &plan);
-        assert!(check_shots(&shots, CHAIN_KINDS[0], size, "shockwave wide block", &mut bad) > 0, "no frame shaded only its region");
+        let shots = region_shots(&mut r, &p, &frame, size, bg, preset, kinds()[0], &plan);
+        assert!(check_shots(&shots, kinds()[0], size, "shockwave wide block", &mut bad) > 0, "no frame shaded only its region");
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
@@ -5236,8 +5297,8 @@ pub(crate) mod tests {
         let (frame, size, bg) = agent_frame(&r, "hermes", preset);
         let plan = Plan { hold: 1500, every: 100, terms: Some(vec![crate::render_fx::RegionTerm::Cursor(0.0)]), ..Default::default() };
         let mut bad = Vec::new();
-        let shots = region_shots(&mut r, &p, &frame, size, bg, preset, CHAIN_KINDS[0], &plan);
-        assert!(check_shots(&shots, CHAIN_KINDS[0], size, "neon cursor:0", &mut bad) > 0);
+        let shots = region_shots(&mut r, &p, &frame, size, bg, preset, kinds()[0], &plan);
+        assert!(check_shots(&shots, kinds()[0], size, "neon cursor:0", &mut bad) > 0);
         assert!(!bad.is_empty(), "a region of the bare cursor passed");
     }
 
@@ -5245,10 +5306,10 @@ pub(crate) mod tests {
     fn plain_through_chain(r: &mut Renderer, frame: &Frame, size: (u32, u32)) -> Vec<u8> {
         let (device, queue) = device();
         let copy = crate::render_fx::compile_glsl("void mainImage(out vec4 c, in vec2 p) { c = texture(iChannel0, p / iResolution.xy); }").unwrap();
-        let mut chain = chain_of(&device, vec![copy], CHAIN_KINDS[0], None);
+        let mut chain = chain_of(&device, vec![copy], kinds()[0], None);
         let win = Window::new(&device, size);
         let u = crate::render_fx::Uniforms { resolution: [size.0 as f32, size.1 as f32, 1.0], ..Default::default() };
-        r.draw_fx_for(frame, &mut chain, &u, win.out(CHAIN_KINDS[0]), size.0, size.1, false, None).unwrap();
+        r.draw_fx_for(frame, &mut chain, &u, win.out(kinds()[0]), size.0, size.1, false, None).unwrap();
         win.read(&device, &queue)
     }
 
@@ -5268,7 +5329,7 @@ pub(crate) mod tests {
             let preset = preset_of(p);
             let (frame, size, bg) = agent_frame(&r, "hermes", preset);
             let plain = plain_through_chain(&mut r, &frame, size);
-            let kind = CHAIN_KINDS[i % CHAIN_KINDS.len()];
+            let kind = pick(i);
             let terms: Vec<_> = p.manifest.region.clone().unwrap().into_iter().filter(|t| !matches!(t, crate::render_fx::RegionTerm::FullAfterChange(_))).collect();
             let jumped = event_times(0)[1];
             let plan = Plan { events: true, hold: 0, every: 50, terms: Some(terms), ..Default::default() };
@@ -5308,7 +5369,7 @@ pub(crate) mod tests {
         let bigger = (size.0 + 64, size.1 + 32);
         // Shades nothing: only a full pass draws the effect.
         let tiny = FrameRegion { own: None, with_last: Some(vec![PxRect { x: 0, y: 0, w: 1, h: 1 }]) };
-        for kind in CHAIN_KINDS {
+        for kind in kinds() {
             let mut region = chain_of(&device, compiled_for(&p, kind), kind, p.manifest.region.clone());
             let mut full = chain_of(&device, compiled_for(&p, kind), kind, None);
             let mut u = Uniforms { resolution: [size.0 as f32, size.1 as f32, 1.0], time: 0.5, ..Default::default() };
@@ -5346,7 +5407,7 @@ pub(crate) mod tests {
         let p = region_plugins().into_iter().next().expect("a plugin with a region");
         let (frame, size, _) = agent_frame(&r, "hermes", preset_of(&p));
         let tiny = FrameRegion { own: None, with_last: Some(vec![PxRect { x: 0, y: 0, w: 1, h: 1 }]) };
-        for kind in CHAIN_KINDS {
+        for kind in kinds() {
             let mut region = chain_of(&device, compiled_for(&p, kind), kind, p.manifest.region.clone());
             let mut full = chain_of(&device, compiled_for(&p, kind), kind, None);
             let mut u = Uniforms { resolution: [size.0 as f32, size.1 as f32, 1.0], time: 0.5, ..Default::default() };
@@ -5407,7 +5468,7 @@ pub(crate) mod tests {
             (chain.shaded_region(), same)
         };
         // Live Lines makes the region full; the other two kinds cover both view format paths.
-        for kind in CHAIN_KINDS.into_iter().filter(|k| !k.live_lines) {
+        for kind in kinds().into_iter().filter(|k| !k.live_lines) {
             assert_eq!(built(&mut r, mine, kind), (false, true), "{kind:?}: a user plugin's built frame runs the full pass");
             assert!(built(&mut r, &bundled, kind).0, "{kind:?}: a bundled plugin's built frame shades only its region");
         }
@@ -5427,7 +5488,7 @@ pub(crate) mod tests {
             let (mut frame, size, bg) = agent_frame(&r, "codex", preset);
             frame.clear = rgba(bg, 0.0);
             let plan = Plan { hold: full_window(p.manifest.region.as_deref().unwrap()) + 600, every: 300, ..Default::default() };
-            for kind in CHAIN_KINDS.into_iter().filter(|k| !k.keep_alpha) {
+            for kind in kinds().into_iter().filter(|k| !k.keep_alpha) {
                 let shots = region_shots(&mut r, &p, &frame, size, bg, preset, kind, &plan);
                 if !shots.iter().any(|s| s.region_path) {
                     bad.push(format!("{} {kind:?}: no frame shaded only its region", p.id));
