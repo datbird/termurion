@@ -679,9 +679,15 @@ mod tests {
         assert_eq!(upload_request(None, "one line"), format!("\x1b]1337;RequestUpload=format=tgz;version={}\x07", b64(b"one line")));
         assert_eq!(upload_request(None, ""), "\x1b]1337;RequestUpload=format=tgz;version=\x07");
 
-        let _td = TempDir::new("t");
-        let cwd = _td.to_path_buf();
+        let td = TempDir::new("t");
+        let cwd = td.to_path_buf();
         let loc = cwd.to_string_lossy().into_owned();
+        // Every run below has the test folder as its working folder, the default location.
+        let console = |replies: &[u8]| {
+            let mut h = console(replies);
+            h.cwd = cwd.clone();
+            h
+        };
         let mut h = console(b"ok\nQUJD\rREVG\r\r");
         h.answers = [ok(version), ok("")].into();
         assert_eq!(h.run("it2ul", &[]), 0);
