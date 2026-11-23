@@ -80,7 +80,6 @@ fn screen(cols: usize, rows: usize, ambiguous_wide: bool, triggers: bool, fast: 
     s.set_fast_paths(fast);
     if triggers {
         s.set_triggers(vec![trig("flood|quick")], TriggerPrefs::default());
-        s.triggers.unbudgeted_for_test();
     }
     s
 }

@@ -163,8 +163,6 @@ mod tests {
             .collect();
         let mut p = Pane::chunked_for_test(id, chunks);
         p.screen.set_triggers(vec![trig("ERROR", "HighlightTrigger", "{#ff0000,#000000}"), trig("line 1[0-9]5 ", "MarkTrigger", ""), trig("line 7[0-9] ", "AlertTrigger", "seen")], TriggerPrefs::default());
-        // Both copies must check every line, however slow the machine is.
-        p.screen.triggers.unbudgeted_for_test();
         p
     }
 

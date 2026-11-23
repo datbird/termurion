@@ -45,6 +45,12 @@ pub fn idempotent_due(active: bool, allow: bool, dirty: bool, last: Option<Insta
 pub const MAX_TRIGGERS: usize = crate::triggers::MAX_TRIGGERS;
 pub const MAX_PATTERN: usize = crate::triggers::MAX_PATTERN;
 pub const TRIGGER_BUDGET: Duration = Duration::from_millis(20);
+/// The budget a screen uses when none is set. A test build uses an hour: a loaded test machine
+/// must check every line the same way, so only the tests of the budget set `TRIGGER_BUDGET`.
+#[cfg(not(test))]
+const UNSET_BUDGET: Duration = TRIGGER_BUDGET;
+#[cfg(test)]
+const UNSET_BUDGET: Duration = Duration::from_secs(3600);
 const MAX_MATCHES: usize = 256;
 const MAX_REQUESTS: usize = 1024;
 /// Steps a backtracking pattern may take per match attempt, and the size of what it delegates.
@@ -236,9 +242,9 @@ pub struct TriggerState {
     skip: Vec<std::ops::Range<i64>>,
     /// When this feed's trigger checks must stop (B5), and the request count it began at.
     deadline: Option<Instant>,
-    /// The time one feed may spend (None: `TRIGGER_BUDGET`); a test of the line count lengthens it.
+    /// The time one feed may spend (None: `UNSET_BUDGET`); a test of the budget sets it.
     budget: Option<Duration>,
-    /// The time one pattern may spend in one line (None: `TRIGGER_BUDGET`); a test shortens it.
+    /// The time one pattern may spend in one line (None: `UNSET_BUDGET`); a test of the budget sets it.
     pattern_budget: Option<Duration>,
     req_base: usize,
     /// The banner for skipped checks was said.
@@ -250,15 +256,6 @@ pub struct TriggerState {
     idem_pass: bool,
     /// Time in triggers against time in the terminal's own work, for the slow-triggers offer.
     pub(crate) slow: SlowDetector,
-}
-
-#[cfg(test)]
-impl TriggerState {
-    /// Test seam: no time budget, so a loaded test machine checks every line the same way.
-    pub(crate) fn unbudgeted_for_test(&mut self) {
-        self.budget = Some(Duration::from_secs(3600));
-        self.pattern_budget = Some(Duration::from_secs(3600));
-    }
 }
 
 /// iTerm2's triggers slowness detector (`PTYTriggerEvaluator.m:221-241`, `iTermSlownessDetector`): over
@@ -715,7 +712,7 @@ impl Screen {
 
     /// A feed's trigger checks (all its pieces) start a clock and a request count (B5).
     pub(crate) fn begin_budget(&mut self) {
-        self.triggers.deadline = Some(Instant::now() + self.triggers.budget.unwrap_or(TRIGGER_BUDGET));
+        self.triggers.deadline = Some(Instant::now() + self.triggers.budget.unwrap_or(UNSET_BUDGET));
         self.triggers.req_base = self.requests.len();
     }
 
@@ -877,7 +874,7 @@ impl Screen {
             let raw = raw_parameter(&t.action);
             let mut fired = false;
             let mut stop = false;
-            let own = Instant::now() + self.triggers.pattern_budget.unwrap_or(TRIGGER_BUDGET);
+            let own = Instant::now() + self.triggers.pattern_budget.unwrap_or(UNSET_BUDGET);
             let matching = Instant::now();
             let found = re.matches(&line.text, own, self.triggers.deadline);
             self.triggers.list[i].cpu.add(matching.elapsed().as_secs_f64() * 1e6);
@@ -1206,6 +1203,11 @@ mod tests {
         s.take_requests().into_iter().filter(|r| matches!(r, Request::Trigger(TriggerRequest::Alert { .. }))).count()
     }
 
+    /// This thread's CPU time: what a check costs, which a loaded machine's wall clock does not show.
+    fn cpu() -> Duration {
+        crate::platform::clock::thread_cpu_time()
+    }
+
     fn too_slow(s: &mut Screen) -> (usize, usize) {
         let r = s.take_requests();
         (r.iter().filter(|r| matches!(r, Request::Trigger(TriggerRequest::TooSlow))).count(), r.iter().filter(|r| matches!(r, Request::Trigger(TriggerRequest::PatternTooSlow { .. }))).count())
@@ -1216,12 +1218,13 @@ mod tests {
     fn catastrophic_patterns_are_bounded() {
         let mut s = Screen::new(80, 24);
         s.set_triggers((0..10).map(|_| trig("(?=a)(a+)+$", "AlertTrigger", "x", false)).collect(), TriggerPrefs::default());
+        (s.triggers.budget, s.triggers.pattern_budget) = (Some(TRIGGER_BUDGET), Some(TRIGGER_BUDGET));
         let line = format!("{}b\r\n", "a".repeat(40));
-        let t0 = std::time::Instant::now();
+        let t0 = cpu();
         for _ in 0..30 {
             s.feed(line.as_bytes());
         }
-        assert!(t0.elapsed() < Duration::from_secs(2), "took {:?}", t0.elapsed());
+        assert!(cpu() - t0 < Duration::from_secs(2), "took {:?}", cpu() - t0);
         let (_, slow) = too_slow(&mut s);
         assert_eq!(slow, 10, "each pattern is turned off once, with a notice");
         assert!(s.trigger_errors().len() == 10);
@@ -1242,10 +1245,10 @@ mod tests {
         // The linear engine on the classic bad line: instant, and it still matches.
         let mut s = Screen::new(80, 24);
         s.set_triggers(vec![trig("(a+)+$", "AlertTrigger", "x", false)], TriggerPrefs::default());
-        let t0 = std::time::Instant::now();
+        let t0 = cpu();
         s.feed(format!("{}\r\n", "a".repeat(70)).as_bytes());
         s.feed(format!("{}b\r\n", "a".repeat(70)).as_bytes());
-        assert!(t0.elapsed() < Duration::from_millis(500));
+        assert!(cpu() - t0 < Duration::from_millis(500));
         assert_eq!(alerts(&mut s), 1, "the line ending in a, not the one ending in b");
     }
 
@@ -1255,14 +1258,15 @@ mod tests {
         let mut s = Screen::new(80, 24);
         s.set_triggers((0..300).map(|_| trig("(?=a)(a+)+$", "AlertTrigger", "x", false)).collect(), TriggerPrefs::default());
         assert_eq!(s.triggers.list.len(), MAX_TRIGGERS);
+        (s.triggers.budget, s.triggers.pattern_budget) = (Some(TRIGGER_BUDGET), Some(TRIGGER_BUDGET));
         let mut text = String::new();
         for _ in 0..1000 {
             text.push_str(&"a".repeat(40));
             text.push_str("b\r\n");
         }
-        let t0 = std::time::Instant::now();
+        let t0 = cpu();
         s.feed(text.as_bytes());
-        assert!(t0.elapsed() < Duration::from_secs(1), "took {:?}", t0.elapsed());
+        assert!(cpu() - t0 < Duration::from_secs(1), "took {:?}", cpu() - t0);
         assert_eq!(too_slow(&mut s).0, 1);
         s.feed(text.as_bytes());
         assert_eq!(too_slow(&mut s).0, 0, "said once per pane");
@@ -1290,9 +1294,9 @@ mod tests {
     fn one_search_fits_the_budget() {
         let m = Matcher::compile("(?=a)(a+)+$").unwrap();
         let text = format!("{}b", "a".repeat(40));
-        let t0 = Instant::now();
+        let t0 = cpu();
         let r = m.matches(&text, Instant::now() + Duration::from_secs(60), None);
-        let took = t0.elapsed();
+        let took = cpu() - t0;
         eprintln!("one limit-bound search took {took:?}");
         assert!(r.is_err() || r.is_ok_and(|(v, _)| v.is_empty()), "the limit ends the search");
         assert!(took < Duration::from_millis(100), "{took:?}");
@@ -1520,9 +1524,9 @@ mod tests {
     fn a_huge_saved_size_is_held_to_the_clamp() {
         use alacritty_terminal::index::{Column, Line};
         let mut r = Screen::with_scrollback(39, 22, 1000);
-        let started = std::time::Instant::now();
+        let started = cpu();
         r.feed_restored_sized("one\ntwo\n", Some((2, 0)), None, Some((9999, 9999)));
-        let took = started.elapsed();
+        let took = cpu() - started;
         assert_eq!((r.term().columns(), r.term().screen_lines()), (39, 22));
         assert!(took < std::time::Duration::from_secs(2), "{took:?}");
         let g = r.term().grid();
