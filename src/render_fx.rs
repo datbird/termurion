@@ -453,7 +453,13 @@ fn discover_in(builtin: &[crate::render_fx_builtin::Builtin], user: Option<&Path
             }
             let id = e.file_name().to_string_lossy().to_string();
             match std::fs::read_to_string(&manifest_path).map_err(|e| e.to_string()).and_then(|t| parse_manifest(&t)) {
-                Ok(manifest) => {
+                Ok(mut manifest) => {
+                    // Only the bundled effects are proven to draw nothing outside their region
+                    // on a frame with a new picture (the region pixel tests). A user's region
+                    // keeps the 1.1.10 meaning: such a frame runs the full pass.
+                    if let Some(terms) = manifest.region.as_mut().filter(|t| !t.contains(&RegionTerm::StillLooks)) {
+                        terms.push(RegionTerm::StillLooks);
+                    }
                     found.insert(id.clone(), Plugin { id, manifest, origin: Origin::Folder(dir) });
                 }
                 Err(err) => errors.push((id, err)),

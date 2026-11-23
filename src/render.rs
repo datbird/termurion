@@ -5368,6 +5368,51 @@ pub(crate) mod tests {
         }
     }
 
+    /// A frame with a new picture shades only the region for a bundled effect, but runs the full
+    /// pass for the same effect loaded from the user's folder: only the bundled ones are proven
+    /// to look the same that way (the region pixel tests).
+    #[test]
+    fn a_user_plugin_region_limits_only_animation_frames() {
+        use crate::render_fx::{RegionTerm, Uniforms, frame_rects};
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let td = TempDir::new("render_user_region_");
+        let user = td.to_path_buf();
+        let dir = user.join("mine");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("plugin.toml"), "name = \"Mine\"\nshaders = \"m.glsl\"\nanimation = \"always\"\nregion = [\"cursor\"]").unwrap();
+        std::fs::write(dir.join("m.glsl"), "void mainImage(out vec4 c, in vec2 p) { vec4 t = texture(iChannel0, p / iResolution.xy); c = vec4(t.rgb * 0.5, 1.0); }").unwrap();
+        let (list, errors) = crate::render_fx::discover(Some(&user));
+        assert!(errors.is_empty(), "{errors:?}");
+        let mine = list.iter().find(|p| p.id == "mine").expect("the user plugin");
+        let bundled = region_plugins().into_iter().find(|p| !still_looks(p)).expect("a bundled plugin with a region");
+        let (frame, size, _) = agent_frame(&r, "hermes", preset_of(&bundled));
+        let mut u = Uniforms { resolution: [size.0 as f32, size.1 as f32, 1.0], time: 30.0, ..Default::default() };
+        u.current_cursor = frame.fx.as_ref().unwrap().cursor.map_or([0.0; 4], |c| [c.rect[0], c.rect[1] + c.rect[3], c.rect[2], c.rect[3]]);
+        u.previous_cursor = u.current_cursor;
+        let built = |r: &mut Renderer, p: &crate::render_fx::Plugin, kind: ChainKind| {
+            let terms: Vec<RegionTerm> = crate::render_fx::chain_region(&[&p.manifest]).expect("a region");
+            let mut chain = chain_of(&device, compiled_for(p, kind), kind, Some(terms.clone()));
+            let mut full = chain_of(&device, compiled_for(p, kind), kind, None);
+            let rects = frame_rects(&terms, &u, &u, r.cell, kind.live_lines, size);
+            assert!(rects.own.is_some(), "{} {kind:?}: a bounded region", p.id);
+            let (win, win_f) = (Window::new(&device, size), Window::new(&device, size));
+            // Two built frames: the first makes the kept output.
+            for _ in 0..2 {
+                chain.keep_output(true);
+                r.draw_fx_for(&frame, &mut chain, &u, win.out(kind), size.0, size.1, false, Some(&rects)).unwrap();
+            }
+            r.draw_fx_for(&frame, &mut full, &u, win_f.out(kind), size.0, size.1, false, None).unwrap();
+            let same = diff_box(&win.read(&device, &queue), &win_f.read(&device, &queue), size.0).is_none();
+            (chain.shaded_region(), same)
+        };
+        // Live Lines makes the region full; the other two kinds cover both view format paths.
+        for kind in CHAIN_KINDS.into_iter().filter(|k| !k.live_lines) {
+            assert_eq!(built(&mut r, mine, kind), (false, true), "{kind:?}: a user plugin's built frame runs the full pass");
+            assert!(built(&mut r, &bundled, kind).0, "{kind:?}: a bundled plugin's built frame shades only its region");
+        }
+    }
+
     /// An opaque window (keep_alpha false) keeps every alpha byte at 255 on region frames, with
     /// and without view formats, over a transparent clear.
     #[test]

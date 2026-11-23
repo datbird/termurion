@@ -112,14 +112,14 @@ region = ["cursor:2.5", "input_box:1"]   # optional
 - `always`: the window redraws every frame while it has focus, at the pace Settings > General > GPU Renderer > "Effects animation" allows (see [GPU Renderer](help/gpu-renderer.md#effects-animation)).
 - `off`: the effect draws only when the terminal draws.
 
-- `region` (optional) says where the effect can change pixels, so Termurion shades only there: on frames where nothing but the animation moved, and on frames with a new terminal picture (the rest of the window shows that picture as is). Each term is a name, then `:` and a pad in cell heights (no number means 0):
+- `region` (optional) says where the effect can change pixels, so Termurion shades only there on frames where nothing but the animation moved. A frame with a new terminal picture runs the full pass. (The built-in effects without `still_looks`, which tests prove draw nothing outside their region, also shade only their region on such a frame; the rest of the window shows the new picture as is. An effect in your `RenderPlugins` folder never does, even with a built-in effect's name.) Each term is a name, then `:` and a pad in cell heights (no number means 0):
   - `cursor`: the cursor, grown by the pad.
   - `cursor_path`: the box around the previous and the current cursor, grown by the pad.
   - `prompt_mark`: the profile's prompt mark cell, grown by the pad. When Termurion finds no mark, the built-in effects look for one themselves, so the term covers where they look instead: the first ten cells of the cursor's row and of up to 11 rows above it.
   - `input_box`: Claude Code's input box lines (or its band), grown by the pad. When Termurion finds no box, the built-in effects look for lines across the window themselves, so the term covers where they look instead: the whole width from 7.5 rows above the cursor to 3.6 rows below its top.
   - `full_after_change:600`: the whole window for that many milliseconds after the cursor changes; the number is milliseconds and is required.
   - `full`: the whole window, the same as no `region`.
-  - `still_looks`: the effect also restyles pixels outside the other terms from what the picture shows and where the cursor is, never with time (Cyber colors your sent prompts anywhere in the window). A frame with a new picture then runs the full pass; frames where only the animation moved still shade the region. A cursor change must also make the frame full, so list `full_after_change` with it.
+  - `still_looks`: for the built-in effects. The effect also restyles pixels outside the other terms from what the picture shows and where the cursor is, never with time (Cyber colors your sent prompts anywhere in the window). A frame with a new picture then runs the full pass; frames where only the animation moved still shade the region. A cursor change must also make the frame full, so list `full_after_change` with it. Your own effects behave this way already.
 
   A plugin without `region` (a user effect, a Ghostty shader) keeps the full-window pass, so it always draws correctly. With several shaders or effects chained, any one without `region` makes the whole chain full. An unknown term is an error in the effect's list.
 
