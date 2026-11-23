@@ -3917,7 +3917,7 @@ mod tests {
 
     #[test]
     fn shrink_lines_updates_inactive_cursor_pos() {
-        // Termurion patch 24: the alternate screen keeps scrollback by default, so the 5 rows the
+        // Per Termurion patch 24 the alternate screen keeps scrollback by default, so the 5 rows the
         // shrink pushes off the alternate screen join the main history on leaving (15 + 5).
         // Without it (upstream), only the main screen's own 5 rows are added.
         for (alt_scrollback, history) in [(true, 20), (false, 15)] {
