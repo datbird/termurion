@@ -22,6 +22,7 @@ release, is out on Windows, macOS, and Linux.
 - Fixes from people who use the stable release. File bugs at https://github.com/datbird/termurion/issues.
 - The open items in [`FIXES.md`](FIXES.md) (found after the first beta) and [`TWEAKS.md`](TWEAKS.md).
 - The rows still marked `partial` or `missing` in the parity inventory.
+- Linux app stores, after 1.1.12. Flathub first: it feeds the Mint Software Manager, GNOME Software, KDE Discover, Fedora, Pop!_OS and the Steam Deck. It needs a Flatpak build from source with vendored crates, AppStream metadata with screenshots, and shells started on the host through `flatpak-spawn --host` (a pty and host layer change), then a reviewed PR to `flathub/flathub`. The Snap Store second (the Ubuntu App Center): a `snapcraft.yaml` with classic confinement, which Snap Store staff approve by hand; no code change. A `.deb` on each GitHub release is a quick extra. Debian and Ubuntu's own archives are out: they need every Rust crate packaged in Debian.
 
 ## Where the detail lives
 
