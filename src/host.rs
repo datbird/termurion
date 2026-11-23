@@ -318,6 +318,8 @@ pub fn run(pipe: &str, api: PtyApi, opts: Options) -> Result<(), String> {
     let mut listener = Listener::bind(pipe)?;
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let host: Shared = Arc::new(Mutex::new(Host { sessions: HashMap::new(), next_id: 1, client: None, instance: format!("{}-{nanos}", std::process::id()), prompt_debounce: None, events: Vec::new() }));
+    #[cfg(test)]
+    tests::HOSTS.lock().unwrap().push((pipe.to_string(), Arc::downgrade(&host)));
     let watched = Arc::downgrade(&host);
     std::thread::spawn(move || watch_prompts(watched));
     let (wake, woken) = mpsc::channel::<u64>();
@@ -707,6 +709,30 @@ pub(crate) mod tests {
         crate::platform::pty::test_api()
     }
 
+    /// Each test host by its pipe name, so a test can look at a session without a message that
+    /// would change it (a new connection, an attach).
+    pub(crate) static HOSTS: Mutex<Vec<(String, std::sync::Weak<Mutex<Host>>)>> = Mutex::new(Vec::new());
+
+    /// The end of session `id`'s ring in the host on `name`.
+    fn ring_end(name: &str, id: u64) -> u64 {
+        let host = HOSTS.lock().unwrap().iter().find(|(n, _)| n == name).and_then(|(_, h)| h.upgrade()).expect("the host runs");
+        let end = host.lock().unwrap().sessions.get(&id).expect("the session is still there").ring.end();
+        end
+    }
+
+    /// Waits up to 60 s (only the failure exit, for a loaded machine's slow flood) for session
+    /// `id`'s ring to pass `want`; the end it reached.
+    fn ring_passes(name: &str, id: u64, want: u64) -> u64 {
+        let stop = Instant::now() + Duration::from_secs(60);
+        loop {
+            let end = ring_end(name, id);
+            if end > want || Instant::now() >= stop {
+                return end;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     /// A host on its own pipe, in a thread.
     pub(crate) fn start_host(grace: Duration) -> (String, std::thread::JoinHandle<Result<(), String>>) {
         let name = crate::platform::ipc::test_name("host");
@@ -1054,20 +1080,15 @@ pub(crate) mod tests {
         let id = c.launch(flood());
         c.output_until_quiet(id, Duration::from_millis(500), Duration::from_secs(2));
         c.close();
-        // A held session stays at WINDOW plus its budget for good: look again until it is past.
-        // The 60 s is only the failure exit, for a loaded machine's slow flood.
-        let (want, stop) = (WINDOW + crate::pty_budget::PTY_BUDGET as u64, Instant::now() + Duration::from_secs(60));
-        let c = loop {
-            std::thread::sleep(Duration::from_millis(250));
-            let c = Conn::open(&name);
-            let live = c.hello_as(FLOW_VERSION);
-            let end = live.iter().find(|l| l.id == id).expect("the session is still there").end;
-            if end > want {
-                break c;
-            }
-            assert!(Instant::now() < stop, "a session nobody shows stopped reading: {end}");
-            c.close();
-        };
+        // A held session stays at WINDOW plus its budget for good: wait until it is past, then
+        // a new Termurion sees it there.
+        let want = WINDOW + crate::pty_budget::PTY_BUDGET as u64;
+        let end = ring_passes(&name, id, want);
+        assert!(end > want, "a session nobody shows stopped reading: {end}");
+        let c = Conn::open(&name);
+        let live = c.hello_as(FLOW_VERSION);
+        let s = live.iter().find(|l| l.id == id).expect("the session is still there");
+        assert!(s.end > want, "a session nobody shows stopped reading: {}", s.end);
         c.send(&Msg::KillAll);
     }
 
@@ -1080,23 +1101,18 @@ pub(crate) mod tests {
         let id = c.launch(flood());
         let (_, at) = c.output_until_quiet(id, Duration::from_millis(500), Duration::from_secs(5));
         assert!(at > 0);
-        // Past what its reader had queued when it was held: it read again. Each attach replays
-        // the ring since `at`; a session held while detached never gets past, so detach and look
-        // again until it is. The 60 s is only the failure exit, for a loaded machine's slow flood.
-        let (want, stop) = (at + crate::pty_budget::PTY_BUDGET as u64 + 64 * 1024, Instant::now() + Duration::from_secs(60));
-        loop {
-            c.send(&Msg::Detach { id });
-            std::thread::sleep(Duration::from_millis(500));
-            c.send(&Msg::Attach { id, since: at });
-            let (from, bytes) = c.wait(|m| match m {
-                Msg::Output { id: i, offset, bytes } if *i == id => Some((*offset, bytes.len() as u64)),
-                _ => None,
-            });
-            if from + bytes > want {
-                break;
-            }
-            assert!(Instant::now() < stop, "a detached session stopped reading: {} after {at}", from + bytes);
-        }
+        // Past what its reader had queued when it was held: it read again. Waited for with no
+        // attach, since an attach unholds the session itself.
+        let want = at + crate::pty_budget::PTY_BUDGET as u64 + 64 * 1024;
+        c.send(&Msg::Detach { id });
+        let end = ring_passes(&name, id, want);
+        assert!(end > want, "a detached session stopped reading: {end} after {at}");
+        c.send(&Msg::Attach { id, since: at });
+        let (from, bytes) = c.wait(|m| match m {
+            Msg::Output { id: i, offset, bytes } if *i == id => Some((*offset, bytes.len() as u64)),
+            _ => None,
+        });
+        assert!(from + bytes > want, "the attach replays what the detached session read: {} after {at}", from + bytes);
         c.send(&Msg::KillAll);
     }
 
