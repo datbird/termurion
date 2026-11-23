@@ -488,8 +488,8 @@ mod tests {
     fn handles_are_typed_before_use() {
         let (r, _w) = pipe();
         assert!(check_file(&r).is_ok());
-        let _td = TempDir::new("handoff");
-        let path = _td.to_path_buf();
+        let td = TempDir::new("handoff");
+        let path = td.file("disk.txt");
         std::fs::write(&path, b"x").unwrap();
         let f = std::fs::File::open(&path).unwrap();
         use std::os::windows::io::AsRawHandle;
