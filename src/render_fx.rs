@@ -896,29 +896,41 @@ pub struct Clock {
     /// When the next capped frame is due; it moves by whole gaps so the rate keeps its phase on
     /// a display whose period does not divide the gap.
     next_due: Option<Instant>,
-    /// The gap of the pacing `next_frame` last saw, for `frame` to advance `next_due` by.
-    gap: std::cell::Cell<Option<Duration>>,
+    /// The frame gap of the current pacing (`set_pacing`), which `frame` advances `next_due` by.
+    gap: Option<Duration>,
 }
 
 impl Default for Clock {
     fn default() -> Self {
-        Clock { first: None, last: None, focused: None, last_change: None, next_due: None, gap: std::cell::Cell::new(None) }
+        Clock { first: None, last: None, focused: None, last_change: None, next_due: None, gap: None }
     }
 }
 
 impl Clock {
+    /// The pacing the next `frame` calls run under; set before them each frame, so a change of
+    /// the setting applies at once.
+    pub fn set_pacing(&mut self, pacing: Pacing) {
+        self.gap = pacing.frame_gap();
+    }
+
     /// Updates `u` for a frame drawn at `now`.
     pub fn frame(&mut self, u: &mut Uniforms, now: Instant, size: (u32, u32), cursor: Option<Cursor>, focused: bool) {
         let first = *self.first.get_or_insert(now);
         let last = self.last.unwrap_or(now);
         self.last = Some(now);
-        if let Some(gap) = self.gap.get() {
-            let due = self.next_due.map(|d| d + gap);
-            // A pause or a stall (more than a gap behind) restarts the phase instead of bursting.
-            self.next_due = Some(match due {
-                Some(d) if now.saturating_duration_since(d) <= gap => d,
-                _ => now + gap,
-            });
+        if let Some(gap) = self.gap {
+            // Only a frame the pacing admits moves the phase; a redraw for content or a resize
+            // in between leaves it. A pause or stall (over a gap behind) restarts it, no burst.
+            let due = match self.next_due {
+                None => now + gap,
+                Some(d) if now + FRAME_SLACK >= d => {
+                    let n = d + gap;
+                    if now.saturating_duration_since(n) > gap { now + gap } else { n }
+                }
+                Some(d) => d,
+            };
+            // A frame admitted early (within the slack) must not pull the phase early with it.
+            self.next_due = Some(due.min(now + gap + FRAME_SLACK));
         }
         u.time = now.saturating_duration_since(first).as_secs_f32();
         u.time_delta = now.saturating_duration_since(last).as_secs_f32();
@@ -976,7 +988,6 @@ impl Clock {
         {
             return None;
         }
-        self.gap.set(pacing.frame_gap());
         Some(match (pacing.frame_gap(), self.next_due) {
             (Some(_), Some(due)) => (due - FRAME_SLACK).max(now),
             _ => now,
@@ -1560,7 +1571,7 @@ mod tests {
         let drawn = |pacing: Pacing| {
             let mut clock = Clock::default();
             let mut u = Uniforms::default();
-            let _ = clock.next_frame(Animation::Always, t0, true, pacing);
+            clock.set_pacing(pacing);
             clock.frame(&mut u, t0, (10, 10), None, true);
             clock
         };
@@ -1609,6 +1620,7 @@ mod tests {
         let t0 = Instant::now();
         let mut clock = Clock::default();
         let mut u = Uniforms::default();
+        clock.set_pacing(pacing);
         clock.frame(&mut u, t0, (10, 10), None, true);
         let mut drawn = 0;
         for ns in ticks {
@@ -1668,8 +1680,8 @@ mod tests {
         let t0 = Instant::now();
         let mut clock = Clock::default();
         let mut u = Uniforms::default();
+        clock.set_pacing(Pacing::Smooth);
         clock.frame(&mut u, t0, (10, 10), None, true);
-        let _ = clock.next_frame(Animation::Always, t0, true, Pacing::Smooth);
         let stall = t0 + Duration::from_millis(500);
         let mut drawn = 0;
         for i in 0..3u64 {
@@ -1680,6 +1692,48 @@ mod tests {
             }
         }
         assert!(drawn <= 2, "{drawn} frames in the first 20 ms after a stall");
+    }
+
+    #[test]
+    fn content_redraws_do_not_push_the_phase() {
+        let t0 = Instant::now();
+        let mut clock = Clock::default();
+        let mut u = Uniforms::default();
+        clock.set_pacing(Pacing::Smooth);
+        let gap = Pacing::Smooth.frame_gap().unwrap();
+        for i in 0..20u64 {
+            clock.frame(&mut u, t0 + Duration::from_millis(i), (10, 10), None, true);
+        }
+        let now = t0 + Duration::from_millis(19);
+        let due = clock.next_frame(Animation::Always, now, true, Pacing::Smooth).unwrap();
+        assert!(due <= now + gap, "next frame {:?} past now", due - now);
+    }
+
+    #[test]
+    fn still_cycles_do_not_drift() {
+        let mut now = Instant::now();
+        let mut clock = Clock::default();
+        let mut u = Uniforms::default();
+        clock.set_pacing(Pacing::Smooth);
+        let gap = Pacing::Smooth.frame_gap().unwrap();
+        clock.frame(&mut u, now, (10, 10), None, true);
+        for _ in 0..100 {
+            now = clock.next_after_still(Animation::Always, now, true, Pacing::Smooth).unwrap();
+            clock.frame(&mut u, now, (10, 10), None, true);
+        }
+        let due = clock.next_frame(Animation::Always, now, true, Pacing::Smooth).unwrap();
+        assert!(due <= now + gap, "next frame {:?} past now", due - now);
+    }
+
+    #[test]
+    fn the_first_frame_waits_its_gap() {
+        let t0 = Instant::now();
+        let mut clock = Clock::default();
+        let mut u = Uniforms::default();
+        clock.set_pacing(Pacing::Smooth);
+        clock.frame(&mut u, t0, (10, 10), None, true);
+        let due = clock.next_frame(Animation::Always, t0, true, Pacing::Smooth);
+        assert_eq!(due, Some(t0 + Duration::from_micros(16_667) - FRAME_SLACK));
     }
 
     #[test]

@@ -7711,7 +7711,7 @@ impl App {
         // the present, which the 33 ms and 16 ms frame gaps already allow.
         let fx_now = Instant::now();
         if let Some(fx) = gpu.fx.as_mut().filter(|f| f.active()) {
-            fx.prepare(frame.fx.as_ref(), fx_signals.as_ref(), (w, h), focused_window, fx_now);
+            fx.prepare(frame.fx.as_ref(), fx_signals.as_ref(), (w, h), focused_window, fx_now, fx_pacing);
         }
         // A system expose (X11 Expose, Win32 WM_PAINT) reaches this as the same RedrawRequested
         // as an app request, so a merged expose and animation frame can be left out like any

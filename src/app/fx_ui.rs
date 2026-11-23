@@ -190,7 +190,7 @@ impl FxRuntime {
     }
 
     /// Fills the uniforms for a frame of `size` from what the scene recorded.
-    pub(super) fn prepare(&mut self, pane: Option<&crate::scene::FxPane>, signals: Option<&render_fx::Signals>, size: (u32, u32), focused: bool, now: Instant) {
+    pub(super) fn prepare(&mut self, pane: Option<&crate::scene::FxPane>, signals: Option<&render_fx::Signals>, size: (u32, u32), focused: bool, now: Instant, pacing: render_fx::Pacing) {
         self.last_uniforms.clone_from(&self.uniforms);
         let u = &mut self.uniforms;
         let mut cursor = pane.and_then(|p| p.cursor);
@@ -209,6 +209,7 @@ impl FxRuntime {
             c.color = [rgb[0], rgb[1], rgb[2], 1.0];
         }
         let before = self.clock.last_change();
+        self.clock.set_pacing(pacing);
         self.clock.frame(u, now, size, cursor, focused);
         // What keeps an `always` animation from pausing shows in the debug log.
         if crate::dlog::is_on() && self.clock.last_change() != before {
