@@ -757,9 +757,11 @@ mod tests {
         crate::platform::by_os(r#"cmd.exe /d /c "for /l %i in (0,0,1) do @echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx""#, "/bin/sh -c yes")
     }
 
-    /// Takes at least `n` bytes through `try_read`, within 10 s.
+    /// Takes at least `n` bytes through `try_read`, within 60 s. It returns once they came; the
+    /// 60 s is only the failure exit: a parallel test run floods many ConPTYs at once, and each
+    /// then makes as little as 0.4 MB/s.
     fn take(p: &HostedPty, n: u64) {
-        let end = Instant::now() + Duration::from_secs(10);
+        let end = Instant::now() + Duration::from_secs(60);
         let mut got = 0u64;
         while got < n {
             assert!(Instant::now() < end, "only {got} of {n} bytes came");
@@ -849,8 +851,8 @@ mod tests {
         assert_eq!(w.version, 5);
         let p = c.launch(flood(), None, &[], 80, 24, quiet()).unwrap();
         take(&p, 1 << 20);
-        let end = Instant::now() + Duration::from_secs(5);
-        // A held session stops at WINDOW plus one read.
+        // A held session stops at WINDOW plus one read; the 60 s is only the failure exit (`take`).
+        let end = Instant::now() + Duration::from_secs(60);
         while p.slot.lock().unwrap().end <= 2 * WINDOW {
             assert!(Instant::now() < end, "a version 5 host held its output at the window");
             std::thread::sleep(Duration::from_millis(10));

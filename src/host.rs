@@ -959,9 +959,10 @@ pub(crate) mod tests {
         let c = Conn::open(&name);
         c.hello_as(5);
         let id = c.launch(flood());
-        // A held client never gets past WINDOW plus a read, however long it waits; the 10 s
-        // covers a loaded machine and ConPTY's slower flood.
-        let (mut total, stop) = (0u64, Instant::now() + Duration::from_secs(10));
+        // A held client never gets past WINDOW plus a read, however long it waits, so the loop
+        // ends as soon as it is past. The 60 s is only the failure exit: a whole parallel test run
+        // floods many ConPTYs at once, and each then makes as little as 0.4 MB/s.
+        let (mut total, stop) = (0u64, Instant::now() + Duration::from_secs(60));
         while total <= 2 * WINDOW && Instant::now() < stop {
             total += c.output_until_quiet(id, Duration::from_secs(1), Duration::from_millis(200)).0;
         }
@@ -1053,11 +1054,20 @@ pub(crate) mod tests {
         let id = c.launch(flood());
         c.output_until_quiet(id, Duration::from_millis(500), Duration::from_secs(2));
         c.close();
-        std::thread::sleep(Duration::from_secs(1));
-        let c = Conn::open(&name);
-        let live = c.hello_as(FLOW_VERSION);
-        let s = live.iter().find(|l| l.id == id).expect("the session is still there");
-        assert!(s.end > WINDOW + crate::pty_budget::PTY_BUDGET as u64, "a session nobody shows stopped reading: {}", s.end);
+        // A held session stays at WINDOW plus its budget for good: look again until it is past.
+        // The 60 s is only the failure exit, for a loaded machine's slow flood.
+        let (want, stop) = (WINDOW + crate::pty_budget::PTY_BUDGET as u64, Instant::now() + Duration::from_secs(60));
+        let c = loop {
+            std::thread::sleep(Duration::from_millis(250));
+            let c = Conn::open(&name);
+            let live = c.hello_as(FLOW_VERSION);
+            let end = live.iter().find(|l| l.id == id).expect("the session is still there").end;
+            if end > want {
+                break c;
+            }
+            assert!(Instant::now() < stop, "a session nobody shows stopped reading: {end}");
+            c.close();
+        };
         c.send(&Msg::KillAll);
     }
 
@@ -1070,15 +1080,23 @@ pub(crate) mod tests {
         let id = c.launch(flood());
         let (_, at) = c.output_until_quiet(id, Duration::from_millis(500), Duration::from_secs(5));
         assert!(at > 0);
-        c.send(&Msg::Detach { id });
-        std::thread::sleep(Duration::from_secs(2));
-        c.send(&Msg::Attach { id, since: at });
-        let (from, bytes) = c.wait(|m| match m {
-            Msg::Output { id: i, offset, bytes } if *i == id => Some((*offset, bytes.len() as u64)),
-            _ => None,
-        });
-        // Past what its reader had queued when it was held: it read again.
-        assert!(from + bytes > at + crate::pty_budget::PTY_BUDGET as u64 + 64 * 1024, "a detached session stopped reading: {} after {at}", from + bytes);
+        // Past what its reader had queued when it was held: it read again. Each attach replays
+        // the ring since `at`; a session held while detached never gets past, so detach and look
+        // again until it is. The 60 s is only the failure exit, for a loaded machine's slow flood.
+        let (want, stop) = (at + crate::pty_budget::PTY_BUDGET as u64 + 64 * 1024, Instant::now() + Duration::from_secs(60));
+        loop {
+            c.send(&Msg::Detach { id });
+            std::thread::sleep(Duration::from_millis(500));
+            c.send(&Msg::Attach { id, since: at });
+            let (from, bytes) = c.wait(|m| match m {
+                Msg::Output { id: i, offset, bytes } if *i == id => Some((*offset, bytes.len() as u64)),
+                _ => None,
+            });
+            if from + bytes > want {
+                break;
+            }
+            assert!(Instant::now() < stop, "a detached session stopped reading: {} after {at}", from + bytes);
+        }
         c.send(&Msg::KillAll);
     }
 
