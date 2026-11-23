@@ -11,7 +11,7 @@ use alacritty_terminal::selection::Selection;
 use alacritty_terminal::term::{TermMode, viewport_to_point};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{StartCause, ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, KeyLocation, ModifiersKeyState, PhysicalKey};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
@@ -65,6 +65,7 @@ const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 mod actions;
 mod menu_inputs;
 mod fx_ui;
+mod fx_wake;
 mod scene_cache;
 mod frame_settings;
 mod parse_meanwhile;
@@ -1602,6 +1603,16 @@ pub struct App {
     fx_focus: Option<PaneId>,
     /// Look at the profile folder on the next tick (the window gained focus).
     fx_scan: bool,
+    /// Why the loop woke since the last `about_to_wait` (`fx_wake`).
+    fx_only: fx_wake::FxWake,
+    /// The loop timer set for the effect's next frame when it alone is the earliest wake.
+    fx_wake_at: Option<Instant>,
+    /// The earliest wake of everything but the effect, cursor and GPU recovery, from the last full pass.
+    other_wake: Option<Option<Instant>>,
+    /// When the last full `about_to_wait` ran: a wake nothing classified waits at most `FULL_PASS_MAX` for one.
+    full_pass_at: Instant,
+    /// What the last full frame's upkeep was done for: the window, the settings generation and the size.
+    fx_full: Option<(WindowId, u64, (u32, u32))>,
     /// The profiles the panes last picked from, as the FX Profiles page sees the store change.
     fx_seen: Vec<usize>,
     settings: Option<SettingsWindow>,
@@ -3038,6 +3049,11 @@ pub fn run() {
         fx_profiles,
         fx_focus: None,
         fx_scan: false,
+        fx_only: fx_wake::FxWake::default(),
+        fx_wake_at: None,
+        other_wake: None,
+        full_pass_at: Instant::now(),
+        fx_full: None,
         fx_seen: Vec::new(),
         settings: None,
         save_due: None,
@@ -7616,15 +7632,17 @@ impl App {
         let before = self.pacer.last();
         self.pacer.drew(now);
         self.note_frame(before, now);
-        // A status bar field whose bar went away gives the keyboard back before drawing.
-        self.check_composer_fields();
-        // The next edge drag snaps to what this frame shows.
-        self.publish_snap();
-        let scene_start = timing.then(Instant::now);
         // A frame only the effects' animation wants draws the kept scene again (`scene_cache`),
         // and then has no frame work to do: nothing it shows changed.
         let size = self.gpu.as_ref().map_or((0, 0), |g| (g.config.width, g.config.height));
         let will_reuse = self.gpu.as_ref().is_some_and(|g| g.scene.would_reuse(size, now));
+        if !will_reuse {
+            // A status bar field whose bar went away gives the keyboard back before drawing.
+            self.check_composer_fields();
+            // The next edge drag snaps to what this frame shows.
+            self.publish_snap();
+        }
+        let scene_start = timing.then(Instant::now);
         // The effects first: their cursor color is part of the frame (`draw_prefs`).
         if !will_reuse {
             // Full screen and peek changes arrive through `redraw`, which asks for a built frame.
@@ -7943,6 +7961,44 @@ fn worth_comparing(frame: &Frame) -> bool {
     frame.images.is_empty() && frame.backgrounds.is_empty()
 }
 
+/// A wake with nothing to do but the effect's next frame, and a full pass this old, at most.
+const FULL_PASS_MAX: Duration = Duration::from_millis(100);
+
+/// The loop timer is the effect's own only when its frame is the earliest wake by itself.
+fn fx_wake_time(wake: Option<Instant>, fx_frame_due: Option<Instant>, other: Option<Instant>, gpu: Option<Instant>, cursor: Option<Instant>) -> Option<Instant> {
+    let t = fx_frame_due?;
+    (wake == Some(t) && [other, gpu, cursor].into_iter().flatten().all(|o| o > t)).then_some(t)
+}
+
+impl App {
+    /// An `about_to_wait` for a wake that only moved the effect: its frame timer, the GPU
+    /// recovery and the cursor blink still run; the rest of the upkeep has nothing new to see.
+    /// False when this wake needs the full pass.
+    fn fx_wake_pass(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        if !self.fx_only.take() {
+            return false;
+        }
+        let now = Instant::now();
+        let Some(other) = self.other_wake else { return false };
+        if self.gpu.is_none() || self.parse_owed || self.quitting || now.saturating_duration_since(self.full_pass_at) >= FULL_PASS_MAX || other.is_some_and(|t| t <= now) {
+            return false;
+        }
+        if let Some(w) = self.last_window {
+            self.enter(w);
+        }
+        let gpu_due = self.gpu_recovery_tick();
+        let cursor_due = self.tick_cursor();
+        let fx_frame_due = self.fx_frame_tick();
+        let next = [other, fx_frame_due, gpu_due, cursor_due].into_iter().flatten().min();
+        self.fx_wake_at = fx_wake_time(next, fx_frame_due, other, gpu_due, cursor_due);
+        match next {
+            Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
+            None => event_loop.set_control_flow(ControlFlow::Wait),
+        }
+        true
+    }
+}
+
 impl ApplicationHandler<UserEvent> for App {
     /// The loop ended without App::quit (the macOS stock Quit item, a window manager closing
     /// everything): save the windows and let the host keep or end its shells, once.
@@ -7973,6 +8029,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        self.fx_only.other();
         if self.gpu.is_some() {
             return;
         }
@@ -8217,9 +8274,28 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     /// Runs the cursor blink when the focused pane's profile asks for it.
+    /// Tells the effect's own wake from every other: its frame timer, or the redraw it asked
+    /// for. Those need none of `about_to_wait`'s upkeep. Whatever else woke the loop marks
+    /// itself (`window_event`, `user_event`), so a wake nothing explains counts as other.
+    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+        let own_timer = matches!(cause, StartCause::ResumeTimeReached { requested_resume, .. } if self.fx_wake_at == Some(requested_resume));
+        let own_redraw = matches!(cause, StartCause::WaitCancelled { .. } | StartCause::Poll) && self.gpu.as_ref().is_some_and(|g| g.scene.only_fx_asked());
+        if own_timer || own_redraw {
+            self.fx_only.fx_fired();
+        } else {
+            self.fx_only.other();
+        }
+    }
+
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // The next paint is outside a drag: it only draws.
         self.waits += 1;
+        if self.fx_wake_pass(event_loop) {
+            return;
+        }
+        self.full_pass_at = Instant::now();
+        self.other_wake = None;
+        self.fx_wake_at = None;
         // A size request the window manager never answered (it kept the old size, with no
         // Resized at all): once the stale window is past, the panes follow the size it has.
         if self.gpu.as_ref().and_then(|g| g.layout).is_some_and(|p| pending_expired(p, std::time::Instant::now())) {
@@ -8485,7 +8561,15 @@ impl ApplicationHandler<UserEvent> for App {
                 return event_loop.set_control_flow(flow);
             }
         }
+        // The fast pass (`fx_wake_pass`) reruns these three itself: the cached wake leaves them out.
+        let (fx_frame_due_now, gpu_due_now, cursor_due_now) = (fx_frame_due, gpu_due, cursor_due);
+        let (fx_frame_due, gpu_due, cursor_due) = (None::<Instant>, None::<Instant>, None::<Instant>);
         let wake = [fx_due, fx_frame_due, gpu_due, egui_due, tray_due, workgroup_due, jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, badge_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, panels_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, hold_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let other_wake = wake;
+        let (fx_frame_due, gpu_due, cursor_due) = (fx_frame_due_now, gpu_due_now, cursor_due_now);
+        self.other_wake = Some(other_wake);
+        let wake = [other_wake, fx_frame_due, gpu_due, cursor_due].into_iter().flatten().min();
+        self.fx_wake_at = fx_wake_time(wake, fx_frame_due, other_wake, gpu_due, cursor_due);
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -8493,6 +8577,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+        self.fx_only.other();
         match event {
             UserEvent::Hotkey(ids) => self.hotkey_pressed(&ids, event_loop),
             UserEvent::Uia(r) => self.uia_request(r),
@@ -8563,6 +8648,10 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        // Anything the window hears is a reason for the full upkeep; only the redraw is not.
+        if !matches!(event, WindowEvent::RedrawRequested) {
+            self.fx_only.other();
+        }
         if self.quitting {
             return;
         }
@@ -8911,16 +9000,26 @@ impl ApplicationHandler<UserEvent> for App {
                 if self.gpu.as_ref().is_none_or(|g| g.window.id() != id) {
                     return;
                 }
-                // A font change made while another window was current reaches this one now.
-                let sig = self.font_sig.clone();
-                self.apply_fonts();
-                // A font change, a banner or a status bar (shared or per pane) that came,
-                // went or changed height while another window was current reaches this one
-                // now: the room its terminals were sized for is compared whole.
-                // A pane whose profile changed its font has a new cell and needs its grid again.
-                self.ensure_faces();
-                if sig != self.font_sig || self.pane_faces.stale() || self.laid_out.as_ref() != Some(&self.room()) {
-                    self.relayout();
+                // A frame that draws the kept scene again (only the effect asked) has nothing new
+                // to measure unless the settings or the window size moved since the last full one.
+                let size = self.gpu.as_ref().map_or((0, 0), |g| (g.config.width, g.config.height));
+                let reuse = self.gpu.as_ref().is_some_and(|g| g.scene.would_reuse(size, Instant::now())) && self.fx_full == Some((id, self.globals.generation(), size));
+                if !reuse {
+                    // A built frame is not a wake that only moved the effect.
+                    self.fx_only.other();
+                    // A font change made while another window was current reaches this one now.
+                    let sig = self.font_sig.clone();
+                    self.apply_fonts();
+                    // A font change, a banner or a status bar (shared or per pane) that came,
+                    // went or changed height while another window was current reaches this one
+                    // now: the room its terminals were sized for is compared whole.
+                    // A pane whose profile changed its font has a new cell and needs its grid again.
+                    self.ensure_faces();
+                    if sig != self.font_sig || self.pane_faces.stale() || self.laid_out.as_ref() != Some(&self.room()) {
+                        self.relayout();
+                    }
+                    let size = self.gpu.as_ref().map_or((0, 0), |g| (g.config.width, g.config.height));
+                    self.fx_full = Some((id, self.globals.generation(), size));
                 }
                 let parsed = self.render_parsing();
                 // What follows the output parsed during the frame, before anything else.

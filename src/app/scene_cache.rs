@@ -76,6 +76,11 @@ impl<F> SceneCache<F> {
         self.kept.as_ref().is_some_and(|k| k.epoch == self.epoch.get())
     }
 
+    /// Only the animation has asked for a frame since the last take.
+    pub(super) fn only_fx_asked(&self) -> bool {
+        self.fx_asked && !self.changed.get()
+    }
+
     /// Whether `take` at this size and time would answer `Reuse`, using nothing up.
     pub(super) fn would_reuse(&self, size: (u32, u32), now: Instant) -> bool {
         self.fx_asked && !self.changed.get() && self.kept.as_ref().is_some_and(|k| k.size == size && now.saturating_duration_since(k.built) < MAX_AGE)
