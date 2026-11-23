@@ -37,3 +37,5 @@ and `shape.rs` had an em dash, now a colon. Changes:
    this frame) remembers the age, so later misses in the same frame that do not fit are skipped without scanning
    the map again; `trim` and `clear` forget it. Tests: `the_cache_never_passes_its_caps`,
    `a_full_cache_skips_the_eviction_pass_until_the_next_trim`.
+7. `lib.rs`: the crate doc example's text `"Hello, Rust! "` plus a crab emoji is written with the
+   escape `\u{1F980}`, the same string with no emoji in the source.

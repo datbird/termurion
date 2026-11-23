@@ -34,7 +34,8 @@
 //!
 //! // Set size and text
 //! buffer.set_size(Some(80.0), Some(25.0));
-//! buffer.set_text("Hello, Rust! 🦀\n", &attrs, Shaping::Advanced, None);
+// Termurion patch 7: the crab emoji written as an escape, so the source holds no emoji.
+//! buffer.set_text("Hello, Rust! \u{1F980}\n", &attrs, Shaping::Advanced, None);
 //!
 //! // Inspect the output runs
 //! for run in buffer.layout_runs() {
