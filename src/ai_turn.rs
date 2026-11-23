@@ -1486,33 +1486,40 @@ mod tests {
 
     #[test]
     fn a_long_stream_parses_in_linear_time() {
-        // 64,000 events of about 330 bytes (a long answer is about 5 MB), in 64 KB chunks as
-        // the transport reads them; the reparse at the end runs on the same body. Either would
-        // take minutes if each event copied or scanned the rest of the body.
+        // Up to 64,000 events of about 330 bytes (a long answer is about 5 MB), in 64 KB chunks
+        // as the transport reads them; the reparse at the end runs on the same body. Each size's
+        // cost is this thread's CPU time, so a loaded machine does not change it, and eight times
+        // the events must cost about eight times as much (under 16): quadratic work costs 64 times.
         let piece = "x".repeat(300);
-        let body = sse(&[&text(&piece)]).repeat(64_000);
-        let chunks: Vec<String> = body.as_bytes().chunks(65_536).map(|c| String::from_utf8(c.to_vec()).unwrap()).collect();
-        let started = std::time::Instant::now();
-        let (mut t, _) = sent(openai(), true);
-        let out = feed(&mut t, &chunks, None);
-        let shown: usize = out.iter().map(|o| if let Out::Delta(d) = o { d.len() } else { 0 }).sum();
-        assert_eq!(shown, 300 * 64_000);
-        assert_eq!(out.last(), Some(&Out::StreamEnd));
-        // A call whose arguments come in 64,000 parts.
-        let parts: Vec<String> = std::iter::once(call_event("f", "", Some("c1"))).chain((0..64_000).map(|_| json!({"call": {"arguments": piece}}).to_string())).collect();
-        let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
-        let body = sse(&refs);
-        let chunks: Vec<String> = body.as_bytes().chunks(65_536).map(|c| String::from_utf8(c.to_vec()).unwrap()).collect();
-        let (mut t, _) = sent(openai(), true);
-        let out = feed(&mut t, &chunks, None);
-        let [Out::Invoke { call, .. }] = &out[..] else { panic!("{} outs", out.len()) };
-        assert_eq!(call.arguments.as_ref().map(String::len), Some(300 * 64_000));
-        // A stray line stops the split (as iTerm2's): the rest waits in the buffer, and each
-        // chunk only appends to it.
-        let stuck: Vec<String> = std::iter::once("junk\n".to_string()).chain(chunks).collect();
-        let (mut t, _) = sent(openai(), true);
-        feed(&mut t, &stuck, None);
-        assert!(started.elapsed() < Duration::from_secs(20), "took {:?}", started.elapsed());
+        let run = |n: usize| {
+            let body = sse(&[&text(&piece)]).repeat(n);
+            let chunks: Vec<String> = body.as_bytes().chunks(65_536).map(|c| String::from_utf8(c.to_vec()).unwrap()).collect();
+            let started = crate::platform::clock::thread_cpu_time();
+            let (mut t, _) = sent(openai(), true);
+            let out = feed(&mut t, &chunks, None);
+            let shown: usize = out.iter().map(|o| if let Out::Delta(d) = o { d.len() } else { 0 }).sum();
+            assert_eq!(shown, 300 * n);
+            assert_eq!(out.last(), Some(&Out::StreamEnd));
+            // A call whose arguments come in n parts.
+            let parts: Vec<String> = std::iter::once(call_event("f", "", Some("c1"))).chain((0..n).map(|_| json!({"call": {"arguments": piece}}).to_string())).collect();
+            let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
+            let body = sse(&refs);
+            let chunks: Vec<String> = body.as_bytes().chunks(65_536).map(|c| String::from_utf8(c.to_vec()).unwrap()).collect();
+            let (mut t, _) = sent(openai(), true);
+            let out = feed(&mut t, &chunks, None);
+            let [Out::Invoke { call, .. }] = &out[..] else { panic!("{} outs", out.len()) };
+            assert_eq!(call.arguments.as_ref().map(String::len), Some(300 * n));
+            // A stray line stops the split (as iTerm2's): the rest waits in the buffer, and each
+            // chunk only appends to it.
+            let stuck: Vec<String> = std::iter::once("junk\n".to_string()).chain(chunks).collect();
+            let (mut t, _) = sent(openai(), true);
+            feed(&mut t, &stuck, None);
+            crate::platform::clock::thread_cpu_time() - started
+        };
+        let (small, big) = (run(8_000), run(64_000));
+        let ratio = big.as_secs_f64() / small.as_secs_f64().max(1e-3);
+        eprintln!("8x the events cost {ratio:.1}x ({small:?} then {big:?})");
+        assert!(ratio < 16.0, "8x the events cost {ratio:.1}x ({small:?} then {big:?})");
     }
 
     #[test]
