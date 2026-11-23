@@ -1048,14 +1048,14 @@ pub(crate) mod tests {
 
     /// Final review I3 of m10b: the console input modes of ssh's and runas's password prompts
     /// (and the checklist's PowerShell reader). Run by hand:
-    /// `cargo test --lib pty::tests::measure_password_prompt_modes -- --ignored --exact --nocapture`.
+    /// `cargo test --lib platform::windows::pty::tests::measure_password_prompt_modes -- --ignored --exact --nocapture`.
     #[test]
     #[ignore]
     fn measure_password_prompt_modes() {
         use std::os::windows::process::CommandExt;
         const DETACHED_PROCESS: u32 = 0x0000_0008;
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "pty::tests::measure_password_prompt_modes_child", "--ignored", "--nocapture", "--test-threads=1"])
+            .args(["--exact", "platform::windows::pty::tests::measure_password_prompt_modes_child", "--ignored", "--nocapture", "--test-threads=1"])
             .env("TERMURION_MEASURE_CHILD", "1")
             .creation_flags(DETACHED_PROCESS)
             .stdin(std::process::Stdio::null())
@@ -1085,7 +1085,8 @@ pub(crate) mod tests {
         for line in got.lines().filter(|l| l.contains("MEASURED")) {
             println!("{line}");
         }
-        assert!(status.is_some_and(|s| s.success()), "the measuring process failed or hung: {status:?}\n{got}");
+        // "1 passed": the child ran its body, not an empty filter.
+        assert!(status.is_some_and(|s| s.success()) && got.contains("1 passed"), "the measuring process failed or hung: {status:?}\n{got}");
     }
 
     #[test]
