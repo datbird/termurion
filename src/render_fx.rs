@@ -893,11 +893,16 @@ pub struct Clock {
     last: Option<Instant>,
     focused: Option<bool>,
     last_change: Option<Instant>,
+    /// When the next capped frame is due; it moves by whole gaps so the rate keeps its phase on
+    /// a display whose period does not divide the gap.
+    next_due: Option<Instant>,
+    /// The gap of the pacing `next_frame` last saw, for `frame` to advance `next_due` by.
+    gap: std::cell::Cell<Option<Duration>>,
 }
 
 impl Default for Clock {
     fn default() -> Self {
-        Clock { first: None, last: None, focused: None, last_change: None }
+        Clock { first: None, last: None, focused: None, last_change: None, next_due: None, gap: std::cell::Cell::new(None) }
     }
 }
 
@@ -907,6 +912,14 @@ impl Clock {
         let first = *self.first.get_or_insert(now);
         let last = self.last.unwrap_or(now);
         self.last = Some(now);
+        if let Some(gap) = self.gap.get() {
+            let due = self.next_due.map(|d| d + gap);
+            // A pause or a stall (more than a gap behind) restarts the phase instead of bursting.
+            self.next_due = Some(match due {
+                Some(d) if now.saturating_duration_since(d) <= gap => d,
+                _ => now + gap,
+            });
+        }
         u.time = now.saturating_duration_since(first).as_secs_f32();
         u.time_delta = now.saturating_duration_since(last).as_secs_f32();
         u.frame += 1;
@@ -963,8 +976,9 @@ impl Clock {
         {
             return None;
         }
-        Some(match (pacing.frame_gap(), self.last) {
-            (Some(gap), Some(last)) => (last + gap - FRAME_SLACK).max(now),
+        self.gap.set(pacing.frame_gap());
+        Some(match (pacing.frame_gap(), self.next_due) {
+            (Some(_), Some(due)) => (due - FRAME_SLACK).max(now),
             _ => now,
         })
     }
@@ -1542,13 +1556,20 @@ mod tests {
     #[test]
     fn pacing_caps_the_frame_rate() {
         let t0 = Instant::now();
-        let mut clock = Clock::default();
-        let mut u = Uniforms::default();
-        clock.frame(&mut u, t0, (10, 10), None, true);
-        assert_eq!(clock.next_frame(Animation::Always, t0, true, Pacing::Full), Some(t0), "full draws at once");
-        assert_eq!(clock.next_frame(Animation::Always, t0, true, Pacing::Balanced), Some(t0 + Duration::from_micros(33_333) - FRAME_SLACK));
-        assert_eq!(clock.next_frame(Animation::Always, t0, true, Pacing::Light), Some(t0 + Duration::from_micros(66_667) - FRAME_SLACK));
-        assert_eq!(clock.next_frame(Animation::Always, t0, true, Pacing::Smooth), Some(t0 + Duration::from_micros(16_667) - FRAME_SLACK));
+        // A clock that has drawn its first frame at t0 under `pacing`.
+        let drawn = |pacing: Pacing| {
+            let mut clock = Clock::default();
+            let mut u = Uniforms::default();
+            let _ = clock.next_frame(Animation::Always, t0, true, pacing);
+            clock.frame(&mut u, t0, (10, 10), None, true);
+            clock
+        };
+        let at = |us: u64| Some(t0 + Duration::from_micros(us) - FRAME_SLACK);
+        assert_eq!(drawn(Pacing::Full).next_frame(Animation::Always, t0, true, Pacing::Full), Some(t0), "full draws at once");
+        assert_eq!(drawn(Pacing::Balanced).next_frame(Animation::Always, t0, true, Pacing::Balanced), at(33_333));
+        assert_eq!(drawn(Pacing::Light).next_frame(Animation::Always, t0, true, Pacing::Light), at(66_667));
+        assert_eq!(drawn(Pacing::Smooth).next_frame(Animation::Always, t0, true, Pacing::Smooth), at(16_667));
+        let clock = drawn(Pacing::Light);
         let late = t0 + Duration::from_millis(500);
         assert_eq!(clock.next_frame(Animation::Always, late, true, Pacing::Light), Some(late), "an overdue frame draws now");
         assert_eq!(clock.next_frame(Animation::Off, t0, true, Pacing::Light), None);
@@ -1583,8 +1604,8 @@ mod tests {
         assert_eq!(Pacing::default(), Pacing::Smooth);
     }
 
-    /// Frames drawn in one second by an Always animation asked at each tick (ns from the start).
-    fn drawn_in_a_second(pacing: Pacing, ticks: impl Iterator<Item = u64>) -> u32 {
+    /// Frames drawn by an Always animation asked at each tick (ns from the start).
+    fn drawn_at(pacing: Pacing, ticks: impl Iterator<Item = u64>) -> u32 {
         let t0 = Instant::now();
         let mut clock = Clock::default();
         let mut u = Uniforms::default();
@@ -1600,36 +1621,65 @@ mod tests {
         drawn
     }
 
-    #[test]
-    fn smooth_caps_at_sixty_on_a_fast_screen() {
-        // A 120 Hz screen asks every 8.333 ms for one second.
-        let drawn = drawn_in_a_second(Pacing::Smooth, (1..=120u64).map(|i| i * 8_333_333));
-        assert!((59..=61).contains(&drawn), "drew {drawn} frames in a second");
+    /// Vsync ticks at `hz` for `secs`, each moved by a fixed pseudo-random offset within +-1 ms when `jitter`.
+    fn vsyncs(hz: u64, secs: u64, jitter: bool) -> impl Iterator<Item = u64> {
+        let mut x = 12345u64;
+        (1..=hz * secs).map(move |i| {
+            let at = i * 1_000_000_000 / hz;
+            if !jitter {
+                return at;
+            }
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (at + (x >> 33) % 2_000_001).saturating_sub(1_000_000)
+        })
     }
 
     #[test]
-    fn smooth_holds_sixty_with_jitter() {
-        // Each 120 Hz tick moves by a fixed pseudo-random offset in [-1 ms, +1 ms].
-        let mut x = 12345u64;
-        let ticks = (1..=120u64).map(move |i| {
-            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            let off = (x >> 33) % 2_000_001;
-            (i * 8_333_333 + off).saturating_sub(1_000_000)
-        });
-        let drawn = drawn_in_a_second(Pacing::Smooth, ticks);
+    fn capped_rates_average_their_target() {
+        for hz in [60u64, 75, 120, 144, 165, 240] {
+            for jitter in [false, true] {
+                for (pacing, fps) in [(Pacing::Smooth, 60u32), (Pacing::Balanced, 30), (Pacing::Light, 15)] {
+                    let drawn = drawn_at(pacing, vsyncs(hz, 2, jitter));
+                    let (lo, hi) = (2 * fps - 2, 2 * fps + 2);
+                    assert!((lo..=hi).contains(&drawn), "{pacing:?} at {hz} Hz (jitter {jitter}) drew {drawn} in 2 s");
+                    if hz == 60 && !jitter && pacing == Pacing::Smooth {
+                        assert_eq!(drawn, 120, "60 Hz draws every vsync");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn smooth_caps_at_sixty_on_a_fast_screen() {
+        // A 120 Hz screen asks every 8.333 ms for one second.
+        let drawn = drawn_at(Pacing::Smooth, (1..=120u64).map(|i| i * 8_333_333));
         assert!((59..=61).contains(&drawn), "drew {drawn} frames in a second");
     }
 
     #[test]
     fn smooth_never_passes_sixty_on_240hz() {
-        let drawn = drawn_in_a_second(Pacing::Smooth, (1..=240u64).map(|i| i * 4_166_667));
+        let drawn = drawn_at(Pacing::Smooth, (1..=240u64).map(|i| i * 4_166_667));
         assert!(drawn <= 61, "drew {drawn} frames in a second");
     }
 
     #[test]
-    fn balanced_holds_thirty_on_120hz() {
-        let drawn = drawn_in_a_second(Pacing::Balanced, (1..=120u64).map(|i| i * 8_333_333));
-        assert!((29..=31).contains(&drawn), "drew {drawn} frames in a second");
+    fn a_stall_does_not_burst() {
+        let t0 = Instant::now();
+        let mut clock = Clock::default();
+        let mut u = Uniforms::default();
+        clock.frame(&mut u, t0, (10, 10), None, true);
+        let _ = clock.next_frame(Animation::Always, t0, true, Pacing::Smooth);
+        let stall = t0 + Duration::from_millis(500);
+        let mut drawn = 0;
+        for i in 0..3u64 {
+            let now = stall + Duration::from_nanos(i * 8_333_333);
+            if clock.next_frame(Animation::Always, now, true, Pacing::Smooth).is_some_and(|due| due <= now) {
+                clock.frame(&mut u, now, (10, 10), None, true);
+                drawn += 1;
+            }
+        }
+        assert!(drawn <= 2, "{drawn} frames in the first 20 ms after a stall");
     }
 
     #[test]
