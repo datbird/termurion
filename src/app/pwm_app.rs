@@ -3391,6 +3391,22 @@ mod tests {
         assert!(crate::platform::user_auth::SILENT_CANCEL);
     }
 
+    /// True when `code` implements the password `Source` trait, by any path to it
+    /// (`impl Source for`, `impl crate::pwm_source::Source for`); another trait whose name only
+    /// ends in "Source" (the host's `OutputSource`) is not one.
+    fn implements_source(code: &str) -> bool {
+        code.match_indices("Source for ").any(|(i, _)| !code[..i].ends_with(|c: char| c.is_alphanumeric() || c == '_'))
+    }
+
+    #[test]
+    fn only_the_source_trait_counts_as_a_password_source() {
+        assert!(implements_source("impl Source for Vault {"));
+        assert!(implements_source("impl crate::pwm_source::Source for Vault {"));
+        assert!(implements_source("impl<T> pwm_source::Source for Wrap<T> {"));
+        assert!(!implements_source("impl OutputSource for Pty {"));
+        assert!(!implements_source("impl MySource for Y {}"));
+    }
+
     /// Merge seam (13y2's KeePassXC, Bitwarden, Keeper and LastPass adapters with 13x7's browser
     /// password sources): every source, for the terminal and the browser scope alike, is built in
     /// `build` on the one worker, and nothing outside the password manager constructs one.
@@ -3432,7 +3448,7 @@ mod tests {
             for c in ctors {
                 assert!(!prod.contains(c), "{name} builds a password source ({c})");
             }
-            assert!(!prod.contains("impl Source for") && !prod.contains("Source for "), "{name} defines a second password source");
+            assert!(!implements_source(prod), "{name} defines a second password source");
         }
     }
 }
