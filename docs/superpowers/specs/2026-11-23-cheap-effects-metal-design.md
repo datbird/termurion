@@ -103,7 +103,8 @@ A profile shows the time goes to:
 - "Effects animation" gets a new choice, capped at 60 frames/s even on
   a 120 Hz screen, and it becomes the default (owner's decision). This
   matches Ghostty frame for frame. Full (display rate), Balanced (30) and
-  Light (15) stay.
+  Light (15) stay, so users CAN still lower the rate (owner's rule). The
+  lower choices keep their labels, caps and pauses, and get cheaper too.
 
 ## Proof
 
