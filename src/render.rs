@@ -5278,11 +5278,17 @@ pub(crate) mod tests {
         let p = region_plugins().into_iter().find(|p| p.id == "shockwave").expect("shockwave");
         let preset = preset_of(&p);
         let (frame, size, bg) = agent_frame(&r, "hermes", preset);
-        let terms = vec![crate::render_fx::RegionTerm::FullAfterChange(std::time::Duration::from_millis(1300)), crate::render_fx::RegionTerm::Cursor(2.75)];
-        let plan = Plan { hold: 6000, every: 50, wide: true, terms: Some(terms), ..Default::default() };
         let mut bad = Vec::new();
-        let shots = region_shots(&mut r, &p, &frame, size, bg, preset, kinds()[0], &plan);
-        assert!(check_shots(&shots, kinds()[0], size, "shockwave wide block", &mut bad) > 0, "no frame shaded only its region");
+        for kind in kinds() {
+            let mut terms = vec![crate::render_fx::RegionTerm::FullAfterChange(std::time::Duration::from_millis(1300)), crate::render_fx::RegionTerm::Cursor(2.75)];
+            // Live Lines animate the box lines, which sit outside a cursor-only region.
+            if kind.live_lines {
+                terms.push(crate::render_fx::RegionTerm::InputBox(2.0));
+            }
+            let plan = Plan { hold: 6000, every: 50, wide: true, terms: Some(terms), ..Default::default() };
+            let shots = region_shots(&mut r, &p, &frame, size, bg, preset, kind, &plan);
+            assert!(check_shots(&shots, kind, size, "shockwave wide block", &mut bad) > 0, "no frame shaded only its region");
+        }
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
