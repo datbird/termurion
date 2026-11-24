@@ -74,7 +74,45 @@ fn base64_lenient(data: &[u8]) -> Option<Vec<u8>> {
 /// Every refusal of a file gets this one answer, so answers never tell whether a file
 /// exists.
 fn bad_file() -> String {
-    "EBADF:Cannot use the file".into()
+    "EBADF:Failed to read image file".into()
+}
+
+/// Folders t=f never reads from, with everything inside them, as lowercase components from the
+/// root (iTerm2's list, `KittyImageController.swift`). The Linux system trees (/proc, /sys, /dev)
+/// are Termurion's own addition for the same reason; /System and the keychains are the Mac's.
+#[cfg(unix)]
+const DENIED_TREES: &[&[&str]] = &[
+    &["dev"],
+    &["etc"],
+    &["var", "db"],
+    &["var", "root"],
+    #[cfg(target_os = "linux")]
+    &["proc"],
+    #[cfg(target_os = "linux")]
+    &["sys"],
+    #[cfg(target_os = "macos")]
+    &["system"],
+    #[cfg(target_os = "macos")]
+    &["library", "keychains"],
+];
+
+/// Whether a t=f path, already resolved, lies in a system folder that is never read. Compares
+/// whole components, ignoring case and "." (a Mac's disk is case-blind), and reads /private/etc,
+/// /private/var and /private/tmp as /etc, /var and /tmp, which are links to them. Any .ssh folder
+/// is refused too. Windows keeps the judge's rules alone.
+#[cfg(unix)]
+fn denied_path(path: &std::path::Path) -> bool {
+    use std::path::Component;
+    let mut parts: Vec<String> = path.components().filter_map(|c| if let Component::Normal(n) = c { Some(n.to_string_lossy().to_lowercase()) } else { None }).collect();
+    if parts.len() > 1 && parts[0] == "private" && matches!(parts[1].as_str(), "etc" | "var" | "tmp") {
+        parts.remove(0);
+    }
+    DENIED_TREES.iter().any(|t| parts.len() >= t.len() && parts.iter().zip(t.iter()).all(|(a, b)| a == b)) || parts.iter().any(|p| p == ".ssh")
+}
+
+#[cfg(not(unix))]
+fn denied_path(_: &std::path::Path) -> bool {
+    false
 }
 
 /// A file a program asked Termurion to read: only a regular local file (no share, device, or
@@ -99,7 +137,12 @@ fn read_file(raw: &[u8], temporary: bool) -> Option<Vec<u8>> {
         let _ = crate::localfs::remove_file(&real);
         return bytes;
     }
-    crate::localfs::read(&path).ok()
+    // Resolved first, so a link into a system folder is refused as the folder is.
+    let real = crate::localfs::canonicalize(&path)?;
+    if denied_path(real.path()) {
+        return None;
+    }
+    crate::localfs::read(&real).ok()
 }
 
 /// The picture a transmit or query carries: width, height, RGBA.
@@ -481,6 +524,69 @@ mod tests {
         std::fs::write(&inside, [1, 2, 3, 4]).unwrap();
         assert_eq!(send(&mut s, "a=t,t=t,f=32,s=1,v=1,i=2", path(&inside).as_bytes()), "\x1b_Gi=2;OK\x1b\\");
         assert!(!inside.exists());
+    }
+
+    #[test]
+    fn file_media_answer_is_one_text() {
+        let mut s = Screen::new(20, 6);
+        for p in ["/nonexistent/x.png", "/etc/hostname"] {
+            assert_eq!(send(&mut s, "a=q,t=f,i=1", p.as_bytes()), "\x1b_Gi=1;EBADF:Failed to read image file\x1b\\");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_media_refuse_system_folders() {
+        use std::path::Path;
+        let mut trees = vec!["/etc", "/var/db", "/var/root", "/dev"];
+        if cfg!(target_os = "linux") {
+            trees.extend(["/proc", "/sys"]);
+        }
+        if cfg!(target_os = "macos") {
+            trees.extend(["/System", "/Library/Keychains"]);
+        }
+        for t in &trees {
+            for p in [t.to_string(), format!("{t}/x"), format!("{t}/a/b.png"), format!("{}/x", t.to_uppercase()), format!("{t}//x"), format!("{t}/./x")] {
+                assert!(denied_path(Path::new(&p)), "{p}");
+            }
+        }
+        // macOS spells them under /private.
+        for p in ["/private/etc/hosts", "/private/var/db/x", "/private/var/root/.zshrc"] {
+            assert!(denied_path(Path::new(p)), "{p}");
+        }
+        // Whole components only, and everything else reads.
+        for p in ["/etcetera/x", "/var/dbx/x", "/var/log/x.png", "/var/tmp/x.png", "/devices/x", "/home/u/pic.png", "/tmp/x.png", "/private/tmp/x.png", "/sysroot/x", "/processes/x"] {
+            assert!(!denied_path(Path::new(p)), "{p}");
+        }
+        // .ssh anywhere under a home folder.
+        assert!(denied_path(Path::new("/home/u/.ssh/id_ed25519")));
+        assert!(denied_path(Path::new("/Users/u/.ssh")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_media_read_refuses_real_system_files_and_links_into_them() {
+        let td = TempDir::new("kitty-deny");
+        let dir = td.to_path_buf();
+        let read = |p: &std::path::Path| read_file(p.to_string_lossy().as_bytes(), false);
+        let normal = dir.join("pic.bin");
+        std::fs::write(&normal, [1, 2, 3, 4]).unwrap();
+        assert_eq!(read(&normal), Some(vec![1, 2, 3, 4]), "a normal file still reads");
+        for target in ["/etc/hostname", "/etc/passwd", "/proc/self/status", "/proc/version", "/sys/kernel/mm/transparent_hugepage/enabled"] {
+            let target = std::path::Path::new(target);
+            if !target.is_file() {
+                continue;
+            }
+            assert!(read(target).is_none(), "{target:?}");
+            let link = dir.join("link");
+            let _ = std::fs::remove_file(&link);
+            std::os::unix::fs::symlink(target, &link).unwrap();
+            assert!(read(&link).is_none(), "a link to {target:?}");
+        }
+        // A link to a folder in /etc, and a path that climbs into it.
+        std::os::unix::fs::symlink("/etc", dir.join("etc-link")).unwrap();
+        assert!(read(&dir.join("etc-link").join("hostname")).is_none());
+        assert!(read(&dir.join("..").join("..").join("..").join("..").join("etc").join("hostname")).is_none());
     }
 
     #[test]
