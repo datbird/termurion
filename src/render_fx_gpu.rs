@@ -583,9 +583,8 @@ impl Chain {
                 let (packed, last) = (&self.scratch[i], &self.last_packed[i]);
                 if packed != last {
                     // A frame that moved only the clock writes just its span.
-                    let span = layout.clock_span();
-                    let only_clock = packed.len() == last.len() && span.end <= packed.len() && packed[..span.start] == last[..span.start] && packed[span.end..] == last[span.end..];
-                    let (at, bytes) = if only_clock { (span.start, &packed[span.clone()]) } else { (0, &packed[..]) };
+                    let range = upload_range(&layout.clock_span(), packed, last);
+                    let (at, bytes) = (range.start, &packed[range]);
                     match uploads.as_deref_mut() {
                         Some(up) => up.write(device, &pass.uniforms, at as u64, bytes),
                         None => queue.write_buffer(&pass.uniforms, at as u64, bytes),
@@ -731,4 +730,43 @@ fn ready<F: std::future::Future<Output = Option<wgpu::Error>>>(device: &wgpu::De
         let _ = device.poll(wgpu::PollType::Poll);
     }
     None
+}
+
+/// The bytes of a changed uniform buffer to upload: just the clock span when everything outside
+/// it equals what the buffer holds, else all of it.
+fn upload_range(span: &std::ops::Range<usize>, packed: &[u8], last: &[u8]) -> std::ops::Range<usize> {
+    let only_clock = packed.len() == last.len() && span.end <= packed.len() && packed[..span.start] == last[..span.start] && packed[span.end..] == last[span.end..];
+    if only_clock { span.clone() } else { 0..packed.len() }
+}
+
+#[cfg(test)]
+mod upload_tests {
+    use super::*;
+
+    #[test]
+    fn a_clock_only_change_uploads_the_span_and_anything_else_the_whole_buffer() {
+        let (list, _) = crate::render_fx::discover(None);
+        let layout = list.iter().filter(|p| p.builtin()).flat_map(|p| p.compile().unwrap()).find_map(|c| crate::render_fx::uniform_layout(&c.module)).unwrap();
+        let span = layout.clock_span();
+        let mut u = Uniforms::default();
+        let mut held = Vec::new();
+        u.pack_into(&layout, &mut held);
+        // A new frame: the clock and the cursor move.
+        u.time += 0.5;
+        u.frame += 1;
+        u.current_cursor = [4.0, 5.0, 6.0, 7.0];
+        let mut next = Vec::new();
+        u.pack_into(&layout, &mut next);
+        let r = upload_range(&span, &next, &held);
+        assert_eq!(r, span, "only the span");
+        let mut buffer = held.clone();
+        buffer[r.clone()].copy_from_slice(&next[r]);
+        assert_eq!(buffer, next, "the buffer after the partial write is the full pack");
+        // A color moves too: everything goes.
+        u.background = [0.25; 3];
+        u.pack_into(&layout, &mut next);
+        assert_eq!(upload_range(&span, &next, &held), 0..next.len());
+        // The first frame (nothing held) writes it all.
+        assert_eq!(upload_range(&span, &next, &[]), 0..next.len());
+    }
 }

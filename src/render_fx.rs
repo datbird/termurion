@@ -328,8 +328,7 @@ pub fn frame_rects(terms: &[RegionTerm], now: &Uniforms, last: &Uniforms, cell: 
     FrameRegion { own: own_region(terms, now, cell, live_lines, size), with_last: frame_region(terms, now, last, cell, live_lines, size) }
 }
 
-/// What `region_rects` reads of one frame's uniforms. The clock is not in it, except as the
-/// answer of each `FullAfterChange` term, so an animation frame that moves only time repeats it.
+/// What `region_rects` reads of one frame's uniforms, apart from the clock.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct RegionInputs {
     current: [f32; 4],
@@ -338,41 +337,69 @@ struct RegionInputs {
     mark: [f32; 4],
     input_box: [f32; 4],
     input_box_x: [f32; 4],
-    /// Bit k: the k-th term is a `FullAfterChange` still inside its window.
-    recent: u64,
 }
 
 impl RegionInputs {
-    fn of(terms: &[RegionTerm], u: &Uniforms) -> RegionInputs {
-        let mut recent = 0u64;
-        for (k, t) in terms.iter().enumerate().take(64) {
-            if let RegionTerm::FullAfterChange(d) = t {
-                recent |= u64::from(u.time - u.time_cursor_change < d.as_secs_f32()) << k;
-            }
-        }
-        RegionInputs { current: u.current_cursor, previous: u.previous_cursor, style: u.current_cursor_style, mark: u.prompt_mark, input_box: u.input_box, input_box_x: u.input_box_x, recent }
+    fn of(u: &Uniforms) -> RegionInputs {
+        RegionInputs { current: u.current_cursor, previous: u.previous_cursor, style: u.current_cursor_style, mark: u.prompt_mark, input_box: u.input_box, input_box_x: u.input_box_x }
     }
+}
+
+/// Per term: a `FullAfterChange` still inside its window. The clock reaches the rects only
+/// through these, so an animation frame that moves just time repeats the answer.
+fn recent_of(terms: &[RegionTerm], u: &Uniforms) -> Vec<bool> {
+    terms.iter().map(|t| recent_term(t, u)).collect()
+}
+
+fn recent_term(t: &RegionTerm, u: &Uniforms) -> bool {
+    matches!(t, RegionTerm::FullAfterChange(d) if u.time - u.time_cursor_change < d.as_secs_f32())
+}
+
+fn recent_same(terms: &[RegionTerm], u: &Uniforms, seen: &[bool]) -> bool {
+    seen.len() == terms.len() && terms.iter().zip(seen).all(|(t, &s)| recent_term(t, u) == s)
+}
+
+/// What `RectsCache` keyed its answer on.
+#[derive(Debug)]
+struct RectsKey {
+    terms: Vec<RegionTerm>,
+    now: RegionInputs,
+    last: RegionInputs,
+    recent_now: Vec<bool>,
+    recent_last: Vec<bool>,
+    cell: (f32, f32),
+    live_lines: bool,
+    size: (u32, u32),
 }
 
 /// `frame_rects` with a memory: the same inputs give the last answer again, with no work and no
 /// allocation. Most animation frames move only the clock, which the rects do not read.
 #[derive(Debug, Default)]
 pub struct RectsCache {
-    key: Option<(Vec<RegionTerm>, RegionInputs, RegionInputs, (f32, f32), bool, (u32, u32))>,
+    key: Option<RectsKey>,
     region: std::sync::Arc<FrameRegion>,
+    /// The answer for a chain with no region terms, made once.
+    none: std::sync::Arc<FrameRegion>,
     computes: u64,
 }
 
 impl RectsCache {
     pub fn get(&mut self, terms: &[RegionTerm], now: &Uniforms, last: &Uniforms, cell: (f32, f32), live_lines: bool, size: (u32, u32)) -> std::sync::Arc<FrameRegion> {
-        let (a, b) = (RegionInputs::of(terms, now), RegionInputs::of(terms, last));
-        let same = self.key.as_ref().is_some_and(|k| k.0 == terms && k.1 == a && k.2 == b && k.3 == cell && k.4 == live_lines && k.5 == size);
+        let (a, b) = (RegionInputs::of(now), RegionInputs::of(last));
+        let same = self.key.as_ref().is_some_and(|k| {
+            k.terms == terms && k.now == a && k.last == b && k.cell == cell && k.live_lines == live_lines && k.size == size && recent_same(terms, now, &k.recent_now) && recent_same(terms, last, &k.recent_last)
+        });
         if !same {
             self.region = std::sync::Arc::new(frame_rects(terms, now, last, cell, live_lines, size));
-            self.key = Some((terms.to_vec(), a, b, cell, live_lines, size));
+            self.key = Some(RectsKey { terms: terms.to_vec(), now: a, last: b, recent_now: recent_of(terms, now), recent_last: recent_of(terms, last), cell, live_lines, size });
             self.computes += 1;
         }
         self.region.clone()
+    }
+
+    /// The answer when the chain has no region terms (the full pass): one shared value.
+    pub fn none(&self) -> std::sync::Arc<FrameRegion> {
+        self.none.clone()
     }
 
     /// How many times the rects were computed rather than reused.
@@ -2050,50 +2077,6 @@ mod tests {
         assert_eq!(hex_color("ff8000"), None);
     }
 
-    /// A global allocator that counts allocations of the thread that armed it (a counter per
-    /// thread, so the other tests in this binary do not disturb it).
-    mod counting {
-        use std::alloc::{GlobalAlloc, Layout, System};
-        use std::cell::Cell;
-
-        thread_local! {
-            static ARMED: Cell<bool> = const { Cell::new(false) };
-            static COUNT: Cell<u64> = const { Cell::new(0) };
-        }
-
-        pub struct Counting;
-
-        unsafe impl GlobalAlloc for Counting {
-            unsafe fn alloc(&self, l: Layout) -> *mut u8 {
-                if ARMED.try_with(|a| a.get()).unwrap_or(false) {
-                    let _ = COUNT.try_with(|c| c.set(c.get() + 1));
-                }
-                unsafe { System.alloc(l) }
-            }
-            unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
-                unsafe { System.dealloc(p, l) }
-            }
-            unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
-                if ARMED.try_with(|a| a.get()).unwrap_or(false) {
-                    let _ = COUNT.try_with(|c| c.set(c.get() + 1));
-                }
-                unsafe { System.realloc(p, l, n) }
-            }
-        }
-
-        /// How many allocations `f` made on this thread.
-        pub fn count<R>(f: impl FnOnce() -> R) -> (R, u64) {
-            COUNT.with(|c| c.set(0));
-            ARMED.with(|a| a.set(true));
-            let r = f();
-            ARMED.with(|a| a.set(false));
-            (r, COUNT.with(|c| c.get()))
-        }
-    }
-
-    #[global_allocator]
-    static ALLOC: counting::Counting = counting::Counting;
-
     /// The packing as it was before `pack_into`, kept to prove the new one writes the same bytes.
     fn pack_reference(u: &Uniforms, layout: &Layout) -> Vec<u8> {
         fn fl(v: &[f32]) -> Vec<u8> {
@@ -2260,6 +2243,36 @@ mod tests {
         }
     }
 
+    /// More than 64 terms: the late one is in the key too.
+    #[test]
+    fn the_rects_key_covers_every_term() {
+        let mut terms = vec![RegionTerm::Cursor(1.0); 69];
+        terms.push(RegionTerm::FullAfterChange(Duration::from_millis(500)));
+        let mut u = cursor_uniforms([200.0, 300.0, 10.0, 20.0]);
+        u.time = 5.0;
+        let last = u.clone();
+        let mut cache = RectsCache::default();
+        let outside = cache.get(&terms, &u, &last, (10.0, 20.0), false, (800, 600));
+        assert!(outside.own.is_some());
+        // The cursor just changed: inside the term's window the pass is full.
+        let mut v = u.clone();
+        v.time_cursor_change = v.time;
+        let inside = cache.get(&terms, &v, &last, (10.0, 20.0), false, (800, 600));
+        assert_eq!(cache.computes(), 2, "the late term flipped, so the key missed");
+        assert_eq!(inside.own, None);
+    }
+
+    #[test]
+    fn no_region_terms_share_one_answer() {
+        let cache = RectsCache::default();
+        let (_, allocs) = counting::count(|| {
+            for _ in 0..100 {
+                let _ = cache.none();
+            }
+        });
+        assert_eq!(allocs, 0);
+    }
+
     #[test]
     fn frame_rects_reuses_its_answer() {
         let terms = [RegionTerm::Cursor(1.0), RegionTerm::FullAfterChange(Duration::from_millis(500))];
@@ -2284,3 +2297,51 @@ mod tests {
         assert_eq!(cache.computes(), 2);
     }
 }
+
+#[cfg(test)]
+/// A global allocator that counts allocations of the thread that armed it (a counter per
+/// thread, so the other tests in this binary do not disturb it).
+pub(crate) mod counting {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    thread_local! {
+        static ARMED: Cell<bool> = const { Cell::new(false) };
+        static COUNT: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub struct Counting;
+
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+            if ARMED.try_with(|a| a.get()).unwrap_or(false) {
+                let _ = COUNT.try_with(|c| c.set(c.get() + 1));
+            }
+            unsafe { System.alloc(l) }
+        }
+        unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+            unsafe { System.dealloc(p, l) }
+        }
+        unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
+            if ARMED.try_with(|a| a.get()).unwrap_or(false) {
+                let _ = COUNT.try_with(|c| c.set(c.get() + 1));
+            }
+            unsafe { System.realloc(p, l, n) }
+        }
+    }
+
+    /// How many allocations `f` made on this thread.
+    pub fn count<R>(f: impl FnOnce() -> R) -> (R, u64) {
+        COUNT.with(|c| c.set(0));
+        ARMED.with(|a| a.set(true));
+        let r = f();
+        ARMED.with(|a| a.set(false));
+        (r, COUNT.with(|c| c.get()))
+    }
+}
+
+#[cfg(test)]
+// This applies to the whole lib test binary (one global allocator per binary, so no other
+// test code may declare one).
+#[global_allocator]
+static ALLOC: counting::Counting = counting::Counting;

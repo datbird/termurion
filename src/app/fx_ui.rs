@@ -267,7 +267,7 @@ impl FxRuntime {
     /// Where this frame's effects can draw, alone and with last frame's (`render_fx::frame_rects`;
     /// None runs the full pass). `cell` is the focused pane's cell.
     pub(super) fn region(&mut self, cell: (f32, f32), size: (u32, u32)) -> std::sync::Arc<render_fx::FrameRegion> {
-        let Some(terms) = self.chain.as_ref().and_then(|c| c.region_terms()) else { return Default::default() };
+        let Some(terms) = self.chain.as_ref().and_then(|c| c.region_terms()) else { return self.rects.none() };
         self.rects.get(terms, &self.uniforms, &self.last_uniforms, cell, self.live_lines, size)
     }
 
@@ -682,5 +682,17 @@ mod tests {
         rt.prepare(Some(&p), None, (800, 600), true, start + std::time::Duration::from_secs(4), render_fx::Pacing::Full);
         assert_eq!(rt.palette_fills, 2);
         assert_eq!(rt.uniforms.prompt_mark, p.uniform_mark(), "the per-frame fields still follow");
+    }
+
+    #[test]
+    fn a_frame_with_no_region_allocates_nothing() {
+        let mut rt = FxRuntime::bare();
+        let _ = rt.region((10.0, 20.0), (800, 600));
+        let (_, allocs) = crate::render_fx::counting::count(|| {
+            for _ in 0..100 {
+                let _ = rt.region((10.0, 20.0), (800, 600));
+            }
+        });
+        assert_eq!(allocs, 0);
     }
 }
