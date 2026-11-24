@@ -70,6 +70,12 @@ pub enum Choice {
     Close,
 }
 
+/// Enter closes the window only when no button has the keyboard; a focused button takes the
+/// Enter itself (egui's own button activation).
+pub fn enter_closes(button_focused: bool) -> bool {
+    !button_focused
+}
+
 pub struct AboutWindow {
     host: EguiHost,
     lines: Vec<String>,
@@ -122,18 +128,24 @@ impl AboutWindow {
                     }
                 }
                 ui.add_space(10.0);
+                let mut focused = false;
                 ui.horizontal(|ui| {
-                    if ui.button(OPEN_PROJECT).clicked() {
+                    let open = ui.button(OPEN_PROJECT);
+                    if open.clicked() {
                         picked = Some(Choice::OpenProject);
                     }
-                    if ui.button(COPY).clicked() {
+                    let copy = ui.button(COPY);
+                    if copy.clicked() {
                         picked = Some(Choice::Copy);
                     }
-                    if ui.button(OK).clicked() {
+                    let ok = ui.button(OK);
+                    if ok.clicked() {
                         picked = Some(Choice::Close);
                     }
+                    focused = open.has_focus() || copy.has_focus() || ok.has_focus();
                 });
-                if ui.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Escape)) {
+                let (enter, escape) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+                if escape || (enter && enter_closes(focused)) {
                     picked = Some(Choice::Close);
                 }
             });
@@ -186,6 +198,12 @@ mod tests {
         assert_eq!(date.len(), 10, "{date}");
         assert!(date.chars().enumerate().all(|(i, c)| if i == 4 || i == 7 { c == '-' } else { c.is_ascii_digit() }));
         assert!(!commit_of(env!("TERMURION_GIT_COMMIT")).is_empty());
+    }
+
+    #[test]
+    fn enter_leaves_a_focused_button_alone() {
+        assert!(enter_closes(false));
+        assert!(!enter_closes(true));
     }
 
     #[test]
