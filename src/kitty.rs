@@ -90,7 +90,7 @@ const DENIED_TREES: &[&[&str]] = &[
     &["proc"],
     #[cfg(target_os = "linux")]
     &["sys"],
-    // Linux's counterparts of /var/root and /var/db: root's home and the runtime secrets.
+    // Linux's counterparts of /var/root and /var/db: root's home and the runtime secrets (not /run/media, below).
     #[cfg(target_os = "linux")]
     &["root"],
     #[cfg(target_os = "linux")]
@@ -115,7 +115,9 @@ fn denied_path(path: &std::path::Path) -> bool {
     if parts.len() > 1 && parts[0] == "private" && matches!(parts[1].as_str(), "etc" | "var" | "tmp") {
         parts.remove(0);
     }
-    DENIED_TREES.iter().any(|t| parts.len() >= t.len() && parts.iter().zip(t.iter()).all(|(a, b)| a == b)) || parts.iter().any(|p| p == ".ssh")
+    // /run holds secrets, but removable drives mount under /run/media/<user>/ and may show pictures.
+    let removable_drive = parts.len() > 2 && parts[0] == "run" && parts[1] == "media";
+    (DENIED_TREES.iter().any(|t| parts.len() >= t.len() && parts.iter().zip(t.iter()).all(|(a, b)| a == b)) && !removable_drive) || parts.iter().any(|p| p == ".ssh")
 }
 
 /// Whether `path` is the Windows config folder (`<SystemRoot>\System32\config`, where the SAM and
@@ -718,6 +720,18 @@ mod tests {
         // .ssh anywhere under a home folder.
         assert!(denied_path(Path::new("/home/u/.ssh/id_ed25519")));
         assert!(denied_path(Path::new("/Users/u/.ssh")));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn run_is_refused_but_removable_drives_are_not() {
+        use std::path::Path;
+        for p in ["/run", "/run/secrets/key", "/run/user/1000/keyring/x", "/run/x.png", "/run/mediax/x.png", "/run/media"] {
+            assert!(denied_path(Path::new(p)), "{p}");
+        }
+        for p in ["/run/media/u/USB/pic.png", "/run/media/u/USB/.hidden/pic.png"] {
+            assert!(!denied_path(Path::new(p)), "{p}");
+        }
     }
 
     #[cfg(all(unix, debug_assertions))]
