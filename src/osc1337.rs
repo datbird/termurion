@@ -246,6 +246,31 @@ pub fn from_points_at(f: Frame, primary: Frame, scale: f64) -> Frame {
     (x + primary.0, y + primary.1, w, h)
 }
 
+/// Monitors that winit lists in each one's own pixels (macOS: a display's logical origin and size
+/// times that display's scale) as one space, points. `(frame in pixels, that monitor's scale)`.
+pub fn monitors_in_points(monitors: &[(Frame, f64)]) -> Vec<Frame> {
+    monitors.iter().map(|&((x, y, w, h), k)| (x / k, y / k, w / k, h / k)).collect()
+}
+
+/// A frame AppKit gives (points, y up from the bottom of the main screen, `main_height` tall) as
+/// top-left, y-down points: the space winit's `CGDisplayBounds` uses.
+pub fn from_appkit_frame(f: Frame, main_height: f64) -> Frame {
+    (f.0, main_height - f.1 - f.3, f.2, f.3)
+}
+
+/// Each monitor cut down to the work area (the desktop's strip left by panels and docks), the whole
+/// monitor where they do not meet.
+pub fn within_work_area(monitors: &[Frame], work: Frame) -> Vec<Frame> {
+    monitors
+        .iter()
+        .map(|m| {
+            let (left, top) = (m.0.max(work.0), m.1.max(work.1));
+            let (right, bottom) = ((m.0 + m.2).min(work.0 + work.2), (m.1 + m.3).min(work.1 + work.3));
+            if right > left && bottom > top { (left, top, right - left, bottom - top) } else { *m }
+        })
+        .collect()
+}
+
 /// What `Env=` does to the screen's exfiltrated environment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EnvUpdate {
@@ -360,6 +385,48 @@ mod tests {
     use super::*;
     use crate::screen::{Request, Screen};
     use alacritty_terminal::grid::Dimensions;
+
+    #[test]
+    fn mixed_scale_monitors_become_one_space() {
+        // A 2x panel at the origin and a 1x external to its left, its top 200 points lower: winit
+        // lists the panel in doubled pixels and the external in its own, at a negative origin.
+        let panel = ((0.0, 0.0, 2880.0, 1800.0), 2.0);
+        let external = ((-1920.0, 200.0, 1920.0, 1080.0), 1.0);
+        let screens = monitors_in_points(&[panel, external]);
+        assert_eq!(screens, vec![(0.0, 0.0, 1440.0, 900.0), (-1920.0, 200.0, 1920.0, 1080.0)]);
+        // A 2x external to the left: its origin was doubled, so halving gives its point origin.
+        assert_eq!(monitors_in_points(&[((-2560.0, 0.0, 2560.0, 1440.0), 2.0)]), vec![(-1280.0, 0.0, 1280.0, 720.0)]);
+        // The primary is the one at the origin, and a frame is measured from its height in points.
+        let primary = primary_of(&screens).unwrap();
+        assert_eq!(primary, (0.0, 0.0, 1440.0, 900.0));
+        let appkit = (-1000.0, 100.0, 800.0, 500.0);
+        let down = from_points_at(appkit, primary, 1.0);
+        assert_eq!(down, (-1000.0, 900.0 - 100.0 - 500.0, 800.0, 500.0));
+        // On the external (x -1920..0, y 200..1280): reachable, so the clamp leaves it alone.
+        assert_eq!(clamp_window_frame(down, (100.0, 50.0), &screens, 40.0), Some(down));
+        // The old mistake: reading 2x-pixel positions as one space puts a frame at 2000 "on" the panel.
+        let far = (2000.0, 1500.0, 400.0, 300.0);
+        let (x, y, ..) = clamp_window_frame(far, (100.0, 50.0), &screens, 40.0).unwrap();
+        assert_eq!((x, y), (1440.0 - 40.0, 900.0 - 40.0));
+    }
+
+    #[test]
+    fn appkit_frames_flip_to_top_left_points() {
+        // The main screen is 900 tall; the Dock takes 70 off the bottom and the menu bar 25 off the top.
+        assert_eq!(from_appkit_frame((0.0, 70.0, 1440.0, 805.0), 900.0), (0.0, 25.0, 1440.0, 805.0));
+        // A screen above the main one sits at negative y.
+        assert_eq!(from_appkit_frame((100.0, 900.0, 1920.0, 1080.0), 900.0), (100.0, -1080.0, 1920.0, 1080.0));
+    }
+
+    #[test]
+    fn monitors_are_cut_to_the_work_area() {
+        let (a, b) = ((0.0, 0.0, 1920.0, 1080.0), (1920.0, 0.0, 1920.0, 1080.0));
+        // A 30-tall panel along the top of the whole desktop.
+        let work = (0.0, 30.0, 3840.0, 1050.0);
+        assert_eq!(within_work_area(&[a, b], work), vec![(0.0, 30.0, 1920.0, 1050.0), (1920.0, 30.0, 1920.0, 1050.0)]);
+        // A work area that is only one monitor's leaves the other whole.
+        assert_eq!(within_work_area(&[a, b], (0.0, 0.0, 1920.0, 1000.0)), vec![(0.0, 0.0, 1920.0, 1000.0), b]);
+    }
 
     #[test]
     fn primary_monitor_is_the_one_at_the_origin() {

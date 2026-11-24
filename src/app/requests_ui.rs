@@ -144,15 +144,14 @@ impl App {
                 self.reply(pane, reply.as_bytes());
             }
             Request::ReportScreenFrames => {
-                let scale = self.scale() as f64;
                 // Frames are measured from the primary monitor; unknown, so no answer.
-                let Some(primary) = self.primary_monitor_px() else { return };
+                let Some(space) = self.frame_space() else { return };
                 let n = osc1337::number;
-                let frames: Vec<String> = self
-                    .screens_px()
-                    .into_iter()
-                    .map(|f| {
-                        let (x, y, w, h) = osc1337::to_points_at(f, primary, scale);
+                let frames: Vec<String> = space
+                    .screens
+                    .iter()
+                    .map(|&f| {
+                        let (x, y, w, h) = osc1337::to_points_at(f, space.primary, space.scale);
                         format!("{},{},{},{}", n(x), n(y), n(w), n(h))
                     })
                     .collect();
@@ -254,25 +253,37 @@ impl App {
         let g = self.gpu.as_ref()?;
         let pos = g.window.outer_position().ok()?;
         let size = g.window.outer_size();
-        Some(osc1337::to_points_at((pos.x as f64, pos.y as f64, size.width as f64, size.height as f64), self.primary_monitor_px()?, g.window.scale_factor()))
+        let space = self.frame_space()?;
+        let (x, y, w, h) = (pos.x as f64 / space.unit, pos.y as f64 / space.unit, size.width as f64 / space.unit, size.height as f64 / space.unit);
+        Some(osc1337::to_points_at((x, y, w, h), space.primary, space.scale))
     }
 
-    /// The monitors in virtual-screen pixels: the work areas where the OS lists them (Windows), else
-    /// the monitors winit reports for the window (macOS, Linux).
-    fn screens_px(&self) -> Vec<osc1337::Frame> {
-        let areas = work_areas();
-        if !areas.is_empty() {
-            return areas;
+    /// The space SetWindowFrame and the reports measure in (see `FrameSpace`); None when the
+    /// primary monitor is unknown.
+    fn frame_space(&self) -> Option<FrameSpace> {
+        let g = self.gpu.as_ref()?;
+        let window_scale = g.window.scale_factor();
+        let monitors = || g.window.available_monitors().map(|m| ((m.position().x as f64, m.position().y as f64, m.size().width as f64, m.size().height as f64), m.scale_factor())).collect::<Vec<_>>();
+        // macOS: winit gives each display's origin and size in that display's own pixels, so a 2x
+        // panel and a 1x external are not one space. Points are: everything is measured in them.
+        #[cfg(target_os = "macos")]
+        {
+            let screens = osc1337::monitors_in_points(&monitors());
+            let primary = osc1337::primary_of(&screens)?;
+            Some(FrameSpace { screens, primary, unit: window_scale, scale: 1.0 })
         }
-        let Some(g) = &self.gpu else { return Vec::new() };
-        g.window.available_monitors().map(|m| (m.position().x as f64, m.position().y as f64, m.size().width as f64, m.size().height as f64)).collect()
-    }
-
-    /// The primary monitor's frame in pixels, which frames in points are measured from.
-    fn primary_monitor_px(&self) -> Option<osc1337::Frame> {
-        match primary_height() {
-            Some(h) => Some((0.0, 0.0, 0.0, h)),
-            None => osc1337::primary_of(&self.screens_px()),
+        // Windows and X11 list every monitor in one pixel space.
+        #[cfg(not(target_os = "macos"))]
+        {
+            let (screens, primary) = match primary_height() {
+                Some(h) => (work_areas(), (0.0, 0.0, 0.0, h)),
+                None => {
+                    let px: Vec<osc1337::Frame> = monitors().into_iter().map(|(f, _)| f).collect();
+                    let primary = osc1337::primary_of(&px)?;
+                    (px, primary)
+                }
+            };
+            Some(FrameSpace { screens, primary, unit: 1.0, scale: window_scale })
         }
     }
 
@@ -315,9 +326,8 @@ impl App {
     pub(super) fn apply_window_frame(&mut self, x: f64, y: f64, w: f64, h: f64) {
         let Some(g) = &self.gpu else { return };
         // Without the primary monitor the frame cannot be placed, so it is left alone.
-        let Some(primary) = self.primary_monitor_px() else { return };
-        let scale = g.window.scale_factor();
-        let (x, y, w, h) = osc1337::from_points_at((x, y, w, h), primary, scale);
+        let Some(space) = self.frame_space() else { return };
+        let (x, y, w, h) = osc1337::from_points_at((x, y, w, h), space.primary, space.scale);
         // The frame includes the title bar and borders; the inner size leaves them out.
         let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
         let (dw, dh) = (outer.width.saturating_sub(inner.width) as f64, outer.height.saturating_sub(inner.height) as f64);
@@ -325,9 +335,9 @@ impl App {
         // the frame, and the title bar's own floor; no bigger than the screens; part of it on one.
         let cell = self.cell();
         let floor = crate::platform::display::min_track_size().unwrap_or((0.0, 0.0));
-        let min = ((dw + 2.0 * cell.0 as f64).max(floor.0), (dh + 2.0 * cell.1 as f64).max(floor.1));
-        let screens = self.screens_px();
-        let Some((x, y, w, h)) = osc1337::clamp_window_frame((x, y, w, h), min, &screens, osc1337::MIN_VISIBLE_POINTS * scale) else { return };
+        let min = (((dw + 2.0 * cell.0 as f64) / space.unit).max(floor.0), ((dh + 2.0 * cell.1 as f64) / space.unit).max(floor.1));
+        let Some((x, y, w, h)) = osc1337::clamp_window_frame((x, y, w, h), min, &space.screens, osc1337::MIN_VISIBLE_POINTS * space.scale) else { return };
+        let (x, y, w, h) = (x * space.unit, y * space.unit, w * space.unit, h * space.unit);
         // Wayland lets a program size its window but never place it: there the position is unknown.
         if g.window.outer_position().is_ok() {
             g.window.set_outer_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
@@ -445,6 +455,17 @@ impl App {
         }
         next
     }
+}
+
+/// The space a frame in points is placed in: the monitors and primary monitor as one list, how many
+/// window pixels make one unit, and how many units make one AppKit point. Windows and X11 measure in
+/// pixels (a unit is a pixel, a point is the window's scale); macOS measures in points, because its
+/// displays each count their own pixels.
+struct FrameSpace {
+    screens: Vec<osc1337::Frame>,
+    primary: osc1337::Frame,
+    unit: f64,
+    scale: f64,
 }
 
 /// The primary monitor's height in pixels (it sits at the virtual screen's origin).
