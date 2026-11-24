@@ -30,6 +30,30 @@ pub(super) struct FxRuntime {
     /// When the animation's next frame is due ("Effects animation" caps the rate); the idle
     /// loop asks for it then (`App::fx_frame_tick`).
     pub(super) due: Option<Instant>,
+    /// The pane colors the palette and color uniforms were last filled from.
+    colors: Option<PaneColors>,
+    palette_fills: u64,
+    /// `region`'s last answer, kept while its inputs are the same.
+    rects: render_fx::RectsCache,
+}
+
+/// Every pane color the uniforms carry; a frame with the same ones leaves them as they are.
+#[derive(Clone, Debug, PartialEq)]
+struct PaneColors {
+    bg: crate::palette::Rgb,
+    fg: crate::palette::Rgb,
+    cursor_color: crate::palette::Rgb,
+    program_cursor: Option<crate::palette::Rgb>,
+    cursor_text: crate::palette::Rgb,
+    selection: crate::palette::Rgb,
+    selected_text: Option<crate::palette::Rgb>,
+    ansi: [crate::palette::Rgb; 16],
+}
+
+impl PaneColors {
+    fn of(p: &crate::scene::FxPane) -> PaneColors {
+        PaneColors { bg: p.bg, fg: p.fg, cursor_color: p.cursor_color, program_cursor: p.program_cursor, cursor_text: p.cursor_text, selection: p.selection, selected_text: p.selected_text, ansi: p.ansi }
+    }
 }
 
 /// The strongest animation among the plugins: always over auto over off.
@@ -160,7 +184,7 @@ impl App {
                 }
             }
         };
-        gpu.fx = Some(FxRuntime { ids: wanted, chain, clock: Clock::default(), uniforms: Uniforms::default(), last_uniforms: Uniforms::default(), live_lines, animation: strongest(&animations), preset, keep_alpha, signals, due: None });
+        gpu.fx = Some(FxRuntime { ids: wanted, chain, clock: Clock::default(), uniforms: Uniforms::default(), last_uniforms: Uniforms::default(), live_lines, animation: strongest(&animations), preset, keep_alpha, signals, due: None, colors: None, palette_fills: 0, rects: Default::default() });
         if errors.is_empty() {
             self.banners.clear(BANNER);
         } else {
@@ -219,26 +243,37 @@ impl FxRuntime {
             crate::dlog!("fx: idle clock restarted: cursor {} at {} {} {}x{}, color {} {} {}, focused {}", cursor.is_some(), x, y, w, h, r, g, b, focused);
         }
         if let Some(p) = pane {
-            u.background = unit(p.bg);
-            u.foreground = unit(p.fg);
-            u.cursor_color = unit(p.program_cursor.unwrap_or(p.cursor_color));
-            u.cursor_text = unit(p.cursor_text);
-            u.selection_background = unit(p.selection);
-            u.selection_foreground = unit(p.selected_text.unwrap_or(p.fg));
+            // The colors move rarely: refill them (and the 256-entry palette) only when they did.
+            let seen = PaneColors::of(p);
+            if self.colors.as_ref() != Some(&seen) {
+                u.background = unit(p.bg);
+                u.foreground = unit(p.fg);
+                u.cursor_color = unit(p.program_cursor.unwrap_or(p.cursor_color));
+                u.cursor_text = unit(p.cursor_text);
+                u.selection_background = unit(p.selection);
+                u.selection_foreground = unit(p.selected_text.unwrap_or(p.fg));
+                for (i, slot) in u.palette.iter_mut().enumerate() {
+                    *slot = if i < 16 { unit(p.ansi[i]) } else { xterm_256(i) };
+                }
+                self.colors = Some(seen);
+                self.palette_fills += 1;
+            }
             u.input_box = p.input_box.map_or([0.0; 4], |b| b.uniform());
             u.input_box_x = p.input_box.map_or([0.0; 4], |b| b.uniform_x());
             u.prompt_mark = p.uniform_mark();
-            for (i, slot) in u.palette.iter_mut().enumerate() {
-                *slot = if i < 16 { unit(p.ansi[i]) } else { xterm_256(i) };
-            }
         }
     }
 
     /// Where this frame's effects can draw, alone and with last frame's (`render_fx::frame_rects`;
     /// None runs the full pass). `cell` is the focused pane's cell.
-    pub(super) fn region(&self, cell: (f32, f32), size: (u32, u32)) -> render_fx::FrameRegion {
-        let Some(terms) = self.chain.as_ref().and_then(|c| c.region_terms()) else { return render_fx::FrameRegion::default() };
-        render_fx::frame_rects(terms, &self.uniforms, &self.last_uniforms, cell, self.live_lines, size)
+    pub(super) fn region(&mut self, cell: (f32, f32), size: (u32, u32)) -> std::sync::Arc<render_fx::FrameRegion> {
+        let Some(terms) = self.chain.as_ref().and_then(|c| c.region_terms()) else { return Default::default() };
+        self.rects.get(terms, &self.uniforms, &self.last_uniforms, cell, self.live_lines, size)
+    }
+
+    #[cfg(test)]
+    fn bare() -> FxRuntime {
+        FxRuntime { ids: Default::default(), signals: false, keep_alpha: false, chain: None, clock: Clock::default(), uniforms: Uniforms::default(), last_uniforms: Uniforms::default(), live_lines: false, animation: Animation::Off, preset: None, due: None, colors: None, palette_fills: 0, rects: Default::default() }
     }
 
     /// Whether the chain's last copy writes the window's own raw view (`Chain::wants_raw_out`).
@@ -605,5 +640,47 @@ mod tests {
         assert_eq!(panes[&3].fx_pick, None);
         assert!(panes[&1].fx_dirty && panes[&1].fx_checked.is_none(), "detection runs at once");
         assert!(!rename_picks(&mut panes, "Old", "Newer"));
+    }
+
+    fn pane() -> crate::scene::FxPane {
+        let c = |n: u8| crate::palette::rgb(n, n / 2, 255 - n);
+        crate::scene::FxPane {
+            cursor: Some(render_fx::Cursor { rect: [10.0, 20.0, 8.0, 16.0], color: [1.0; 4], style: 0, visible: true }),
+            focused: true,
+            bg: c(1),
+            fg: c(200),
+            cursor_color: c(90),
+            program_cursor: None,
+            cursor_text: c(3),
+            selection: c(40),
+            selected_text: None,
+            ansi: std::array::from_fn(|i| c(i as u8 * 10)),
+            input_box: None,
+            prompt_mark: None,
+        }
+    }
+
+    #[test]
+    fn the_palette_is_filled_once_per_color_change() {
+        let mut rt = FxRuntime::bare();
+        let mut p = pane();
+        let start = Instant::now();
+        for i in 0..100 {
+            rt.prepare(Some(&p), None, (800, 600), true, start + std::time::Duration::from_millis(16 * i), render_fx::Pacing::Full);
+        }
+        assert_eq!(rt.palette_fills, 1);
+        let before = rt.uniforms.palette.clone();
+        p.ansi[4] = crate::palette::rgb(9, 8, 7);
+        rt.prepare(Some(&p), None, (800, 600), true, start + std::time::Duration::from_secs(3), render_fx::Pacing::Full);
+        assert_eq!(rt.palette_fills, 2);
+        assert_ne!(rt.uniforms.palette, before);
+        assert_eq!(rt.uniforms.palette[4], unit(p.ansi[4]));
+        assert_eq!(rt.uniforms.background, unit(p.bg));
+        // A cursor or input box change is not a color change.
+        p.input_box = None;
+        p.prompt_mark = Some([1.0, 2.0, 3.0, 4.0]);
+        rt.prepare(Some(&p), None, (800, 600), true, start + std::time::Duration::from_secs(4), render_fx::Pacing::Full);
+        assert_eq!(rt.palette_fills, 2);
+        assert_eq!(rt.uniforms.prompt_mark, p.uniform_mark(), "the per-frame fields still follow");
     }
 }

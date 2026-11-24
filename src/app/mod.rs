@@ -7817,7 +7817,7 @@ impl App {
                     chain.keep_output(region.own.is_some());
                     // Without view formats (OpenGL) the chain's last copy writes the window's own view.
                     let out = if chain.wants_raw_out() { texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(crate::render_fx_gpu::raw_format(gpu.config.format)), ..Default::default() }) } else { view.clone().expect("made unless the chain writes the raw view") };
-                    gpu.renderer.draw_fx_for(&frame, chain, uniforms, &out, w, h, same_scene, Some(&region))
+                    gpu.renderer.draw_fx_for(&frame, chain, uniforms, &out, w, h, same_scene, Some(&*region))
                 }
                 None => gpu.renderer.draw_with(&frame, view.as_ref().expect("made without effects"), raw.as_ref(), w, h),
             };

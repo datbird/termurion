@@ -122,7 +122,9 @@ pub struct Chain {
     ran: bool,
     skipped: u64,
     /// What `skip_if_still` packed for this frame's uniforms: `run_with` writes these instead of packing again.
-    staged: Option<Vec<Option<Vec<u8>>>>,
+    scratch: Vec<Vec<u8>>,
+    /// `scratch` holds this frame's packed bytes (`skip_if_still` made them).
+    staged: bool,
     /// Where the effects can draw (`set_region_terms`); None runs every frame full screen.
     region_terms: Option<Vec<RegionTerm>>,
     /// With region terms: the last pass's output, kept so a frame can shade only its region,
@@ -236,7 +238,8 @@ impl Chain {
             passes.push(Pass { pipeline, uniforms, layout });
         }
         let last_packed = vec![Vec::new(); passes.len()];
-        Ok(Chain { passes, bind_layout, sampler, format, size: (0, 0), targets: Vec::new(), blits: None, plain: None, keep_alpha, frame_drawn: false, binds: Vec::new(), copy_binds: Vec::new(), last_packed, binds_made: 0, uniform_writes: 0, ran: false, skipped: 0, staged: None, region_terms: None, kept: None, kept_ok: false, kept_made: 0, keep_next: true, shaded_region: false, fill: None })
+        let scratch = vec![Vec::new(); passes.len()];
+        Ok(Chain { passes, bind_layout, sampler, format, size: (0, 0), targets: Vec::new(), blits: None, plain: None, keep_alpha, frame_drawn: false, binds: Vec::new(), copy_binds: Vec::new(), last_packed, binds_made: 0, uniform_writes: 0, ran: false, skipped: 0, scratch, staged: false, region_terms: None, kept: None, kept_ok: false, kept_made: 0, keep_next: true, shaded_region: false, fill: None })
     }
 
     /// For a card that cannot view a texture in a second format (`view_formats_supported` false):
@@ -416,16 +419,21 @@ impl Chain {
     /// unchanged; without it the answer is no. Counts the frame it answers yes to (`skips`).
     /// The packed bytes wait for the `run_with` of this frame, so a drawn frame packs once.
     pub fn skip_if_still(&mut self, uniforms: &Uniforms, size: (u32, u32), eligible: bool) -> bool {
-        let staged: Vec<Option<Vec<u8>>> = self.passes.iter().map(|p| p.layout.as_ref().map(|l| uniforms.pack(l))).collect();
-        let still = eligible && self.ran && self.frame_kept() && self.size == size && staged.iter().zip(&self.last_packed).all(|(now, last)| now.as_ref().is_none_or(|n| n == last));
-        self.staged = Some(staged);
+        for (p, buf) in self.passes.iter().zip(&mut self.scratch) {
+            if let Some(l) = &p.layout {
+                uniforms.pack_into(l, buf);
+            }
+        }
+        let same = self.passes.iter().zip(&self.scratch).zip(&self.last_packed).all(|((p, now), last)| p.layout.is_none() || now == last);
+        let still = eligible && self.ran && self.frame_kept() && self.size == size && same;
+        self.staged = true;
         self.skipped += u64::from(still);
         still
     }
 
     /// Forgets the bytes `skip_if_still` staged (a draw that is not that frame's).
     pub fn unstage(&mut self) {
-        self.staged = None;
+        self.staged = false;
     }
 
     /// How many frames `skip_if_still` let the window keep.
@@ -566,16 +574,24 @@ impl Chain {
             Shade::Fresh(r) => (Some(r).filter(|_| self.kept.is_some() && !self.region_terms.as_ref().is_some_and(|t| t.contains(&RegionTerm::StillLooks))), true),
         };
         // The uniform buffers hold what the last frame packed; only a change is written.
-        let mut staged = self.staged.take();
+        let staged = std::mem::take(&mut self.staged);
         for (i, pass) in self.passes.iter().enumerate() {
             if let Some(layout) = &pass.layout {
-                let packed = staged.as_mut().and_then(|s| s.get_mut(i)?.take()).unwrap_or_else(|| uniforms.pack(layout));
-                if self.last_packed[i] != packed {
+                if !staged {
+                    uniforms.pack_into(layout, &mut self.scratch[i]);
+                }
+                let (packed, last) = (&self.scratch[i], &self.last_packed[i]);
+                if packed != last {
+                    // A frame that moved only the clock writes just its span.
+                    let span = layout.clock_span();
+                    let only_clock = packed.len() == last.len() && span.end <= packed.len() && packed[..span.start] == last[..span.start] && packed[span.end..] == last[span.end..];
+                    let (at, bytes) = if only_clock { (span.start, &packed[span.clone()]) } else { (0, &packed[..]) };
                     match uploads.as_deref_mut() {
-                        Some(up) => up.write(device, &pass.uniforms, 0, &packed),
-                        None => queue.write_buffer(&pass.uniforms, 0, &packed),
+                        Some(up) => up.write(device, &pass.uniforms, at as u64, bytes),
+                        None => queue.write_buffer(&pass.uniforms, at as u64, bytes),
                     }
-                    self.last_packed[i] = packed;
+                    // The old bytes become the next frame's scratch: no allocation.
+                    std::mem::swap(&mut self.scratch[i], &mut self.last_packed[i]);
                     self.uniform_writes += 1;
                 }
             }

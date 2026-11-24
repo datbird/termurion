@@ -328,6 +328,59 @@ pub fn frame_rects(terms: &[RegionTerm], now: &Uniforms, last: &Uniforms, cell: 
     FrameRegion { own: own_region(terms, now, cell, live_lines, size), with_last: frame_region(terms, now, last, cell, live_lines, size) }
 }
 
+/// What `region_rects` reads of one frame's uniforms. The clock is not in it, except as the
+/// answer of each `FullAfterChange` term, so an animation frame that moves only time repeats it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RegionInputs {
+    current: [f32; 4],
+    previous: [f32; 4],
+    style: i32,
+    mark: [f32; 4],
+    input_box: [f32; 4],
+    input_box_x: [f32; 4],
+    /// Bit k: the k-th term is a `FullAfterChange` still inside its window.
+    recent: u64,
+}
+
+impl RegionInputs {
+    fn of(terms: &[RegionTerm], u: &Uniforms) -> RegionInputs {
+        let mut recent = 0u64;
+        for (k, t) in terms.iter().enumerate().take(64) {
+            if let RegionTerm::FullAfterChange(d) = t {
+                recent |= u64::from(u.time - u.time_cursor_change < d.as_secs_f32()) << k;
+            }
+        }
+        RegionInputs { current: u.current_cursor, previous: u.previous_cursor, style: u.current_cursor_style, mark: u.prompt_mark, input_box: u.input_box, input_box_x: u.input_box_x, recent }
+    }
+}
+
+/// `frame_rects` with a memory: the same inputs give the last answer again, with no work and no
+/// allocation. Most animation frames move only the clock, which the rects do not read.
+#[derive(Debug, Default)]
+pub struct RectsCache {
+    key: Option<(Vec<RegionTerm>, RegionInputs, RegionInputs, (f32, f32), bool, (u32, u32))>,
+    region: std::sync::Arc<FrameRegion>,
+    computes: u64,
+}
+
+impl RectsCache {
+    pub fn get(&mut self, terms: &[RegionTerm], now: &Uniforms, last: &Uniforms, cell: (f32, f32), live_lines: bool, size: (u32, u32)) -> std::sync::Arc<FrameRegion> {
+        let (a, b) = (RegionInputs::of(terms, now), RegionInputs::of(terms, last));
+        let same = self.key.as_ref().is_some_and(|k| k.0 == terms && k.1 == a && k.2 == b && k.3 == cell && k.4 == live_lines && k.5 == size);
+        if !same {
+            self.region = std::sync::Arc::new(frame_rects(terms, now, last, cell, live_lines, size));
+            self.key = Some((terms.to_vec(), a, b, cell, live_lines, size));
+            self.computes += 1;
+        }
+        self.region.clone()
+    }
+
+    /// How many times the rects were computed rather than reused.
+    pub fn computes(&self) -> u64 {
+        self.computes
+    }
+}
+
 /// Rounds boxes outward to whole pixels, clamps them to the window, merges overlapping ones and
 /// collapses more than 8 into their bounding box.
 fn round_and_merge(boxes: Vec<[f32; 4]>, (sw, sh): (f32, f32)) -> Vec<PxRect> {
@@ -709,6 +762,43 @@ pub struct Layout {
     pub fields: HashMap<String, (u32, u32)>,
 }
 
+/// The members an animation frame moves: the clock, the frame count, the cursor and focus.
+const CLOCK_FIELDS: &[(&str, u32)] = &[
+    ("iTime", 4),
+    ("iTimeDelta", 4),
+    ("iFrame", 4),
+    ("iChannelTime", 16),
+    ("iCurrentCursor", 16),
+    ("iPreviousCursor", 16),
+    ("iCurrentCursorColor", 16),
+    ("iPreviousCursorColor", 16),
+    ("iCurrentCursorStyle", 4),
+    ("iPreviousCursorStyle", 4),
+    ("iCursorVisible", 4),
+    ("iTimeCursorChange", 4),
+    ("iTimeFocus", 4),
+    ("iFocus", 4),
+];
+
+impl Layout {
+    /// The byte range holding iTime, iTimeDelta, iFrame, iChannelTime and the cursor and focus
+    /// members (4-byte aligned): all an animation frame changes, so a frame writes just this.
+    /// Empty when the block has none of them.
+    pub fn clock_span(&self) -> std::ops::Range<usize> {
+        let mut span: Option<(u32, u32)> = None;
+        for (name, len) in CLOCK_FIELDS {
+            if let Some(&(off, _)) = self.fields.get(*name) {
+                let (a, b) = span.unwrap_or((off, off + len));
+                span = Some((a.min(off), b.max(off + len)));
+            }
+        }
+        match span {
+            Some((a, b)) => (a & !3) as usize..((b + 3) & !3).min(self.size) as usize,
+            None => 0..0,
+        }
+    }
+}
+
 /// The layout of the uniform block at group 0, binding 1. None when the shader has none (a
 /// shader may ignore every uniform).
 pub fn uniform_layout(module: &naga::Module) -> Option<Layout> {
@@ -809,59 +899,85 @@ fn put(buf: &mut [u8], at: u32, bytes: &[u8]) {
     }
 }
 
-fn floats(v: &[f32]) -> Vec<u8> {
-    v.iter().flat_map(|f| f.to_le_bytes()).collect()
+/// Writes `v` as little-endian floats at `at`; skipped whole when it does not fit.
+fn put_floats(buf: &mut [u8], at: u32, v: &[f32]) {
+    let at = at as usize;
+    if let Some(dst) = buf.get_mut(at..at + 4 * v.len()) {
+        for (c, f) in dst.chunks_exact_mut(4).zip(v) {
+            c.copy_from_slice(&f.to_le_bytes());
+        }
+    }
+}
+
+fn put_i32(buf: &mut [u8], at: u32, v: i32) {
+    put(buf, at, &v.to_le_bytes());
 }
 
 impl Uniforms {
     /// The uniform buffer's bytes for `layout`. Members the layout lacks are skipped.
     pub fn pack(&self, layout: &Layout) -> Vec<u8> {
-        let mut buf = vec![0u8; layout.size as usize];
-        let mut f = |name: &str, bytes: Vec<u8>| {
-            if let Some(&(off, _)) = layout.fields.get(name) {
-                put(&mut buf, off, &bytes);
-            }
-        };
-        f("iResolution", floats(&self.resolution));
-        f("iTime", floats(&[self.time]));
-        f("iTimeDelta", floats(&[self.time_delta]));
-        f("iFrameRate", floats(&[self.frame_rate]));
-        f("iFrame", self.frame.to_le_bytes().to_vec());
-        f("iMouse", floats(&[0.0; 4]));
-        f("iDate", floats(&self.date));
-        f("iSampleRate", floats(&[44100.0]));
-        f("iCurrentCursor", floats(&self.current_cursor));
-        f("iPreviousCursor", floats(&self.previous_cursor));
-        f("iCurrentCursorColor", floats(&self.current_cursor_color));
-        f("iPreviousCursorColor", floats(&self.previous_cursor_color));
-        f("iCurrentCursorStyle", self.current_cursor_style.to_le_bytes().to_vec());
-        f("iPreviousCursorStyle", self.previous_cursor_style.to_le_bytes().to_vec());
-        f("iCursorVisible", self.cursor_visible.to_le_bytes().to_vec());
-        f("iTimeCursorChange", floats(&[self.time_cursor_change]));
-        f("iTimeFocus", floats(&[self.time_focus]));
-        f("iFocus", self.focus.to_le_bytes().to_vec());
-        f("iBackgroundColor", floats(&self.background));
-        f("iForegroundColor", floats(&self.foreground));
-        f("iCursorColor", floats(&self.cursor_color));
-        f("iCursorText", floats(&self.cursor_text));
-        f("iSelectionForegroundColor", floats(&self.selection_foreground));
-        f("iSelectionBackgroundColor", floats(&self.selection_background));
-        f("iInputBox", floats(&self.input_box));
-        f("iInputBoxX", floats(&self.input_box_x));
-        f("iPromptMark", floats(&self.prompt_mark));
-        // A vec4 here (see the prefix): channel 0 runs on the frame's clock.
-        f("iChannelTime", floats(&[self.time, 0.0, 0.0, 0.0]));
-        // Arrays: element i at offset + i * stride.
-        let mut array = |name: &str, items: Vec<Vec<u8>>| {
-            if let Some(&(off, stride)) = layout.fields.get(name) {
-                for (i, bytes) in items.iter().enumerate() {
-                    put(&mut buf, off + i as u32 * stride, bytes);
-                }
-            }
-        };
-        array("iChannelResolution", (0..4).map(|i| floats(&if i == 0 { [self.resolution[0], self.resolution[1], 1.0] } else { [0.0; 3] })).collect());
-        array("iPalette", self.palette.iter().take(256).map(|c| floats(c)).collect());
+        let mut buf = Vec::new();
+        self.pack_into(layout, &mut buf);
         buf
+    }
+
+    /// `pack` into `out`, which is cleared and reused: a warm buffer allocates nothing.
+    pub fn pack_into(&self, layout: &Layout, out: &mut Vec<u8>) {
+        out.clear();
+        out.resize(layout.size as usize, 0);
+        let buf = out.as_mut_slice();
+        let at = |name: &str| layout.fields.get(name).map(|&(off, _)| off);
+        let floats = |buf: &mut [u8], name: &str, v: &[f32]| {
+            if let Some(off) = at(name) {
+                put_floats(buf, off, v);
+            }
+        };
+        let int = |buf: &mut [u8], name: &str, v: i32| {
+            if let Some(off) = at(name) {
+                put_i32(buf, off, v);
+            }
+        };
+        floats(buf, "iResolution", &self.resolution);
+        floats(buf, "iTime", &[self.time]);
+        floats(buf, "iTimeDelta", &[self.time_delta]);
+        floats(buf, "iFrameRate", &[self.frame_rate]);
+        int(buf, "iFrame", self.frame);
+        floats(buf, "iMouse", &[0.0; 4]);
+        floats(buf, "iDate", &self.date);
+        floats(buf, "iSampleRate", &[44100.0]);
+        floats(buf, "iCurrentCursor", &self.current_cursor);
+        floats(buf, "iPreviousCursor", &self.previous_cursor);
+        floats(buf, "iCurrentCursorColor", &self.current_cursor_color);
+        floats(buf, "iPreviousCursorColor", &self.previous_cursor_color);
+        int(buf, "iCurrentCursorStyle", self.current_cursor_style);
+        int(buf, "iPreviousCursorStyle", self.previous_cursor_style);
+        int(buf, "iCursorVisible", self.cursor_visible);
+        floats(buf, "iTimeCursorChange", &[self.time_cursor_change]);
+        floats(buf, "iTimeFocus", &[self.time_focus]);
+        int(buf, "iFocus", self.focus);
+        floats(buf, "iBackgroundColor", &self.background);
+        floats(buf, "iForegroundColor", &self.foreground);
+        floats(buf, "iCursorColor", &self.cursor_color);
+        floats(buf, "iCursorText", &self.cursor_text);
+        floats(buf, "iSelectionForegroundColor", &self.selection_foreground);
+        floats(buf, "iSelectionBackgroundColor", &self.selection_background);
+        floats(buf, "iInputBox", &self.input_box);
+        floats(buf, "iInputBoxX", &self.input_box_x);
+        floats(buf, "iPromptMark", &self.prompt_mark);
+        // A vec4 here (see the prefix): channel 0 runs on the frame's clock.
+        floats(buf, "iChannelTime", &[self.time, 0.0, 0.0, 0.0]);
+        // Arrays: element i at offset + i * stride.
+        if let Some(&(off, stride)) = layout.fields.get("iChannelResolution") {
+            put_floats(buf, off, &[self.resolution[0], self.resolution[1], 1.0]);
+            for i in 1..4 {
+                put_floats(buf, off + i * stride, &[0.0; 3]);
+            }
+        }
+        if let Some(&(off, stride)) = layout.fields.get("iPalette") {
+            for (i, c) in self.palette.iter().take(256).enumerate() {
+                put_floats(buf, off + i as u32 * stride, c);
+            }
+        }
     }
 }
 
@@ -1932,5 +2048,239 @@ mod tests {
     fn hex_colors_parse() {
         assert_eq!(hex_color("#ff8000"), Some([1.0, 128.0 / 255.0, 0.0]));
         assert_eq!(hex_color("ff8000"), None);
+    }
+
+    /// A global allocator that counts allocations of the thread that armed it (a counter per
+    /// thread, so the other tests in this binary do not disturb it).
+    mod counting {
+        use std::alloc::{GlobalAlloc, Layout, System};
+        use std::cell::Cell;
+
+        thread_local! {
+            static ARMED: Cell<bool> = const { Cell::new(false) };
+            static COUNT: Cell<u64> = const { Cell::new(0) };
+        }
+
+        pub struct Counting;
+
+        unsafe impl GlobalAlloc for Counting {
+            unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+                if ARMED.try_with(|a| a.get()).unwrap_or(false) {
+                    let _ = COUNT.try_with(|c| c.set(c.get() + 1));
+                }
+                unsafe { System.alloc(l) }
+            }
+            unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+                unsafe { System.dealloc(p, l) }
+            }
+            unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
+                if ARMED.try_with(|a| a.get()).unwrap_or(false) {
+                    let _ = COUNT.try_with(|c| c.set(c.get() + 1));
+                }
+                unsafe { System.realloc(p, l, n) }
+            }
+        }
+
+        /// How many allocations `f` made on this thread.
+        pub fn count<R>(f: impl FnOnce() -> R) -> (R, u64) {
+            COUNT.with(|c| c.set(0));
+            ARMED.with(|a| a.set(true));
+            let r = f();
+            ARMED.with(|a| a.set(false));
+            (r, COUNT.with(|c| c.get()))
+        }
+    }
+
+    #[global_allocator]
+    static ALLOC: counting::Counting = counting::Counting;
+
+    /// The packing as it was before `pack_into`, kept to prove the new one writes the same bytes.
+    fn pack_reference(u: &Uniforms, layout: &Layout) -> Vec<u8> {
+        fn fl(v: &[f32]) -> Vec<u8> {
+            v.iter().flat_map(|f| f.to_le_bytes()).collect()
+        }
+        let mut buf = vec![0u8; layout.size as usize];
+        let mut f = |name: &str, bytes: Vec<u8>| {
+            if let Some(&(off, _)) = layout.fields.get(name) {
+                put(&mut buf, off, &bytes);
+            }
+        };
+        f("iResolution", fl(&u.resolution));
+        f("iTime", fl(&[u.time]));
+        f("iTimeDelta", fl(&[u.time_delta]));
+        f("iFrameRate", fl(&[u.frame_rate]));
+        f("iFrame", u.frame.to_le_bytes().to_vec());
+        f("iMouse", fl(&[0.0; 4]));
+        f("iDate", fl(&u.date));
+        f("iSampleRate", fl(&[44100.0]));
+        f("iCurrentCursor", fl(&u.current_cursor));
+        f("iPreviousCursor", fl(&u.previous_cursor));
+        f("iCurrentCursorColor", fl(&u.current_cursor_color));
+        f("iPreviousCursorColor", fl(&u.previous_cursor_color));
+        f("iCurrentCursorStyle", u.current_cursor_style.to_le_bytes().to_vec());
+        f("iPreviousCursorStyle", u.previous_cursor_style.to_le_bytes().to_vec());
+        f("iCursorVisible", u.cursor_visible.to_le_bytes().to_vec());
+        f("iTimeCursorChange", fl(&[u.time_cursor_change]));
+        f("iTimeFocus", fl(&[u.time_focus]));
+        f("iFocus", u.focus.to_le_bytes().to_vec());
+        f("iBackgroundColor", fl(&u.background));
+        f("iForegroundColor", fl(&u.foreground));
+        f("iCursorColor", fl(&u.cursor_color));
+        f("iCursorText", fl(&u.cursor_text));
+        f("iSelectionForegroundColor", fl(&u.selection_foreground));
+        f("iSelectionBackgroundColor", fl(&u.selection_background));
+        f("iInputBox", fl(&u.input_box));
+        f("iInputBoxX", fl(&u.input_box_x));
+        f("iPromptMark", fl(&u.prompt_mark));
+        f("iChannelTime", fl(&[u.time, 0.0, 0.0, 0.0]));
+        let mut array = |name: &str, items: Vec<Vec<u8>>| {
+            if let Some(&(off, stride)) = layout.fields.get(name) {
+                for (i, bytes) in items.iter().enumerate() {
+                    put(&mut buf, off + i as u32 * stride, bytes);
+                }
+            }
+        };
+        array("iChannelResolution", (0..4).map(|i| fl(&if i == 0 { [u.resolution[0], u.resolution[1], 1.0] } else { [0.0; 3] })).collect());
+        array("iPalette", u.palette.iter().take(256).map(|c| fl(c)).collect());
+        buf
+    }
+
+    /// Every field a different number, so a swapped or skipped field shows.
+    fn filled() -> Uniforms {
+        let mut n = 0.5f32;
+        let mut next = || {
+            n += 1.25;
+            n
+        };
+        let mut v4 = |next: &mut dyn FnMut() -> f32| [next(), next(), next(), next()];
+        let mut u = Uniforms::default();
+        u.resolution = [next(), next(), 1.0];
+        u.time = next();
+        u.time_delta = next();
+        u.frame_rate = next();
+        u.frame = 41;
+        u.date = v4(&mut next);
+        u.current_cursor = v4(&mut next);
+        u.previous_cursor = v4(&mut next);
+        u.current_cursor_color = v4(&mut next);
+        u.previous_cursor_color = v4(&mut next);
+        u.current_cursor_style = 2;
+        u.previous_cursor_style = 3;
+        u.cursor_visible = 1;
+        u.time_cursor_change = next();
+        u.time_focus = next();
+        u.focus = 0;
+        for (i, c) in u.palette.iter_mut().enumerate() {
+            *c = [i as f32 / 255.0, 1.0 - i as f32 / 255.0, next()];
+        }
+        u.background = [next(), next(), next()];
+        u.foreground = [next(), next(), next()];
+        u.cursor_color = [next(), next(), next()];
+        u.cursor_text = [next(), next(), next()];
+        u.selection_foreground = [next(), next(), next()];
+        u.selection_background = [next(), next(), next()];
+        u.input_box = v4(&mut next);
+        u.input_box_x = v4(&mut next);
+        u.prompt_mark = v4(&mut next);
+        u
+    }
+
+    fn builtin_layouts() -> Vec<(String, Layout)> {
+        let (list, errors) = discover(None);
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut out = Vec::new();
+        for p in list.iter().filter(|p| p.builtin()) {
+            for (i, c) in p.compile().unwrap().iter().enumerate() {
+                if let Some(l) = uniform_layout(&c.module) {
+                    out.push((format!("{} pass {i}", p.id), l));
+                }
+            }
+        }
+        assert!(out.len() >= 13);
+        out
+    }
+
+    #[test]
+    fn pack_into_matches_pack() {
+        let u = filled();
+        let mut out = vec![0xAAu8; 7];
+        for (name, l) in builtin_layouts() {
+            u.pack_into(&l, &mut out);
+            assert_eq!(out, pack_reference(&u, &l), "{name}");
+            assert_eq!(u.pack(&l), out, "{name}: pack");
+        }
+    }
+
+    #[test]
+    fn pack_into_allocates_nothing() {
+        let u = filled();
+        let layouts = builtin_layouts();
+        let mut out = Vec::new();
+        for (_, l) in &layouts {
+            u.pack_into(l, &mut out);
+        }
+        let (_, allocs) = counting::count(|| {
+            for _ in 0..100 {
+                for (_, l) in &layouts {
+                    u.pack_into(l, &mut out);
+                }
+            }
+        });
+        assert_eq!(allocs, 0, "a warm buffer packs without allocating");
+    }
+
+    /// A frame that moves only the clock and the cursor leaves every byte outside `clock_span`
+    /// alone, so `run_with` can write just the span.
+    #[test]
+    fn the_clock_span_holds_what_an_animation_frame_changes() {
+        let a = filled();
+        let mut b = a.clone();
+        b.time += 0.5;
+        b.time_delta = 0.016;
+        b.frame += 1;
+        b.current_cursor = [9.0, 8.0, 7.0, 6.0];
+        b.previous_cursor = [1.0, 2.0, 3.0, 4.0];
+        b.current_cursor_color = [0.1, 0.2, 0.3, 0.4];
+        b.previous_cursor_color = [0.5, 0.6, 0.7, 0.8];
+        b.current_cursor_style = 0;
+        b.previous_cursor_style = 1;
+        b.cursor_visible = 0;
+        b.time_cursor_change += 1.0;
+        b.time_focus += 1.0;
+        b.focus = 1;
+        for (name, l) in builtin_layouts() {
+            let (mut pa, mut pb) = (Vec::new(), Vec::new());
+            a.pack_into(&l, &mut pa);
+            b.pack_into(&l, &mut pb);
+            let span = l.clock_span();
+            assert!(span.end <= pa.len() && span.start % 4 == 0 && span.end % 4 == 0, "{name}: {span:?}");
+            assert_eq!(pa[..span.start], pb[..span.start], "{name}: before the span");
+            assert_eq!(pa[span.end..], pb[span.end..], "{name}: after the span");
+            assert_ne!(pa[span.clone()], pb[span], "{name}: the span moved");
+        }
+    }
+
+    #[test]
+    fn frame_rects_reuses_its_answer() {
+        let terms = [RegionTerm::Cursor(1.0), RegionTerm::FullAfterChange(Duration::from_millis(500))];
+        let mut u = cursor_uniforms([200.0, 300.0, 10.0, 20.0]);
+        u.time = 5.0;
+        let last = u.clone();
+        let mut cache = RectsCache::default();
+        let first = cache.get(&terms, &u, &last, (10.0, 20.0), false, (800, 600));
+        assert_eq!(*first, frame_rects(&terms, &u, &last, (10.0, 20.0), false, (800, 600)));
+        assert_eq!(cache.computes(), 1);
+        // The clock moves every frame; the rects do not.
+        let mut v = u.clone();
+        v.time += 0.016;
+        v.frame += 1;
+        let again = cache.get(&terms, &v, &last, (10.0, 20.0), false, (800, 600));
+        assert_eq!(*again, *first);
+        assert_eq!(cache.computes(), 1, "the same inputs compute once");
+        // A moved cursor is a new answer.
+        let w = cursor_uniforms([400.0, 300.0, 10.0, 20.0]);
+        let moved = cache.get(&terms, &w, &last, (10.0, 20.0), false, (800, 600));
+        assert_eq!(*moved, frame_rects(&terms, &w, &last, (10.0, 20.0), false, (800, 600)));
+        assert_eq!(cache.computes(), 2);
     }
 }
