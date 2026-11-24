@@ -348,12 +348,14 @@ pub mod git_run_win;
 
 pub mod pane;
 
+pub mod draw_list;
 pub mod render;
 #[cfg(test)]
 mod render_pixel_tests;
 pub mod render_fx;
 pub mod render_fx_builtin;
 pub mod render_fx_gpu;
+pub mod render_wgpu;
 
 pub mod app;
 

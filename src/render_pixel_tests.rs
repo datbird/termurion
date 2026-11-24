@@ -293,14 +293,14 @@ fn atlas_growth_and_eviction_mid_run_match() {
         let (mut on, mut off) = (rows(vf, true), rows(vf, false));
         // At 256 px a full screen of CJK does not fit even on the full path (AtlasFull at frame
         // 14), so the cap is 512: the atlas grows from 256 once, then evicts.
-        on.atlas.set_max_size(512);
-        off.atlas.set_max_size(512);
-        let (grown, evicted) = (on.atlas.generation(), on.atlas.evictions());
+        on.atlas().set_max_size(512);
+        off.atlas().set_max_size(512);
+        let (grown, evicted) = (on.atlas().generation(), on.atlas().evictions());
         for c in pixel_cases(&on).iter().filter(|c| is_flood(c)) {
             same(&mut on, &mut off, c, vf);
         }
-        assert!(on.atlas.generation() != grown, "the capped flood never grew the atlas");
-        assert!(on.atlas.evictions() > evicted, "the capped flood never evicted");
+        assert!(on.atlas().generation() != grown, "the capped flood never grew the atlas");
+        assert!(on.atlas().evictions() > evicted, "the capped flood never evicted");
     }
 }
 
@@ -313,13 +313,13 @@ fn the_switch_turns_the_row_path_off() {
     // Turned on, rows hold their glyphs; turned off again, every hold is let go.
     r.set_row_instances(true);
     pixels(&mut r, &probe);
-    assert!(r.row_prepares() > 0 && r.atlas.held() > 0);
+    assert!(r.row_prepares() > 0 && r.atlas().held() > 0);
     r.set_row_instances(false);
-    assert_eq!(r.atlas.held(), 0, "turning rows off released their glyphs");
+    assert_eq!(r.atlas().held(), 0, "turning rows off released their glyphs");
     let prepared = r.row_prepares();
     pixels(&mut r, &probe);
     assert_eq!(r.row_prepares(), prepared);
-    assert_eq!(r.atlas.held(), 0);
+    assert_eq!(r.atlas().held(), 0);
 }
 
 /// TextRenderer skips a row whose line box misses its bounds, even where a glyph overhangs into
@@ -458,11 +458,11 @@ fn growth_from_the_rows_keeps_box_glyphs() {
         let boxes = screen_case("boxes", &on, &s, size, true);
         assert!(!boxes.frame.glyphs.is_empty(), "the frame has no box glyphs");
         same(&mut on, &mut off, &boxes, vf);
-        let generation = on.atlas.generation();
+        let generation = on.atlas().generation();
         for c in pixel_cases(&on).iter().filter(|c| is_flood(c)).take(40) {
             same(&mut on, &mut off, c, vf);
         }
-        assert!(on.atlas.generation() != generation, "the flood never grew the atlas");
+        assert!(on.atlas().generation() != generation, "the flood never grew the atlas");
         same(&mut on, &mut off, &boxes, vf);
     }
 }
@@ -553,4 +553,19 @@ fn streaming_frames_make_no_upload_buffers() {
         frame(&mut s, &mut r, tick);
     }
     assert_eq!(r.upload_buffers_made(), warm, "streaming frames made new upload buffers");
+}
+
+/// The CPU half needs no device: a renderer made without one prepares every baseline frame.
+#[test]
+fn prepare_is_pure_cpu() {
+    let mut r = Renderer::cpu_only(FACE, PX);
+    for (name, frame, _) in crate::scene::agent_box_tests::baseline_cases() {
+        let (list, up) = r.prepare(&frame, 808, 486);
+        assert_eq!(list.size, (808, 486), "{name}");
+        assert_eq!(list.under.len(), frame.quads.len() * 6, "{name}");
+        assert_eq!(list.picture.len(), frame.images.len(), "{name}");
+        assert!(list.rows.rows.len() >= frame.rows.len(), "{name}");
+        assert!(up.atlas.is_empty(), "{name}");
+    }
+    assert!(r.draw_offscreen(&Frame::default(), 8, 8).is_err(), "a renderer with no device drew");
 }

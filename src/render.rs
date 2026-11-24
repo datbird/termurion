@@ -1,274 +1,43 @@
-//! Draws a scene Frame: rectangles with a small wgpu pipeline, text with glyphon.
+//! Draws a scene Frame: fonts, shaping and `prepare` (the CPU half, building a `DrawList`) here,
+//! the GPU half in `render_wgpu`.
 
-use glyphon::{
-    Attrs, Buffer, Cache, Color, ContentType, CustomGlyph, Family, FontSystem, Metrics, RasterizeCustomGlyphRequest, RasterizedCustomGlyph,
-    Resolution, RowArea, RowRenderer, Shaping, Style, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight, Wrap,
-};
-use wgpu::util::DeviceExt;
+use glyphon::{Attrs, Buffer, Color, CustomGlyph, Family, FontSystem, Metrics, Shaping, Style, SwashCache, Weight, Wrap};
 
 use glyphon::cosmic_text::CacheKeyFlags;
 
+use crate::draw_list::{DrawList, GlyphDraws, ImageDraw, QuadBuf, RowDraw, RowDraws, Shadow, Uploads};
 use crate::fonts;
+use crate::render_wgpu::{TextInputs, WgpuDraw};
 use crate::scene::{Frame, Quad, Span, Spans, TextRow};
 
-/// Rectangles: two triangles each, position and color per vertex.
-struct QuadPipeline {
-    pipeline: wgpu::RenderPipeline,
-    /// Scales what is already in the target by the blend constant (the fade pass).
-    fader: wgpu::RenderPipeline,
-    uniform: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
-}
-
-impl QuadPipeline {
-    fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("quad"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("quad.wgsl").into()),
-        });
-        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("quad screen"),
-            size: 16,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() }],
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[Some(&layout)],
-            ..Default::default()
-        });
-        let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4];
-        let make = |label: &'static str, format: wgpu::TextureFormat, blend: wgpu::BlendState| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(label),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: 6 * 4,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &attributes,
-                })],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(blend),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
-        let pipeline = make("quad", format, wgpu::BlendState::ALPHA_BLENDING);
-        // result = destination * constant, in every channel: a premultiplied target scaled whole.
-        let scale = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::Constant, operation: wgpu::BlendOperation::Add };
-        // Run on the target's non-sRGB view: the stored values are what DirectComposition reads as
-        // premultiplied, so they are scaled as stored (an sRGB view would scale in linear space and
-        // leave the color above the alpha).
-        let fader = make("quad fade", format.remove_srgb_suffix(), wgpu::BlendState { color: scale, alpha: scale });
-        QuadPipeline { pipeline, fader, uniform, bind_group }
-    }
-
-    fn vertices(quads: &[Quad]) -> Vec<f32> {
-        let mut v = Vec::with_capacity(quads.len() * 36);
-        for q in quads {
-            let (x0, y0, x1, y1) = (q.rect.x, q.rect.y, q.rect.x + q.rect.w, q.rect.y + q.rect.h);
-            for (x, y) in [(x0, y0), (x1, y0), (x0, y1), (x0, y1), (x1, y0), (x1, y1)] {
-                v.extend_from_slice(&[x, y]);
-                v.extend_from_slice(&q.color);
-            }
+/// Two triangles per rectangle: position and color per vertex.
+fn quad_vertices(quads: &[Quad]) -> Vec<f32> {
+    let mut v = Vec::with_capacity(quads.len() * 36);
+    for q in quads {
+        let (x0, y0, x1, y1) = (q.rect.x, q.rect.y, q.rect.x + q.rect.w, q.rect.y + q.rect.h);
+        for (x, y) in [(x0, y0), (x1, y0), (x0, y1), (x0, y1), (x1, y0), (x1, y1)] {
+            v.extend_from_slice(&[x, y]);
+            v.extend_from_slice(&q.color);
         }
-        v
     }
+    v
 }
 
-/// Inline images: textured rectangles, one texture per picture.
-struct ImagePipeline {
-    pipeline: wgpu::RenderPipeline,
-    screen_group: wgpu::BindGroup,
-    texture_layout: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
-    /// Tiled background images repeat.
-    repeat_sampler: wgpu::Sampler,
-    /// Textures by picture (and whether it repeats), with the frame count they were last
-    /// drawn at.
-    cache: std::collections::HashMap<((u64, usize), bool), (wgpu::BindGroup, u64)>,
-    uploads: usize,
-    frames: u64,
-}
-
-/// A texture no frame drew for this many frames is dropped.
-const TEXTURE_KEEP: u64 = 120;
-
-impl ImagePipeline {
-    fn new(device: &wgpu::Device, format: wgpu::TextureFormat, uniform: &wgpu::Buffer) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("image"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("image.wgsl").into()),
-        });
-        let screen_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-                count: None,
-            }],
-        });
-        let screen_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &screen_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() }],
-        });
-        let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-        let repeat_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            address_mode_u: wgpu::AddressMode::Repeat,
-            address_mode_v: wgpu::AddressMode::Repeat,
-            ..Default::default()
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[Some(&screen_layout), Some(&texture_layout)],
-            ..Default::default()
-        });
-        let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2];
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("image"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: 4 * 4,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &attributes,
-                })],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
-        ImagePipeline { pipeline, screen_group, texture_layout, sampler, repeat_sampler, cache: Default::default(), uploads: 0, frames: 0 }
-    }
-
-    /// Makes sure every picture in `images` has a texture; drops ones long unused.
-    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, images: &[crate::scene::ImageQuad]) {
-        self.frames += 1;
-        for q in images {
-            if let Some(entry) = self.cache.get_mut(&(q.key, q.repeat)) {
-                entry.1 = self.frames;
-                continue;
-            }
-            let (w, h) = q.size;
-            let max = device.limits().max_texture_dimension_2d;
-            if w == 0 || h == 0 || w > max || h > max || q.pixels.len() != (w as usize) * (h as usize) * 4 {
-                continue;
-            }
-            let texture = device.create_texture_with_data(
-                queue,
-                &wgpu::TextureDescriptor {
-                    label: Some("image"),
-                    size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                },
-                wgpu::util::TextureDataOrder::LayerMajor,
-                &q.pixels,
-            );
-            let view = texture.create_view(&Default::default());
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &self.texture_layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(if q.repeat { &self.repeat_sampler } else { &self.sampler }) },
-                ],
-            });
-            self.cache.insert((q.key, q.repeat), (group, self.frames));
-            self.uploads += 1;
+/// Two triangles per picture: position and uv per vertex.
+fn image_vertices(images: &[crate::scene::ImageQuad]) -> Vec<f32> {
+    let mut v = Vec::with_capacity(images.len() * 24);
+    for q in images {
+        let (x0, y0, x1, y1) = (q.rect.x, q.rect.y, q.rect.x + q.rect.w, q.rect.y + q.rect.h);
+        let [u0, v0, u1, v1] = q.uv;
+        for (x, y, u, w) in [(x0, y0, u0, v0), (x1, y0, u1, v0), (x0, y1, u0, v1), (x0, y1, u0, v1), (x1, y0, u1, v0), (x1, y1, u1, v1)] {
+            v.extend_from_slice(&[x, y, u, w]);
         }
-        let now = self.frames;
-        self.cache.retain(|_, (_, used)| now - *used <= TEXTURE_KEEP);
     }
-
-    fn vertices(images: &[crate::scene::ImageQuad]) -> Vec<f32> {
-        let mut v = Vec::with_capacity(images.len() * 24);
-        for q in images {
-            let (x0, y0, x1, y1) = (q.rect.x, q.rect.y, q.rect.x + q.rect.w, q.rect.y + q.rect.h);
-            let [u0, v0, u1, v1] = q.uv;
-            for (x, y, u, w) in [(x0, y0, u0, v0), (x1, y0, u1, v0), (x0, y1, u0, v1), (x0, y1, u0, v1), (x1, y0, u1, v0), (x1, y1, u1, v1)] {
-                v.extend_from_slice(&[x, y, u, w]);
-            }
-        }
-        v
-    }
+    v
 }
+
+/// What drawing on a `cpu_only` renderer returns.
+const NO_DEVICE: &str = "this renderer has no graphics device";
 
 /// The most glyph placements kept for gap cutting.
 const INK_CACHE_MAX: usize = 16384;
@@ -537,97 +306,31 @@ pub struct TableFont {
     pub px: Option<f32>,
 }
 
-/// A vertex buffer that lives across frames and uploads only the 4 KB chunks that changed.
-struct GpuVec {
-    buf: wgpu::Buffer,
-    cap: u64,
-    /// What the buffer held after the last write, for the chunk diff.
-    last: Vec<u8>,
-    /// Bytes uploaded so far (tests).
-    written: u64,
-}
-
-const GPU_CHUNK: usize = 4096;
-
 /// A shaped word no shaping frame used for this many shaping frames is dropped from
 /// cosmic-text's run cache (idle frames shape nothing and age nothing).
 const SHAPE_KEEP_FRAMES: u64 = 60;
 
-impl GpuVec {
-    fn new(device: &wgpu::Device) -> GpuVec {
-        GpuVec { buf: Self::alloc(device, GPU_CHUNK as u64), cap: GPU_CHUNK as u64, last: Vec::new(), written: 0 }
-    }
+/// One shaped row: its buffer, then what shaped it (spans, clip width, scale, face, badge weight)
+/// and its serial.
+pub(crate) type Shaped = (Buffer, Spans, f32, f32, u16, bool, u64);
 
-    fn alloc(device: &wgpu::Device, cap: u64) -> wgpu::Buffer {
-        device.create_buffer(&wgpu::BufferDescriptor { label: None, size: cap, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
-    }
-
-    /// Brings the buffer to `bytes` and returns the slice to draw; `None` when there is nothing.
-    /// A run of changed chunks goes up as one write.
-    fn write(&mut self, device: &wgpu::Device, uploads: &mut glyphon::UploadBelt, bytes: &[u8]) -> Option<wgpu::BufferSlice<'_>> {
-        if bytes.is_empty() {
-            return None;
-        }
-        let len = bytes.len() as u64;
-        if len > self.cap {
-            while self.cap < len {
-                self.cap *= 2;
-            }
-            self.buf = Self::alloc(device, self.cap);
-            uploads.write(device, &self.buf, 0, bytes);
-            self.written += len;
-        } else {
-            let mut run: Option<usize> = None;
-            let mut flush = |from: usize, to: usize, written: &mut u64| {
-                uploads.write(device, &self.buf, from as u64, &bytes[from..to]);
-                *written += (to - from) as u64;
-            };
-            for (i, chunk) in bytes.chunks(GPU_CHUNK).enumerate() {
-                let start = i * GPU_CHUNK;
-                // A chunk past the old end, or a different length, counts as changed.
-                if self.last.get(start..start + chunk.len()) != Some(chunk) {
-                    run.get_or_insert(start);
-                } else if let Some(from) = run.take() {
-                    flush(from, start, &mut self.written);
-                }
-            }
-            if let Some(from) = run {
-                flush(from, bytes.len(), &mut self.written);
-            }
-        }
-        self.last.clear();
-        self.last.extend_from_slice(bytes);
-        // Only the new length: a list that shrank leaves its old tail unread.
-        Some(self.buf.slice(..len))
-    }
+/// The device a renderer draws on and its wgpu backend.
+struct GpuHalf {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    draw: WgpuDraw,
 }
 
 pub struct Renderer {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    quads: QuadPipeline,
-    images: ImagePipeline,
+    /// None for `cpu_only`: such a renderer measures and prepares but never draws.
+    gpu: Option<GpuHalf>,
+    /// What each persistent vertex buffer holds, in `QuadBuf` order.
+    shadows: [Shadow; 6],
     font_system: FontSystem,
     swash: SwashCache,
     /// Each glyph's ink placement (left, top, width, height) from the swash image, keyed by the
     /// glyph; `None` for a glyph with no ink. Cleared past `INK_CACHE_MAX`.
     ink_cache: std::collections::HashMap<glyphon::cosmic_text::CacheKey, Option<(i32, i32, u32, u32)>>,
-    pub(crate) atlas: TextAtlas,
-    viewport: Viewport,
-    text: TextRenderer,
-    /// Draws the text rows, keeping each row's prepared glyphs on the GPU between frames.
-    rows: RowRenderer,
-    /// Every buffer write of a frame goes up through this, ahead of the frame's commands.
-    uploads: glyphon::UploadBelt,
-    /// The target size the quad uniform holds, so it is written only when it changes.
-    quad_screen: Option<(u32, u32)>,
-    /// The quad and image vertex lists, kept on the GPU between frames.
-    under: GpuVec,
-    over: GpuVec,
-    pops: GpuVec,
-    picture: GpuVec,
-    backdrop: GpuVec,
-    cover: GpuVec,
     /// Whether text rows draw through `rows` (`RedrawOnlyChangedRows`); off, every row goes through
     /// `text` each frame.
     row_instances: bool,
@@ -637,7 +340,7 @@ pub struct Renderer {
     /// spans, clip width, scale, face and the badge weight, then its serial (new each time it is
     /// shaped). A row finds its buffer by those, not by its slot, so a row that only moved is not
     /// shaped again.
-    buffers: Vec<(Buffer, Spans, f32, f32, u16, bool, u64)>,
+    buffers: Vec<Shaped>,
     /// A porthole's prose font: Segoe UI Variable, else Segoe UI.
     prose_family: String,
     /// The badge font (bold): the default profile's Badge Font, Arial when not installed.
@@ -684,8 +387,6 @@ pub struct Renderer {
     /// The weights each family's regular-style faces have (a variable face counts every 100-step
     /// of its range), looked up once per family.
     weights: std::cell::RefCell<std::collections::HashMap<String, Vec<u16>>>,
-    /// The texture format the pipelines draw into.
-    format: wgpu::TextureFormat,
     /// Whether the card can view a texture in a second format (not on OpenGL).
     view_formats: bool,
     /// The faces, by id; id 0 is the default face `set_fonts` makes.
@@ -711,43 +412,28 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, family: &str, font_px: f32) -> Renderer {
+        let mut r = Renderer::cpu_only(family, font_px);
+        r.gpu = Some(GpuHalf { device: device.clone(), queue: queue.clone(), draw: WgpuDraw::new(device, queue, format) });
+        r
+    }
+
+    /// A renderer with no device: fonts, measuring and `prepare` work, drawing does not.
+    pub fn cpu_only(family: &str, font_px: f32) -> Renderer {
         // Aliased and thin-stroke glyph masks are filtered in the vendored glyphon (patch 1); the
         // filter is process-wide, so a second window's renderer sets the same function again.
         glyphon::set_mask_filter(|flags, alpha| fonts::filter_mask(fonts::MaskMode::of_flags(flags), alpha));
-        let cache = Cache::new(device);
-        let viewport = Viewport::new(device, &cache);
-        let mut atlas = TextAtlas::new(device, queue, &cache, format);
-        let text = TextRenderer::new(&mut atlas, device, wgpu::MultisampleState::default(), None);
-        let rows = RowRenderer::new(&mut atlas, device, wgpu::MultisampleState::default());
-        let quads = QuadPipeline::new(device, format);
-        let images = ImagePipeline::new(device, format, &quads.uniform);
         let mut font_system = FontSystem::new();
         let blank = Buffer::new(&mut font_system, Metrics::new(12.0, 14.0));
         let mut r = Renderer {
-            device: device.clone(),
-            queue: queue.clone(),
-            quads,
-            images,
+            gpu: None,
+            shadows: QuadBuf::ALL.map(Shadow::new),
             font_system,
             swash: SwashCache::new(),
             ink_cache: std::collections::HashMap::new(),
-            atlas,
-            viewport,
-            text,
-            rows,
-            uploads: glyphon::UploadBelt::new(),
-            quad_screen: None,
-            under: GpuVec::new(device),
-            over: GpuVec::new(device),
-            pops: GpuVec::new(device),
-            picture: GpuVec::new(device),
-            backdrop: GpuVec::new(device),
-            cover: GpuVec::new(device),
             row_instances: true,
             serial: 0,
             buffers: Vec::new(),
             family: family.to_string(),
-            format,
             view_formats: true,
             alt_family: None,
             icon_family: String::new(),
@@ -804,41 +490,35 @@ impl Renderer {
     /// atlas, the viewport and the image textures (re-uploaded when next drawn). Fonts, faces and
     /// settings are kept.
     pub fn rebuild_gpu(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) {
-        let cache = Cache::new(device);
-        self.viewport = Viewport::new(device, &cache);
-        self.atlas = TextAtlas::new(device, queue, &cache, format);
-        self.text = TextRenderer::new(&mut self.atlas, device, wgpu::MultisampleState::default(), None);
-        self.rows = RowRenderer::new(&mut self.atlas, device, wgpu::MultisampleState::default());
-        self.quads = QuadPipeline::new(device, format);
-        self.images = ImagePipeline::new(device, format, &self.quads.uniform);
-        for v in [&mut self.under, &mut self.over, &mut self.pops, &mut self.picture, &mut self.backdrop, &mut self.cover] {
-            *v = GpuVec::new(device);
-        }
-        self.uploads = glyphon::UploadBelt::new();
-        self.quad_screen = None;
-        self.device = device.clone();
-        self.queue = queue.clone();
-        self.format = format;
+        self.gpu = Some(GpuHalf { device: device.clone(), queue: queue.clone(), draw: WgpuDraw::new(device, queue, format) });
+        // The new buffers hold nothing.
+        self.shadows = QuadBuf::ALL.map(Shadow::new);
     }
 
     /// Bytes the persistent vertex buffers uploaded so far (tests).
     #[cfg(test)]
     pub(crate) fn bytes_written(&self) -> u64 {
-        [&self.under, &self.over, &self.pops, &self.picture, &self.backdrop, &self.cover].iter().map(|v| v.written).sum()
+        self.shadows.iter().map(|v| v.written).sum()
     }
 
     /// Staging buffers the upload path made so far (tests).
     #[cfg(test)]
     pub(crate) fn upload_buffers_made(&self) -> u64 {
-        self.uploads.buffers_made()
+        self.gpu.as_ref().map_or(0, |g| g.draw.upload_buffers_made())
     }
 
     /// Forgets what the vertex buffers hold, so the next frame uploads every byte (tests).
     #[cfg(test)]
     pub(crate) fn forget_buffers(&mut self) {
-        for v in [&mut self.under, &mut self.over, &mut self.pops, &mut self.picture, &mut self.backdrop, &mut self.cover] {
-            v.last.clear();
+        for v in &mut self.shadows {
+            v.forget();
         }
+    }
+
+    /// The glyph atlas (tests).
+    #[cfg(test)]
+    pub(crate) fn atlas(&mut self) -> &mut glyphon::TextAtlas {
+        &mut self.gpu.as_mut().expect("a renderer with a device").draw.atlas
     }
 
     /// Sets the font size and measures the cell: the advance of "W" by the font's own line
@@ -1496,7 +1176,7 @@ impl Renderer {
 
     /// How many image textures were uploaded (tests).
     pub fn uploads(&self) -> usize {
-        self.images.uploads
+        self.gpu.as_ref().map_or(0, |g| g.draw.image_uploads())
     }
 
     /// Draws a frame into an offscreen texture and returns its pixels as RGBA, row by row.
@@ -1518,7 +1198,8 @@ impl Renderer {
     /// shades only `region.own` over its new picture (`Shade::Fresh`).
     #[allow(clippy::too_many_arguments)]
     pub fn draw_fx_for(&mut self, frame: &Frame, chain: &mut crate::render_fx_gpu::Chain, uniforms: &crate::render_fx::Uniforms, out: &wgpu::TextureView, w: u32, h: u32, same_scene: bool, region: Option<&crate::render_fx::FrameRegion>) -> Result<(), String> {
-        let (view, raw) = chain.frame_views(&self.device, (w, h));
+        let device = self.gpu.as_ref().ok_or(NO_DEVICE)?.device.clone();
+        let (view, raw) = chain.frame_views(&device, (w, h));
         let (view, raw) = (view.clone(), raw.cloned());
         let animation_only = same_scene && chain.frame_kept();
         if !animation_only {
@@ -1530,7 +1211,8 @@ impl Renderer {
         use crate::render_fx_gpu::Shade;
         let rects = region.and_then(|r| if animation_only { r.with_last.as_deref().map(Shade::Kept) } else { r.own.as_deref().map(Shade::Fresh) });
         let shade = rects.unwrap_or(Shade::Full);
-        chain.run_with(&self.device, &self.queue, Some(&mut self.uploads), uniforms, out, shade);
+        let g = self.gpu.as_mut().ok_or(NO_DEVICE)?;
+        chain.run_with(&g.device, &g.queue, Some(&mut g.draw.uploads), uniforms, out, shade);
         Ok(())
     }
 
@@ -1553,45 +1235,46 @@ impl Renderer {
             return;
         }
         self.row_instances = on;
-        if !on {
-            // Let go of every glyph the kept rows hold. With no rows nothing is allocated, so this
-            // cannot fail.
-            self.rows.clear();
-            let released = self.rows.prepare(&self.device, &self.queue, &mut self.uploads, &mut self.font_system, &mut self.atlas, &self.viewport, [], &mut self.swash, |_| None);
-            debug_assert!(released.is_ok(), "releasing the kept rows failed: {released:?}");
+        if !on && let Some(g) = &mut self.gpu {
+            g.draw.release_rows(&g.device, &g.queue, &mut self.font_system, &mut self.swash);
         }
     }
 
     /// How many rows the row renderer prepared since it was made (it is made again on a new device).
     pub fn row_prepares(&self) -> u64 {
-        self.rows.prepared_rows()
+        self.gpu.as_ref().map_or(0, |g| g.draw.row_prepares())
     }
 
-    /// The device and queue this renderer draws with.
+    /// The device and queue this renderer draws with (not for a `cpu_only` one).
     pub fn gpu(&self) -> (&wgpu::Device, &wgpu::Queue) {
-        (&self.device, &self.queue)
+        let g = self.gpu.as_ref().expect("a renderer made with a device");
+        (&g.device, &g.queue)
     }
 
     /// `draw_offscreen`, optionally through a render plugin chain.
     pub fn draw_offscreen_fx(&mut self, frame: &Frame, fx: Option<(&mut crate::render_fx_gpu::Chain, &crate::render_fx::Uniforms)>, w: u32, h: u32) -> Result<Vec<u8>, String> {
-        let max = self.device.limits().max_texture_dimension_2d;
+        let (device, queue, format) = match &self.gpu {
+            Some(g) => (g.device.clone(), g.queue.clone(), g.draw.format()),
+            None => return Err(NO_DEVICE.into()),
+        };
+        let max = device.limits().max_texture_dimension_2d;
         if w == 0 || h == 0 || w > max || h > max {
             return Err(format!("an image of {w} x {h} pixels is larger than the graphics card allows ({max})"));
         }
-        let raw_format = self.format.remove_srgb_suffix();
-        let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+        let raw_format = format.remove_srgb_suffix();
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("offscreen"),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: self.format,
+            format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             // A second view only where the card has them (not OpenGL) and the format has an sRGB twin.
-            view_formats: if self.view_formats && self.format.is_srgb() { std::slice::from_ref(&raw_format) } else { &[] },
+            view_formats: if self.view_formats && format.is_srgb() { std::slice::from_ref(&raw_format) } else { &[] },
         });
         let view = tex.create_view(&Default::default());
-        let raw = (self.view_formats && self.format.is_srgb()).then(|| tex.create_view(&wgpu::TextureViewDescriptor { format: Some(raw_format), ..Default::default() }));
+        let raw = (self.view_formats && format.is_srgb()).then(|| tex.create_view(&wgpu::TextureViewDescriptor { format: Some(raw_format), ..Default::default() }));
         match fx {
             Some((chain, uniforms)) => {
                 let out = if chain.wants_raw_out() { raw.as_ref().unwrap_or(&view) } else { &view };
@@ -1604,27 +1287,27 @@ impl Renderer {
         // Rows are copied out padded to 256 bytes, then the padding is dropped.
         let row = w * 4;
         let padded = row.div_ceil(256) * 256;
-        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("offscreen read"),
             size: (padded * h) as u64,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         enc.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
             wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: Some(h) } },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
-        self.queue.submit(Some(enc.finish()));
+        queue.submit(Some(enc.finish()));
         let (tx, rx) = std::sync::mpsc::channel();
         buf.slice(..).map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        self.device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| format!("waiting for the graphics card: {e:?}"))?;
+        device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| format!("waiting for the graphics card: {e:?}"))?;
         rx.recv().map_err(|e| e.to_string())?.map_err(|e| format!("reading the image back: {e:?}"))?;
         let data = buf.slice(..).get_mapped_range().map_err(|e| format!("reading the image back: {e:?}"))?.to_vec();
-        let bgra = matches!(self.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+        let bgra = matches!(format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
         let mut out = Vec::with_capacity((row * h) as usize);
         for y in 0..h as usize {
             let line = &data[y * padded as usize..y * padded as usize + row as usize];
@@ -1792,6 +1475,18 @@ impl Renderer {
     /// on an sRGB target (the target must list that format in its view formats); without it the
     /// fade runs on `view`, which is exact only on a non-sRGB target.
     pub fn draw_with(&mut self, frame: &Frame, view: &wgpu::TextureView, raw: Option<&wgpu::TextureView>, width: u32, height: u32) -> Result<(), String> {
+        if self.gpu.is_none() {
+            return Err(NO_DEVICE.into());
+        }
+        let (list, up) = self.prepare(frame, width, height);
+        let g = self.gpu.as_mut().expect("checked above");
+        let text = TextInputs { font_system: &mut self.font_system, swash: &mut self.swash, buffers: &self.buffers, blank: &self.blank, custom: &self.custom };
+        g.draw.run(&g.device, &g.queue, &list, up, text, view, raw)
+    }
+
+    /// The CPU half of a draw: shapes the rows, builds the vertex lists and works out which bytes
+    /// of the persistent buffers change. No GPU is touched.
+    pub fn prepare(&mut self, frame: &Frame, width: u32, height: u32) -> (DrawList, Uploads) {
         let (_, ch) = self.cell;
         let metrics = Metrics::new(self.font_px, ch);
         let mixed = frame.rows.iter().any(|r| r.spans.windows(2).any(|w| w[0].ligatures != w[1].ligatures));
@@ -1949,184 +1644,53 @@ impl Renderer {
             self.font_system.shape_run_cache.trim(SHAPE_KEEP_FRAMES);
         }
 
-        self.viewport.update(&self.queue, Resolution { width, height });
-        let groups = self.glyph_groups(&frame.glyphs);
-        let bounds = |row: &TextRow| TextBounds {
-            left: row.clip.x as i32,
-            top: row.clip.y as i32,
-            right: (row.clip.x + row.clip.w) as i32,
-            bottom: (row.clip.y + row.clip.h) as i32,
-        };
-        let areas = self.buffers.iter().zip(all_rows.iter().copied()).map(|((buffer, ..), row)| TextArea {
-            buffer,
-            left: row.x,
-            top: row.y,
-            scale: 1.0,
-            bounds: bounds(row),
-            default_color: Color::rgb(255, 255, 255),
-            custom_glyphs: &[],
-        });
-        // A row's scale is already in its buffer's metrics, so every area draws at scale 1.
-        let row_areas = || {
-            self.buffers.iter().zip(all_rows.iter().copied()).map(|((buffer, .., serial), row)| RowArea {
-                serial: *serial,
-                buffer,
-                left: row.x,
-                top: row.y,
-                bounds: bounds(row),
-                default_color: Color::rgb(255, 255, 255),
-            })
-        };
-        // Box and block glyphs: one more `TextArea` per clip rectangle, an empty buffer carrying the
-        // glyphs as custom glyphs (rasterized by `boxdraw` on request, cached by id and size).
-        let glyph_areas = groups.iter().map(|(clip, glyphs)| TextArea {
-            buffer: &self.blank,
-            left: 0.0,
-            top: 0.0,
-            scale: 1.0,
-            bounds: TextBounds { left: clip.x.round() as i32, top: clip.y.round() as i32, right: (clip.x + clip.w).round() as i32, bottom: (clip.y + clip.h).round() as i32 },
-            default_color: Color::rgb(255, 255, 255),
-            custom_glyphs: glyphs,
-        });
-        let custom = &self.custom;
-        let rasterize = |request: RasterizeCustomGlyphRequest| {
-            // Total for every interned id: the same mask each time, never `None` once it was `Some`.
-            let (c, scale) = custom.get(request.id)?;
-            Some(RasterizedCustomGlyph { data: crate::boxdraw::rasterize(c, request.width, request.height, scale), content_type: ContentType::Mask })
-        };
-        if self.row_instances {
-            // The rows, then the box and block glyphs, both on one atlas: when either grows it, the
-            // rows prepare again, until neither moves it.
-            loop {
-                self.rows.prepare(&self.device, &self.queue, &mut self.uploads, &mut self.font_system, &mut self.atlas, &self.viewport, row_areas(), &mut self.swash, &rasterize).map_err(|e| format!("text prepare: {e:?}"))?;
-                let seen = self.atlas.generation();
-                self.text.prepare_with_custom_uploads(&self.device, &self.queue, &mut self.uploads, &mut self.font_system, &mut self.atlas, &self.viewport, glyph_areas.clone(), &mut self.swash, &rasterize).map_err(|e| format!("text prepare: {e:?}"))?;
-                if self.atlas.generation() == seen {
-                    break;
-                }
-            }
-        } else {
-            self.text.prepare_with_custom_uploads(&self.device, &self.queue, &mut self.uploads, &mut self.font_system, &mut self.atlas, &self.viewport, areas.chain(glyph_areas), &mut self.swash, rasterize).map_err(|e| format!("text prepare: {e:?}"))?;
-        }
+        let bounds = |row: &TextRow| [row.clip.x as i32, row.clip.y as i32, (row.clip.x + row.clip.w) as i32, (row.clip.y + row.clip.h) as i32];
+        let rows_drawn = self.buffers.iter().zip(all_rows.iter().copied()).enumerate().map(|(slot, ((.., serial), row))| RowDraw { slot, serial: *serial, left: row.x, top: row.y, bounds: bounds(row) }).collect();
+        let glyphs = self
+            .glyph_groups(&frame.glyphs)
+            .into_iter()
+            .map(|(clip, glyphs)| ([clip.x.round() as i32, clip.y.round() as i32, (clip.x + clip.w).round() as i32, (clip.y + clip.h).round() as i32], glyphs))
+            .collect();
 
-        if self.quad_screen != Some((width, height)) {
-            self.uploads.write(&self.device, &self.quads.uniform, 0, bytemuck::cast_slice(&[width as f32, height as f32, 0.0, 0.0]));
-            self.quad_screen = Some((width, height));
-        }
-        let under = QuadPipeline::vertices(&frame.quads);
+        let mut up = Uploads::default();
+        let under = quad_vertices(&frame.quads);
         // Underline strokes lie under the overlay (the dimming, the cursor extras); with gaps on they
         // break around the ink of the glyphs in their row, strikethrough stays whole.
         let underlines = self.gapped_underlines(frame, rows);
-        let over = QuadPipeline::vertices(&underlines.iter().chain(&frame.strikes).chain(&frame.scrollbars).chain(&frame.overlay).copied().collect::<Vec<_>>());
-        let pops = QuadPipeline::vertices(&frame.popups);
-        let (under_buf, over_buf, pops_buf) = (
-            self.under.write(&self.device, &mut self.uploads, bytemuck::cast_slice(&under)),
-            self.over.write(&self.device, &mut self.uploads, bytemuck::cast_slice(&over)),
-            self.pops.write(&self.device, &mut self.uploads, bytemuck::cast_slice(&pops)),
-        );
-        // Background images and inline images share one texture cache.
-        let all: Vec<crate::scene::ImageQuad> = frame.backgrounds.iter().chain(&frame.images).cloned().collect();
-        self.images.prepare(&self.device, &self.queue, &all);
-        let picture = ImagePipeline::vertices(&frame.images);
-        let picture_buf = self.picture.write(&self.device, &mut self.uploads, bytemuck::cast_slice(&picture));
-        let backdrop = ImagePipeline::vertices(&frame.backgrounds);
-        let backdrop_buf = self.backdrop.write(&self.device, &mut self.uploads, bytemuck::cast_slice(&backdrop));
-
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        {
-            let [r, g, b, a] = frame.clear;
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: r as f64, g: g as f64, b: b as f64, a: a as f64 }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            if let Some(buf) = backdrop_buf {
-                pass.set_pipeline(&self.images.pipeline);
-                pass.set_bind_group(0, &self.images.screen_group, &[]);
-                pass.set_vertex_buffer(0, buf);
-                for (i, q) in frame.backgrounds.iter().enumerate() {
-                    let Some((group, _)) = self.images.cache.get(&(q.key, q.repeat)) else { continue };
-                    pass.set_bind_group(1, group, &[]);
-                    let first = (i * 6) as u32;
-                    pass.draw(first..first + 6, 0..1);
-                }
-            }
-            pass.set_pipeline(&self.quads.pipeline);
-            pass.set_bind_group(0, &self.quads.bind_group, &[]);
-            if let Some(buf) = under_buf {
-                pass.set_vertex_buffer(0, buf);
-                pass.draw(0..(under.len() / 6) as u32, 0..1);
-            }
-            if let Some(buf) = picture_buf {
-                pass.set_pipeline(&self.images.pipeline);
-                pass.set_bind_group(0, &self.images.screen_group, &[]);
-                pass.set_vertex_buffer(0, buf);
-                for (i, q) in frame.images.iter().enumerate() {
-                    let Some((group, _)) = self.images.cache.get(&(q.key, q.repeat)) else { continue };
-                    pass.set_bind_group(1, group, &[]);
-                    let first = (i * 6) as u32;
-                    pass.draw(first..first + 6, 0..1);
-                }
-            }
-            // Popup boxes cover images and quads; their text and what they cut stay on top.
-            if let Some(buf) = pops_buf {
-                pass.set_pipeline(&self.quads.pipeline);
-                pass.set_bind_group(0, &self.quads.bind_group, &[]);
-                pass.set_vertex_buffer(0, buf);
-                pass.draw(0..(pops.len() / 6) as u32, 0..1);
-            }
-            if self.row_instances {
-                self.rows.render(&self.atlas, &self.viewport, &mut pass).map_err(|e| format!("text render: {e:?}"))?;
-            }
-            self.text.render(&self.atlas, &self.viewport, &mut pass).map_err(|e| format!("text render: {e:?}"))?;
-            if let Some(buf) = over_buf {
-                pass.set_pipeline(&self.quads.pipeline);
-                pass.set_bind_group(0, &self.quads.bind_group, &[]);
-                pass.set_vertex_buffer(0, buf);
-                pass.draw(0..(over.len() / 6) as u32, 0..1);
-            }
+        let over = quad_vertices(&underlines.iter().chain(&frame.strikes).chain(&frame.scrollbars).chain(&frame.overlay).copied().collect::<Vec<_>>());
+        let pops = quad_vertices(&frame.popups);
+        let picture = image_vertices(&frame.images);
+        let backdrop = image_vertices(&frame.backgrounds);
+        let fade = (frame.fade < 1.0).then(|| frame.fade.clamp(0.0, 1.0));
+        let cover = fade.map(|_| quad_vertices(&[Quad { rect: crate::layout::Rect { x: 0.0, y: 0.0, w: width as f32, h: height as f32 }, color: [0.0; 4] }]));
+        for (which, v) in [(QuadBuf::Under, &under), (QuadBuf::Over, &over), (QuadBuf::Pops, &pops), (QuadBuf::Picture, &picture), (QuadBuf::Backdrop, &backdrop)] {
+            self.shadows[which.index()].write(bytemuck::cast_slice(v), &mut up.buffers);
         }
-        // A fading window: the whole target, premultiplied, scaled by the fade, in a pass of its own
-        // on the non-sRGB view.
-        if frame.fade < 1.0 {
-            let f = frame.fade.clamp(0.0, 1.0) as f64;
-            let cover = QuadPipeline::vertices(&[Quad { rect: crate::layout::Rect { x: 0.0, y: 0.0, w: width as f32, h: height as f32 }, color: [0.0; 4] }]);
-            let cover_buf = self.cover.write(&self.device, &mut self.uploads, bytemuck::cast_slice(&cover));
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: raw.unwrap_or(view),
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&self.quads.fader);
-            pass.set_bind_group(0, &self.quads.bind_group, &[]);
-            pass.set_blend_constant(wgpu::Color { r: f, g: f, b: f, a: f });
-            if let Some(buf) = cover_buf {
-                pass.set_vertex_buffer(0, buf);
-            }
-            pass.draw(0..6, 0..1);
+        if let Some(cover) = &cover {
+            self.shadows[QuadBuf::Cover.index()].write(bytemuck::cast_slice(cover), &mut up.buffers);
         }
-        self.uploads.submit(&self.queue, Some(encoder.finish()));
-        self.atlas.trim();
-        Ok(())
+        // Six vertices of 6 floats per quad.
+        let verts = |v: &[f32]| 0..(v.len() / 6) as u32;
+        let images = |list: &[crate::scene::ImageQuad]| {
+            list.iter()
+                .enumerate()
+                .map(|(i, q)| ImageDraw { key: q.key, repeat: q.repeat, size: q.size, pixels: q.pixels.clone(), vertices: (i * 6) as u32..(i * 6 + 6) as u32 })
+                .collect()
+        };
+        let list = DrawList {
+            clear: frame.clear,
+            size: (width, height),
+            quad_uniform: [width as f32, height as f32, 0.0, 0.0],
+            backdrop: images(&frame.backgrounds),
+            under: verts(&under),
+            picture: images(&frame.images),
+            pops: verts(&pops),
+            rows: RowDraws { kept: self.row_instances, rows: rows_drawn },
+            glyphs: GlyphDraws { groups: glyphs },
+            over: verts(&over),
+            fade,
+        };
+        (list, up)
     }
 }
 
@@ -3038,7 +2602,7 @@ pub(crate) mod tests {
     /// buffer is drawn at its row's x).
     fn drawn_xs(r: &mut Renderer, frame: &Frame, w: u32, h: u32) -> Vec<f32> {
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        let tex = r.device.create_texture(&wgpu::TextureDescriptor {
+        let tex = r.gpu().0.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             mip_level_count: 1,
@@ -3324,7 +2888,7 @@ pub(crate) mod tests {
     /// and the pixels. 832 wide, not 800: a texture copy's rows are 256-byte aligned.
     fn gate_shot(r: &mut Renderer, frame: &Frame) -> (Vec<String>, Vec<u8>) {
         let (w, h) = (832u32, frame.rows.len() as u32 * 24);
-        let (device, queue) = (r.device.clone(), r.queue.clone());
+        let (device, queue) = (r.gpu().0.clone(), r.gpu().1.clone());
         let tex = target(&device, w, h);
         let view = tex.create_view(&Default::default());
         r.buffers.clear();
@@ -5947,7 +5511,7 @@ pub(crate) mod tests {
         };
         let (aliased, thin) = both(&mut r);
         assert_eq!(levels(&aliased), vec![0, 255]);
-        let before = r.atlas.mask_size();
+        let before = r.atlas().mask_size();
         // Enough distinct large glyphs to pass the atlas's initial size: a screen of ideographs,
         // with the aliased and thin "W"s drawn in the same frame, in the free right-hand strip (48
         // columns of 64 pixels leave it clear even for a family whose ideographs run wide).
@@ -5971,7 +5535,7 @@ pub(crate) mod tests {
         let tex = target(&device, bw, bh);
         let view = tex.create_view(&Default::default());
         r.draw(&Frame { clear: rgba(rgb(0, 0, 0), 1.0), rows, ..Default::default() }, &view, bw, bh).unwrap();
-        let after = r.atlas.mask_size();
+        let after = r.atlas().mask_size();
         assert!(after > before, "the mask atlas grew: {before} to {after}");
         let px = read(&device, &queue, &tex, bw, bh);
         let crop = |top: u32| -> Vec<u8> {
@@ -6080,7 +5644,7 @@ pub(crate) mod tests {
         };
         let before_px = line(&mut r);
         assert!(before_px.chunks(4).any(|p| p[0] > 200), "the arc drew");
-        let before = r.atlas.mask_size();
+        let before = r.atlas().mask_size();
         let big = r.face(&key(cjk, 64.0, 1.0, 1.0));
         let (bw, bh) = (3584u32, 3584u32);
         let rows: Vec<TextRow> = (0..56u32)
@@ -6096,7 +5660,7 @@ pub(crate) mod tests {
         let tex = target(&device, bw, bh);
         let view = tex.create_view(&Default::default());
         r.draw(&Frame { clear: rgba(rgb(0, 0, 0), 1.0), rows, ..Default::default() }, &view, bw, bh).unwrap();
-        assert!(r.atlas.mask_size() > before, "the mask atlas grew");
+        assert!(r.atlas().mask_size() > before, "the mask atlas grew");
         assert_eq!(line(&mut r), before_px, "the arc is the same after the atlas grew");
     }
 
