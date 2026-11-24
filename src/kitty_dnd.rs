@@ -755,7 +755,7 @@ mod tests {
 
         // A file past 16 MiB answers EFBIG, and is never read.
         let mut c = registered();
-        c.drop((0, 0), (0, 0), files(&["C:\\big.bin", "C:\\ok.bin"]), Backing { size: |p| Some(if p.ends_with("big.bin") { (16 << 20) + 1 } else { 5 }), read: |p| Some(vec![0u8; if p.ends_with("ok.bin") { 5 } else { panic!("an oversized file is never read") }]) });
+        c.drop((0, 0), (0, 0), files(&["C:\\big.bin", "C:\\ok.bin"]), Backing { size: |p| Some(if p.to_string_lossy().ends_with("big.bin") { (16 << 20) + 1 } else { 5 }), read: |p| Some(vec![0u8; if p.to_string_lossy().ends_with("ok.bin") { 5 } else { panic!("an oversized file is never read") }]) });
         c.inbound("t=r:x=1");
         assert_eq!(c.inbound("t=r:x=1:y=1"), vec!["\x1b]72;t=R:x=1:y=1;EFBIG\x1b\\".to_string()]);
         assert_eq!(data_of(&c.inbound("t=r:x=1:y=2")), vec![0u8; 5]);
