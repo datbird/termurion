@@ -34,6 +34,12 @@ pub fn primary_height() -> Option<f64> {
     imp::primary_height()
 }
 
+/// The smallest outer size Windows lets a person drag a titled window to, in pixels (the title bar's
+/// buttons need that much). None where the OS gives no such floor (Unix).
+pub fn min_track_size() -> Option<(f64, f64)> {
+    imp::min_track_size()
+}
+
 /// Each monitor's work area (without the taskbar) as x, y, width, height in virtual-screen pixels.
 /// Empty where the OS gives no monitor list without a window (Unix: winit lists monitors per window).
 pub fn work_areas() -> Vec<(f64, f64, f64, f64)> {

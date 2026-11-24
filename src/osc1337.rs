@@ -272,11 +272,147 @@ fn decode_env(payload: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
+/// A frame: x, y (top left, y down), width, height.
+pub type Frame = (f64, f64, f64, f64);
+
+/// How much of a program-placed window must stay on a screen, in points
+/// (`SetWindowFrameRequest.minimumVisibleExtent`).
+pub const MIN_VISIBLE_POINTS: f64 = 40.0;
+
+/// `SetWindowFrame=x;y;width;height` (`SetWindowFrameRequest.parse`): exactly four fields,
+/// each a finite number, else the sequence is ignored.
+pub fn parse_window_frame(value: &str) -> Option<Frame> {
+    let mut n = [0.0; 4];
+    let mut parts = value.split(';');
+    for slot in &mut n {
+        *slot = parts.next()?.trim_matches([' ', '\t']).parse::<f64>().ok().filter(|v| v.is_finite())?;
+    }
+    parts.next().is_none().then_some((n[0], n[1], n[2], n[3]))
+}
+
+/// The frame a program asked for, made safe (`SetWindowFrameRequest.clampedFrame`): its size
+/// between `min` and the union of the screens, and its top edge plus at least `visible` of it
+/// on one screen, else moved onto the nearest. Screens and frame share one space (x right,
+/// y down). None for a frame with a number that is not finite.
+pub fn clamp_window_frame(requested: Frame, min: (f64, f64), screens: &[Frame], visible: f64) -> Option<Frame> {
+    let (x, y, w, h) = requested;
+    if ![x, y, w, h].iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    // A negative size is raised, never read as its absolute value.
+    let (mut w, mut h) = (w.max(min.0).max(1.0), h.max(min.1).max(1.0));
+    let screens: Vec<Frame> = screens.iter().copied().filter(|s| s.2 > 0.0 && s.3 > 0.0).collect();
+    let Some(first) = screens.first() else { return Some((x, y, w, h)) };
+    let (mut left, mut top, mut right, mut bottom) = (first.0, first.1, first.0 + first.2, first.1 + first.3);
+    for s in &screens {
+        (left, top, right, bottom) = (left.min(s.0), top.min(s.1), right.max(s.0 + s.2), bottom.max(s.1 + s.3));
+    }
+    w = min.0.max(w.min(right - left));
+    h = min.1.max(h.min(bottom - top));
+
+    let (vis_w, vis_h) = (w.min(visible), h.min(visible));
+    // The part of the frame on a screen, as (width, height); zero when they do not meet.
+    let overlap = |s: &Frame| {
+        let (ow, oh) = ((x + w).min(s.0 + s.2) - x.max(s.0), (y + h).min(s.1 + s.3) - y.max(s.1));
+        if ow > 0.0 && oh > 0.0 { (ow, oh) } else { (0.0, 0.0) }
+    };
+    let reachable = |s: &Frame| overlap(s).0 >= vis_w && y >= s.1 && y <= s.1 + s.3 - vis_h;
+    if screens.iter().any(reachable) {
+        return Some((x, y, w, h));
+    }
+    // The screen it overlaps most, else the nearest to its center (not squared: that could
+    // overflow for a huge offset).
+    let area = |s: &Frame| {
+        let (ow, oh) = overlap(s);
+        ow * oh
+    };
+    let best = screens.iter().copied().max_by(|a, b| area(a).total_cmp(&area(b))).filter(|s| area(s) > 0.0);
+    let t = best.unwrap_or_else(|| {
+        let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+        let distance = |s: &Frame| (s.0 - cx).max(0.0).max(cx - (s.0 + s.2)) + (s.1 - cy).max(0.0).max(cy - (s.1 + s.3));
+        screens.iter().copied().min_by(|a, b| distance(a).total_cmp(&distance(b))).unwrap_or(screens[0])
+    });
+    let nx = x.max(t.0 + vis_w - w).min(t.0 + t.2 - vis_w);
+    let ny = y.max(t.1).min(t.1 + t.3 - vis_h);
+    Some((nx, ny, w, h))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::screen::{Request, Screen};
     use alacritty_terminal::grid::Dimensions;
+
+    #[test]
+    fn window_frame_parses_strictly() {
+        assert_eq!(parse_window_frame("1;2;300;400"), Some((1.0, 2.0, 300.0, 400.0)));
+        assert_eq!(parse_window_frame(" 1 ; -2.5;3e2;4 "), Some((1.0, -2.5, 300.0, 4.0)));
+        for bad in ["", "1;2;3", "1;2;3;4;5", "a;2;3;4", "1;2;3;", "nan;0;10;10", "0;0;inf;10", "0;0;10;-inf", "0;0;NaN;10", "0;0;infinity;10"] {
+            assert_eq!(parse_window_frame(bad), None, "{bad:?}");
+        }
+    }
+
+    const ONE: [Frame; 1] = [(0.0, 0.0, 1920.0, 1080.0)];
+    const TWO: [Frame; 2] = [(0.0, 0.0, 1920.0, 1080.0), (1920.0, 0.0, 1280.0, 1024.0)];
+
+    #[test]
+    fn window_frame_refuses_numbers_that_are_not_finite() {
+        for f in [(f64::NAN, 0.0, 10.0, 10.0), (0.0, f64::INFINITY, 10.0, 10.0), (0.0, 0.0, f64::NEG_INFINITY, 10.0), (0.0, 0.0, 10.0, f64::NAN)] {
+            assert_eq!(clamp_window_frame(f, (100.0, 50.0), &ONE, 40.0), None);
+        }
+    }
+
+    #[test]
+    fn window_frame_grows_to_the_minimum() {
+        assert_eq!(clamp_window_frame((10.0, 10.0, 1.0, 1.0), (100.0, 50.0), &ONE, 40.0), Some((10.0, 10.0, 100.0, 50.0)));
+        // Zero and negative sizes too: a negative size is never read as its absolute value.
+        assert_eq!(clamp_window_frame((10.0, 10.0, 0.0, -300.0), (100.0, 50.0), &ONE, 40.0), Some((10.0, 10.0, 100.0, 50.0)));
+    }
+
+    #[test]
+    fn window_frame_shrinks_to_the_screens() {
+        assert_eq!(clamp_window_frame((0.0, 0.0, 1e9, 1e9), (100.0, 50.0), &ONE, 40.0), Some((0.0, 0.0, 1920.0, 1080.0)));
+        // Two screens side by side: as wide as both together, as tall as the taller.
+        assert_eq!(clamp_window_frame((0.0, 0.0, 1e9, 1e9), (100.0, 50.0), &TWO, 40.0), Some((0.0, 0.0, 3200.0, 1080.0)));
+    }
+
+    #[test]
+    fn window_frame_off_every_screen_comes_back_to_the_nearest() {
+        // Far right of the second screen: back so 40 of it shows, top edge kept on the screen.
+        let (x, y, w, h) = clamp_window_frame((50_000.0, 20.0, 400.0, 300.0), (100.0, 50.0), &TWO, 40.0).unwrap();
+        assert_eq!((w, h, y), (400.0, 300.0, 20.0));
+        assert_eq!(x, 3200.0 - 40.0);
+        // Far left and above the first screen.
+        let (x, y, ..) = clamp_window_frame((-50_000.0, -9_000.0, 400.0, 300.0), (100.0, 50.0), &TWO, 40.0).unwrap();
+        assert_eq!((x, y), (40.0 - 400.0, 0.0));
+        // Below the bottom: the top edge must be on screen with 40 to spare.
+        let (_, y, ..) = clamp_window_frame((10.0, 5_000.0, 400.0, 300.0), (100.0, 50.0), &ONE, 40.0).unwrap();
+        assert_eq!(y, 1080.0 - 40.0);
+        // A window on no screen between two that do not touch goes to the nearer.
+        let apart = [(0.0, 0.0, 1000.0, 1000.0), (5000.0, 0.0, 1000.0, 1000.0)];
+        let (x, ..) = clamp_window_frame((1500.0, 100.0, 300.0, 300.0), (100.0, 50.0), &apart, 40.0).unwrap();
+        assert_eq!(x, 1000.0 - 40.0);
+        let (x, ..) = clamp_window_frame((4500.0, 100.0, 300.0, 300.0), (100.0, 50.0), &apart, 40.0).unwrap();
+        assert_eq!(x, 5000.0 + 40.0 - 300.0);
+    }
+
+    #[test]
+    fn window_frame_that_is_reachable_passes_unchanged() {
+        for f in [(100.0, 100.0, 800.0, 600.0), (-300.0, 10.0, 800.0, 600.0), (1800.0, 10.0, 800.0, 600.0), (2500.0, 500.0, 700.0, 500.0)] {
+            assert_eq!(clamp_window_frame(f, (100.0, 50.0), &TWO, 40.0), Some(f), "{f:?}");
+        }
+    }
+
+    #[test]
+    fn window_frame_smaller_than_the_visible_extent_stays_wholly_on_screen() {
+        let (x, y, ..) = clamp_window_frame((-20.0, 10.0, 30.0, 30.0), (10.0, 10.0), &ONE, 40.0).unwrap();
+        assert_eq!((x, y), (0.0, 10.0));
+    }
+
+    #[test]
+    fn window_frame_without_screens_only_gets_the_minimum() {
+        assert_eq!(clamp_window_frame((5.0, 5.0, 1.0, 1.0), (100.0, 50.0), &[], 40.0), Some((5.0, 5.0, 100.0, 50.0)));
+    }
 
     #[test]
     fn cursor_shape_and_clear_scrollback() {

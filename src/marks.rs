@@ -1642,11 +1642,10 @@ impl Screen {
                 "ReportWindowFrame" => self.requests.push(Request::ReportWindowFrame),
                 "ReportScreenFrames" if self.trusted => self.requests.push(Request::ReportScreenFrames),
                 "SetWindowFrame" => {
-                    let n: Vec<f64> = value.split(';').filter_map(|v| v.trim().parse().ok()).collect();
-                    if let [x, y, w, h] = n[..]
-                        && value.split(';').count() == 4 {
-                            self.requests.push(Request::SetWindowFrame(x, y, w, h));
-                        }
+                    // Four finite numbers or nothing (`SetWindowFrameRequest.parse`).
+                    if let Some((x, y, w, h)) = crate::osc1337::parse_window_frame(&value) {
+                        self.requests.push(Request::SetWindowFrame(x, y, w, h));
+                    }
                 }
                 "UnicodeVersion" => {
                     self.unicode.apply(&value);

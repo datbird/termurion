@@ -296,10 +296,21 @@ impl App {
         let Some(g) = &self.gpu else { return };
         // Without the primary monitor's height the frame cannot be placed, so it is left alone.
         let Some(primary) = primary_height() else { return };
-        let (x, y, w, h) = osc1337::from_points(x, y, w, h, primary, g.window.scale_factor());
+        let scale = g.window.scale_factor();
+        let (x, y, w, h) = osc1337::from_points(x, y, w, h, primary, scale);
         // The frame includes the title bar and borders; the inner size leaves them out.
         let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
         let (dw, dh) = (outer.width.saturating_sub(inner.width) as f64, outer.height.saturating_sub(inner.height) as f64);
+        // The frame came from program output: at least two cells each way (what a tab needs) plus
+        // the frame, and the title bar's own floor; no bigger than the screens; part of it on one.
+        let cell = self.cell();
+        let floor = crate::platform::display::min_track_size().unwrap_or((0.0, 0.0));
+        let min = ((dw + 2.0 * cell.0 as f64).max(floor.0), (dh + 2.0 * cell.1 as f64).max(floor.1));
+        let mut screens: Vec<osc1337::Frame> = work_areas();
+        if screens.is_empty() {
+            screens = g.window.available_monitors().map(|m| (m.position().x as f64, m.position().y as f64, m.size().width as f64, m.size().height as f64)).collect();
+        }
+        let Some((x, y, w, h)) = osc1337::clamp_window_frame((x, y, w, h), min, &screens, osc1337::MIN_VISIBLE_POINTS * scale) else { return };
         g.window.set_outer_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
         let _ = crate::platform::caption::request_inner_size(&g.window, PhysicalSize::new((w - dw).max(1.0).round() as u32, (h - dh).max(1.0).round() as u32));
     }

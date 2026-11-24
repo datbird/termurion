@@ -24,6 +24,11 @@ pub fn primary_height() -> Option<f64> {
     None
 }
 
+/// No floor of its own: the window manager keeps the window as large as it needs.
+pub fn min_track_size() -> Option<(f64, f64)> {
+    None
+}
+
 /// No monitor list without a window yet (winit's `available_monitors` needs one).
 pub fn work_areas() -> Vec<(f64, f64, f64, f64)> {
     Vec::new()

@@ -66,6 +66,12 @@ pub fn primary_height() -> Option<f64> {
     Some(unsafe { GetSystemMetrics(SM_CYSCREEN) as f64 })
 }
 
+/// The smallest size a person can drag a titled window to (`SM_CXMINTRACK`, `SM_CYMINTRACK`).
+pub fn min_track_size() -> Option<(f64, f64)> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXMINTRACK, SM_CYMINTRACK};
+    Some(unsafe { (GetSystemMetrics(SM_CXMINTRACK) as f64, GetSystemMetrics(SM_CYMINTRACK) as f64) })
+}
+
 /// Each monitor's work area (without the taskbar) in virtual-screen pixels.
 pub fn work_areas() -> Vec<(f64, f64, f64, f64)> {
     use windows_sys::Win32::Foundation::{LPARAM, RECT};
