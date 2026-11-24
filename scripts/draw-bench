@@ -18,7 +18,8 @@
 # an input box redrawn 10 times a second as Claude Code does, plus 5 new lines a second above them),
 # flood (a 1 MB block of colored text written as fast as the terminal reads it).
 # Configs: termurion, termurion-fx (Lightning), ghostty, ghostty-fx (the same Lightning shader as
-# a Ghostty custom-shader), iterm2.
+# a Ghostty custom-shader), iterm2, and termurion-fx-<id> for any one effect by its id (termurion-fx-cyber).
+# DRAW_BENCH_WL picks the workloads, for example DRAW_BENCH_WL=idle.
 #
 # Messages in the VM is pulled to the front by the iMessage bridge at second 38 of every minute,
 # and a hidden window stops drawing, so runs are timed into two slots between those checks
@@ -46,14 +47,14 @@ while [ $# -gt 0 ]; do
         --sample) sample=1 ;;
         --sample-idle) sample=1; sample_idle=1 ;;
         --out) out="$2"; shift ;;
-        termurion|termurion-fx|ghostty|ghostty-fx|iterm2) configs+=("$1") ;;
-        *) echo "usage: scripts/draw-bench [--secs N] [--passes N] [--sample] [--sample-idle] [--out DIR] [termurion|termurion-fx|ghostty|ghostty-fx|iterm2 ...]" >&2; exit 2 ;;
+        termurion|termurion-fx|termurion-fx-*|ghostty|ghostty-fx|iterm2) configs+=("$1") ;;
+        *) echo "usage: scripts/draw-bench [--secs N] [--passes N] [--sample] [--sample-idle] [--out DIR] [termurion|termurion-fx|termurion-fx-<id>|ghostty|ghostty-fx|iterm2 ...]" >&2; exit 2 ;;
     esac
     shift
 done
 [ ${#configs[@]} -gt 0 ] || configs=(termurion termurion-fx ghostty ghostty-fx iterm2)
 [ "$secs" -le 20 ] || { echo "draw-bench: --secs must be 20 or less (a run must fit between the bridge's checks)" >&2; exit 2; }
-workloads=(idle stream20 claude flood)
+workloads=(${DRAW_BENCH_WL:-idle stream20 claude flood})
 out="${out:-$repo/target/draw-bench/$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$out"
 results="$out/results.tsv"
@@ -236,7 +237,11 @@ setup() {
     case "$cfg" in
         termurion*)
             # The Default profile runs the bench shell at the bench size; -fx turns Lightning on.
-            local fx=""; [ "$cfg" = termurion-fx ] && fx='"Render Plugins" = ["lightning"]'
+            local fx=""
+            case "$cfg" in
+                termurion-fx) fx='"Render Plugins" = ["lightning"]' ;;
+                termurion-fx-*) fx="\"Render Plugins\" = [\"${cfg#termurion-fx-}\"]" ;;
+            esac
             awk -v fx="$fx" -v cols="$COLS" -v rows="$ROWS" '
                 /^(Columns|Rows|Command|"Custom Command"|"Render Plugins") = / && inside { next }
                 { print }
@@ -259,6 +264,8 @@ setup() {
     esac
     local app; case "$cfg" in termurion*) app=Termurion ;; ghostty*) app=Ghostty ;; iterm2) app=iTerm ;; esac
     local key=${cfg%-fx}
+    # Every one-effect config runs the termurion app.
+    case "$cfg" in termurion-fx-*) key=termurion ;; esac
     vm "rm -f ~/termbench/tty.*; open -a /Applications/$app.app"
     for _ in $(seq 1 30); do vm "test -s ~/termbench/tty.$key" && break; sleep 1; done
     vm "test -s ~/termbench/tty.$key" || { echo "draw-bench: $cfg did not start its shell" >&2; return 1; }
