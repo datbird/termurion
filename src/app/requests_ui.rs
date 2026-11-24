@@ -344,14 +344,29 @@ impl App {
         let floor = if cfg!(target_os = "macos") && !g.window.is_decorated() { None } else { crate::platform::display::min_track_size() }.unwrap_or((0.0, 0.0));
         let min = osc1337::minimum_frame_size(((dw + 2.0 * cell.0 as f64) / space.unit, (dh + 2.0 * cell.1 as f64) / space.unit), floor);
         let Some((x, y, w, h)) = osc1337::clamp_window_frame((x, y, w, h), min, &space.screens, osc1337::MIN_VISIBLE_POINTS * space.scale) else { return };
-        let (x, y, w, h) = (x * space.unit, y * space.unit, w * space.unit, h * space.unit);
         // Wayland lets a program size its window but never place it: there the position is unknown.
-        if g.window.outer_position().is_ok() {
-            g.window.set_outer_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
-        } else {
+        let placeable = g.window.outer_position().is_ok();
+        if !placeable {
             crate::dlog!("SetWindowFrame: this display server does not let a window place itself, so only the size is applied");
         }
-        let _ = crate::platform::caption::request_inner_size(&g.window, PhysicalSize::new((w - dw).max(1.0).round() as u32, (h - dh).max(1.0).round() as u32));
+        // macOS: the frame is in points, and winit turns pixels into points with the window's scale as
+        // each call runs, which a move to another screen changes in between. Hand it points.
+        #[cfg(target_os = "macos")]
+        {
+            let ((lx, ly), (lw, lh)) = osc1337::logical_request((x, y, w, h), (dw, dh), g.window.scale_factor());
+            if placeable {
+                g.window.set_outer_position(winit::dpi::LogicalPosition::new(lx, ly));
+            }
+            let _ = crate::platform::caption::request_inner_size(&g.window, winit::dpi::LogicalSize::new(lw, lh));
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let (x, y, w, h) = (x * space.unit, y * space.unit, w * space.unit, h * space.unit);
+            if placeable {
+                g.window.set_outer_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+            }
+            let _ = crate::platform::caption::request_inner_size(&g.window, PhysicalSize::new((w - dw).max(1.0).round() as u32, (h - dh).max(1.0).round() as u32));
+        }
     }
 
     /// A tab's title, subtitle (the status joined in), colors, icon, spinner, number, pin,

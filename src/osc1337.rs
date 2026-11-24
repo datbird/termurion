@@ -277,6 +277,14 @@ pub fn minimum_frame_size(content: (f64, f64), title_bar: (f64, f64)) -> (f64, f
     (content.0.max(title_bar.0), content.1.max(title_bar.1))
 }
 
+/// A frame in points as the logical position and the logical inner size to hand winit, the frame's
+/// decoration (window pixels at `window_scale`) taken off the size. Logical values do not depend on
+/// the window's scale when winit reads them, so a move onto a screen of another scale between the two
+/// calls cannot double the size.
+pub fn logical_request(frame: Frame, decoration_px: (f64, f64), window_scale: f64) -> ((f64, f64), (f64, f64)) {
+    ((frame.0, frame.1), ((frame.2 - decoration_px.0 / window_scale).max(1.0), (frame.3 - decoration_px.1 / window_scale).max(1.0)))
+}
+
 /// What `Env=` does to the screen's exfiltrated environment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EnvUpdate {
@@ -440,6 +448,16 @@ mod tests {
         assert_eq!(minimum_frame_size((24.0, 40.0), (87.0, 0.0)), (87.0, 40.0));
         assert_eq!(minimum_frame_size((300.0, 40.0), (87.0, 0.0)), (300.0, 40.0));
         assert_eq!(clamp_window_frame((0.0, 0.0, 0.0, 0.0), minimum_frame_size((24.0, 40.0), (87.0, 0.0)), &[(0.0, 0.0, 1440.0, 900.0)], 40.0), Some((0.0, 0.0, 87.0, 40.0)));
+    }
+
+    #[test]
+    fn a_frame_goes_to_winit_in_logical_points() {
+        // A 2x window with a 56-pixel title bar: 28 points come off the height, not 56.
+        assert_eq!(logical_request((10.0, 20.0, 800.0, 600.0), (0.0, 56.0), 2.0), ((10.0, 20.0), (800.0, 572.0)));
+        // The same frame on a 1x window: the bar is 28 pixels, still 28 points.
+        assert_eq!(logical_request((10.0, 20.0, 800.0, 600.0), (0.0, 28.0), 1.0), ((10.0, 20.0), (800.0, 572.0)));
+        // Never below one point.
+        assert_eq!(logical_request((0.0, 0.0, 10.0, 10.0), (200.0, 200.0), 2.0).1, (1.0, 1.0));
     }
 
     #[test]
