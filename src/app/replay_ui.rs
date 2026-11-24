@@ -455,8 +455,9 @@ impl App {
         // Keys the file lacks read their defaults. A fresh Guid keeps two imports of one
         // file apart.
         let mut profile = crate::profile::Profile::default();
-        // The file comes from anyone: only its drawing keys count.
-        for (k, v) in recording::sanitized_profile(&values) {
+        // The file comes from anyone: only its drawing keys count, and only effects already installed.
+        let installed: Vec<String> = crate::render_fx::discover(Some(&crate::render_fx::user_dir())).0.into_iter().map(|p| p.id).collect();
+        for (k, v) in recording::sanitized_profile(&installed, &values) {
             profile.set(&k, v);
         }
         profile.set(crate::profile::GUID, toml::Value::String(uuid::Uuid::new_v4().to_string().to_uppercase()));

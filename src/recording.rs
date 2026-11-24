@@ -200,7 +200,7 @@ fn in_range(key: &str, v: toml::Value) -> toml::Value {
 /// drawing keys, each with a value legal for its key, plus the deprecated keys that still
 /// change drawing, converted to their replacements. Everything else is dropped, so a crafted
 /// file can never bring triggers, a command or any other active key.
-pub fn sanitized_profile(untrusted: &Map<String, Value>) -> Vec<(String, toml::Value)> {
+pub fn sanitized_profile<S: AsRef<str>>(installed: &[S], untrusted: &Map<String, Value>) -> Vec<(String, toml::Value)> {
     let mut out: Vec<(String, toml::Value)> = Vec::new();
     for (key, json) in untrusted {
         let base = crate::bindings::base_key(key);
@@ -208,8 +208,16 @@ pub fn sanitized_profile(untrusted: &Map<String, Value>) -> Vec<(String, toml::V
             continue;
         }
         if base == crate::render_fx::PROFILE_KEY {
-            if let Some(names) = json.as_array().and_then(|a| a.iter().map(|n| n.as_str().map(|n| toml::Value::String(n.into()))).collect::<Option<Vec<_>>>()) {
-                out.push((key.clone(), toml::Value::Array(names)));
+            // Names of plugins already installed, each once: the list can run at most what is there.
+            let names = json.as_array().and_then(|a| a.iter().map(Value::as_str).collect::<Option<Vec<_>>>());
+            if let Some(names) = names {
+                let mut kept: Vec<&str> = Vec::new();
+                for n in names {
+                    if installed.iter().any(|i| i.as_ref() == n) && !kept.contains(&n) {
+                        kept.push(n);
+                    }
+                }
+                out.push((key.clone(), toml::Value::Array(kept.into_iter().map(|n| toml::Value::String(n.into())).collect())));
             }
         } else if let Some(v) = crate::prompted::valid(base, json) {
             out.push((key.clone(), in_range(base, v)));
@@ -456,8 +464,10 @@ mod tests {
         json!({"Red Component": 1.0, "Green Component": 0.0, "Blue Component": 0.0, "Alpha Component": 1.0})
     }
 
+    const INSTALLED: [&str; 2] = ["cursor_blaze", "tft"];
+
     fn keys(profile: &Map<String, Value>) -> Vec<String> {
-        sanitized_profile(profile).into_iter().map(|(k, _)| k).collect()
+        sanitized_profile(&INSTALLED, profile).into_iter().map(|(k, _)| k).collect()
     }
 
     fn one(k: &str) -> Map<String, Value> {
@@ -504,7 +514,7 @@ mod tests {
     #[test]
     fn import_keeps_the_values_of_drawing_keys() {
         let got: std::collections::HashMap<_, _> =
-            sanitized_profile(&obj(json!({"Normal Font": "Menlo-Regular 14", "Foreground Color": red(), "Minimum Contrast": 0.5}))).into_iter().collect();
+            sanitized_profile(&INSTALLED, &obj(json!({"Normal Font": "Menlo-Regular 14", "Foreground Color": red(), "Minimum Contrast": 0.5}))).into_iter().collect();
         assert_eq!(got["Normal Font"], toml::Value::String("Menlo-Regular 14".into()));
         assert_eq!(got["Minimum Contrast"], toml::Value::Float(0.5));
         assert_eq!(got["Foreground Color"].get("r"), Some(&toml::Value::Float(1.0)));
@@ -512,7 +522,7 @@ mod tests {
 
     #[test]
     fn import_keeps_termurions_own_drawing_keys() {
-        let got: std::collections::HashMap<_, _> = sanitized_profile(&obj(json!({
+        let got: std::collections::HashMap<_, _> = sanitized_profile(&INSTALLED, &obj(json!({
             "Badge Font": "Menlo-Bold 20",
             "Badge Top Margin": 10.0,
             "Badge Right Margin": 12.0,
@@ -533,6 +543,19 @@ mod tests {
     }
 
     #[test]
+    fn import_render_plugins_are_installed_names_without_repeats() {
+        let list = |v: Value| -> Vec<String> {
+            let got: std::collections::HashMap<_, _> = sanitized_profile(&INSTALLED, &obj(json!({ "Render Plugins": v }))).into_iter().collect();
+            got.get("Render Plugins").and_then(|v| v.as_array()).map(|a| a.iter().map(|n| n.as_str().unwrap().to_string()).collect()).unwrap_or_default()
+        };
+        assert_eq!(list(json!(["tft", "nope", "cursor_blaze", "tft"])), ["tft", "cursor_blaze"]);
+        assert_eq!(list(json!(["nope"])), Vec::<String>::new());
+        // A hundred thousand copies of a built-in name run one pass, not a hundred thousand.
+        let many: Vec<&str> = std::iter::repeat_n("cursor_blaze", 100_000).collect();
+        assert_eq!(list(json!(many)), ["cursor_blaze"]);
+    }
+
+    #[test]
     fn import_render_plugins_are_names_only() {
         // Only a list of names (which must match an installed plugin): never a shader, a table or a number.
         for bad in [json!("x"), json!(1), json!([1]), json!([{"shader": "void main(){}"}]), json!([["a"]]), json!(["a", 2])] {
@@ -547,20 +570,20 @@ mod tests {
 
     #[test]
     fn import_migrates_the_deprecated_drawing_keys() {
-        let got: std::collections::HashMap<_, _> = sanitized_profile(&obj(json!({"Use HFS Plus Mapping": true, "Disable Bold": true}))).into_iter().collect();
+        let got: std::collections::HashMap<_, _> = sanitized_profile(&INSTALLED, &obj(json!({"Use HFS Plus Mapping": true, "Disable Bold": true}))).into_iter().collect();
         assert_eq!(got["Unicode Normalization"], toml::Value::Integer(3));
         assert_eq!(got["Use Bold Font"], toml::Value::Boolean(false));
         assert!(!got.contains_key("Use HFS Plus Mapping") && !got.contains_key("Disable Bold"));
         // A modern key wins over a deprecated one.
         let got: std::collections::HashMap<_, _> =
-            sanitized_profile(&obj(json!({"Use HFS Plus Mapping": true, "Unicode Normalization": 1, "Disable Bold": true, "Use Bold Font": true}))).into_iter().collect();
+            sanitized_profile(&INSTALLED, &obj(json!({"Use HFS Plus Mapping": true, "Unicode Normalization": 1, "Disable Bold": true, "Use Bold Font": true}))).into_iter().collect();
         assert_eq!(got["Unicode Normalization"], toml::Value::Integer(1));
         assert_eq!(got["Use Bold Font"], toml::Value::Boolean(true));
     }
 
     #[test]
     fn import_numbers_obey_the_schema_range() {
-        let got: std::collections::HashMap<_, _> = sanitized_profile(&obj(json!({
+        let got: std::collections::HashMap<_, _> = sanitized_profile(&INSTALLED, &obj(json!({
             "Horizontal Spacing": 0.0,
             "Vertical Spacing": 1e-30,
             "Columns": 1_000_000_000,
