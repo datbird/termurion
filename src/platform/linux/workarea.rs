@@ -1,22 +1,21 @@
 //! The X11 desktop's work area (`_NET_WORKAREA`): the strip left once panels and docks have taken
 //! their edges, for SetWindowFrame's clamp. Wayland has no such property, and no program places a
 //! window there anyway. One connection is kept and the answer is cached, so a program that prints
-//! requests in a loop costs no connection and no round trips.
+//! requests in a loop costs no connection and at most one read a second.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use x11rb::connection::Connection;
-use x11rb::protocol::xproto::{AtomEnum, ChangeWindowAttributesAux, ConnectionExt, EventMask};
-use x11rb::protocol::Event;
+use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
 use x11rb::rust_connection::RustConnection;
 
 /// The longest a cached work area is trusted without a change notice.
 const MAX_AGE: Duration = Duration::from_secs(1);
 
-/// Whether the cached work area must be read again: a property changed, or it has aged out.
-fn needs_refresh(age: Duration, changed: bool) -> bool {
-    changed || age >= MAX_AGE
+/// Whether the cached work area has aged out and must be read again.
+fn needs_refresh(age: Duration) -> bool {
+    age >= MAX_AGE
 }
 
 struct Cache {
@@ -36,9 +35,6 @@ fn connect() -> Option<Cache> {
     let root = conn.setup().roots.get(screen)?.root;
     let atom = |name: &str| conn.intern_atom(false, name.as_bytes()).ok()?.reply().ok().map(|r| r.atom);
     let (workarea, desktop) = (atom("_NET_WORKAREA")?, atom("_NET_CURRENT_DESKTOP")?);
-    // Hear when either changes, so a panel moving shows at once rather than after the age limit.
-    conn.change_window_attributes(root, &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE)).ok()?;
-    conn.flush().ok()?;
     let mut c = Cache { conn, root, display: std::env::var_os("DISPLAY"), workarea, desktop, at: Instant::now(), value: None };
     c.value = read(&c);
     Some(c)
@@ -70,20 +66,19 @@ pub fn work_area() -> Option<(f64, f64, f64, f64)> {
         *guard = connect();
     }
     let c = guard.as_mut()?;
-    let mut changed = false;
+    // No events are asked for, so this only notices a server that went away. Then the
+    // connection is forgotten and the next request makes a new one.
     loop {
         match c.conn.poll_for_event() {
-            Ok(Some(Event::PropertyNotify(p))) => changed |= p.atom == c.workarea || p.atom == c.desktop,
             Ok(Some(_)) => {}
             Ok(None) => break,
-            // The server went away: forget the connection, and the next request makes a new one.
             Err(_) => {
                 *guard = None;
                 return None;
             }
         }
     }
-    if needs_refresh(c.at.elapsed(), changed) {
+    if needs_refresh(c.at.elapsed()) {
         c.value = read(c);
         c.at = Instant::now();
     }
@@ -95,10 +90,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_work_area_is_read_again_only_when_it_changed_or_aged() {
-        assert!(!needs_refresh(Duration::from_millis(10), false), "a request in a loop reuses the answer");
-        assert!(!needs_refresh(Duration::from_millis(999), false));
-        assert!(needs_refresh(Duration::from_secs(1), false), "at most once a second");
-        assert!(needs_refresh(Duration::from_millis(10), true), "a panel that moved shows at once");
+    fn the_work_area_is_read_again_only_when_it_aged() {
+        assert!(!needs_refresh(Duration::from_millis(10)), "a request in a loop reuses the answer");
+        assert!(!needs_refresh(Duration::from_millis(999)));
+        assert!(needs_refresh(Duration::from_secs(1)), "at most once a second");
     }
 }
