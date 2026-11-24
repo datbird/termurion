@@ -110,9 +110,21 @@ fn denied_path(path: &std::path::Path) -> bool {
     DENIED_TREES.iter().any(|t| parts.len() >= t.len() && parts.iter().zip(t.iter()).all(|(a, b)| a == b)) || parts.iter().any(|p| p == ".ssh")
 }
 
-#[cfg(not(unix))]
-fn denied_path(_: &std::path::Path) -> bool {
-    false
+/// Whether `path` is the Windows config folder (`<SystemRoot>\System32\config`, where the SAM and
+/// SECURITY hives live) or inside it. Plain text compare, so it runs the same on every OS: slashes
+/// either way, a `\\?\` prefix, case and a trailing slash do not matter.
+#[cfg(any(windows, test))]
+fn in_windows_config(path: &str, system_root: &str) -> bool {
+    let plain = |t: &str| t.replace('/', "\\").trim_start_matches("\\\\?\\").trim_end_matches('\\').to_lowercase();
+    let folder = format!("{}\\system32\\config", plain(system_root));
+    let p = plain(path);
+    p == folder || p.strip_prefix(&folder).is_some_and(|rest| rest.starts_with('\\'))
+}
+
+#[cfg(windows)]
+fn denied_path(path: &std::path::Path) -> bool {
+    let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
+    in_windows_config(&path.to_string_lossy(), &root)
 }
 
 /// A file a program asked Termurion to read: only a regular local file (no share, device, or
@@ -524,6 +536,19 @@ mod tests {
         std::fs::write(&inside, [1, 2, 3, 4]).unwrap();
         assert_eq!(send(&mut s, "a=t,t=t,f=32,s=1,v=1,i=2", path(&inside).as_bytes()), "\x1b_Gi=2;OK\x1b\\");
         assert!(!inside.exists());
+    }
+
+    #[test]
+    fn windows_config_folder_is_refused() {
+        let root = "C:\\Windows";
+        for p in ["C:\\Windows\\System32\\config", "C:\\Windows\\System32\\config\\SAM", "c:/windows/system32/CONFIG/sam", "\\\\?\\C:\\Windows\\System32\\config\\SYSTEM", "C:\\Windows\\System32\\config\\"] {
+            assert!(in_windows_config(p, root), "{p}");
+        }
+        for p in ["C:\\Windows\\System32\\configs\\x", "C:\\Windows\\System32\\drivers\\x.png", "C:\\Windows\\Web\\x.png", "C:\\Users\\u\\config\\x.png", "D:\\Windows\\System32\\config\\SAM"] {
+            assert!(!in_windows_config(p, root), "{p}");
+        }
+        // A system folder on another drive is that drive's.
+        assert!(in_windows_config("D:\\WINNT\\System32\\config\\SAM", "D:\\WINNT"));
     }
 
     #[test]
