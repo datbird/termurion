@@ -18,6 +18,15 @@ fn needs_refresh(age: Duration) -> bool {
     age >= MAX_AGE
 }
 
+/// How long a failed connect is remembered before another is tried.
+const RETRY_AFTER: Duration = Duration::from_secs(30);
+
+/// Whether a connect may be tried, given how long ago the last one failed. A dead or
+/// unreachable DISPLAY can block the main thread for the connect timeout, so not every request.
+fn may_connect(since_failure: Option<Duration>) -> bool {
+    since_failure.is_none_or(|t| t >= RETRY_AFTER)
+}
+
 struct Cache {
     conn: RustConnection,
     root: u32,
@@ -29,6 +38,9 @@ struct Cache {
 }
 
 static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
+
+/// When a connect last failed, and for which DISPLAY.
+static FAILED: Mutex<Option<(Instant, Option<std::ffi::OsString>)>> = Mutex::new(None);
 
 fn connect() -> Option<Cache> {
     let (conn, screen) = RustConnection::connect(None).ok()?;
@@ -63,7 +75,15 @@ pub fn work_area() -> Option<(f64, f64, f64, f64)> {
         *guard = None;
     }
     if guard.is_none() {
+        let display = std::env::var_os("DISPLAY");
+        let mut failed = FAILED.lock().unwrap_or_else(|e| e.into_inner());
+        // A new DISPLAY gets a fresh try.
+        let since = failed.as_ref().filter(|(_, d)| *d == display).map(|(at, _)| at.elapsed());
+        if !may_connect(since) {
+            return None;
+        }
         *guard = connect();
+        *failed = if guard.is_none() { Some((Instant::now(), display)) } else { None };
     }
     let c = guard.as_mut()?;
     // No events are asked for, so this only notices a server that went away. Then the
@@ -94,5 +114,13 @@ mod tests {
         assert!(!needs_refresh(Duration::from_millis(10)), "a request in a loop reuses the answer");
         assert!(!needs_refresh(Duration::from_millis(999)));
         assert!(needs_refresh(Duration::from_secs(1)), "at most once a second");
+    }
+
+    #[test]
+    fn a_failed_connect_waits_before_trying_again() {
+        assert!(may_connect(None), "nothing has failed yet");
+        assert!(!may_connect(Some(Duration::ZERO)), "a request right after a failure does not block again");
+        assert!(!may_connect(Some(Duration::from_secs(29))));
+        assert!(may_connect(Some(Duration::from_secs(30))), "a server that came back is found");
     }
 }
