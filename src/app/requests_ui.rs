@@ -145,13 +145,14 @@ impl App {
             }
             Request::ReportScreenFrames => {
                 let scale = self.scale() as f64;
-                // Frames are measured from the primary monitor's height; unknown, so no answer.
-                let Some(primary) = primary_height() else { return };
+                // Frames are measured from the primary monitor; unknown, so no answer.
+                let Some(primary) = self.primary_monitor_px() else { return };
                 let n = osc1337::number;
-                let frames: Vec<String> = work_areas()
+                let frames: Vec<String> = self
+                    .screens_px()
                     .into_iter()
-                    .map(|(x, y, w, h)| {
-                        let (x, y, w, h) = osc1337::to_points(x, y, w, h, primary, scale);
+                    .map(|f| {
+                        let (x, y, w, h) = osc1337::to_points_at(f, primary, scale);
                         format!("{},{},{},{}", n(x), n(y), n(w), n(h))
                     })
                     .collect();
@@ -253,7 +254,26 @@ impl App {
         let g = self.gpu.as_ref()?;
         let pos = g.window.outer_position().ok()?;
         let size = g.window.outer_size();
-        Some(osc1337::to_points(pos.x as f64, pos.y as f64, size.width as f64, size.height as f64, primary_height()?, g.window.scale_factor()))
+        Some(osc1337::to_points_at((pos.x as f64, pos.y as f64, size.width as f64, size.height as f64), self.primary_monitor_px()?, g.window.scale_factor()))
+    }
+
+    /// The monitors in virtual-screen pixels: the work areas where the OS lists them (Windows), else
+    /// the monitors winit reports for the window (macOS, Linux).
+    fn screens_px(&self) -> Vec<osc1337::Frame> {
+        let areas = work_areas();
+        if !areas.is_empty() {
+            return areas;
+        }
+        let Some(g) = &self.gpu else { return Vec::new() };
+        g.window.available_monitors().map(|m| (m.position().x as f64, m.position().y as f64, m.size().width as f64, m.size().height as f64)).collect()
+    }
+
+    /// The primary monitor's frame in pixels, which frames in points are measured from.
+    fn primary_monitor_px(&self) -> Option<osc1337::Frame> {
+        match primary_height() {
+            Some(h) => Some((0.0, 0.0, 0.0, h)),
+            None => osc1337::primary_of(&self.screens_px()),
+        }
     }
 
     /// A program in `pane` set or reset its title: with SeparateWindowTitlePerTab off every
@@ -294,10 +314,10 @@ impl App {
     /// Moves and sizes the window to a frame in points, as the program asked (`reallySetPointSize:`).
     pub(super) fn apply_window_frame(&mut self, x: f64, y: f64, w: f64, h: f64) {
         let Some(g) = &self.gpu else { return };
-        // Without the primary monitor's height the frame cannot be placed, so it is left alone.
-        let Some(primary) = primary_height() else { return };
+        // Without the primary monitor the frame cannot be placed, so it is left alone.
+        let Some(primary) = self.primary_monitor_px() else { return };
         let scale = g.window.scale_factor();
-        let (x, y, w, h) = osc1337::from_points(x, y, w, h, primary, scale);
+        let (x, y, w, h) = osc1337::from_points_at((x, y, w, h), primary, scale);
         // The frame includes the title bar and borders; the inner size leaves them out.
         let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
         let (dw, dh) = (outer.width.saturating_sub(inner.width) as f64, outer.height.saturating_sub(inner.height) as f64);
@@ -306,12 +326,14 @@ impl App {
         let cell = self.cell();
         let floor = crate::platform::display::min_track_size().unwrap_or((0.0, 0.0));
         let min = ((dw + 2.0 * cell.0 as f64).max(floor.0), (dh + 2.0 * cell.1 as f64).max(floor.1));
-        let mut screens: Vec<osc1337::Frame> = work_areas();
-        if screens.is_empty() {
-            screens = g.window.available_monitors().map(|m| (m.position().x as f64, m.position().y as f64, m.size().width as f64, m.size().height as f64)).collect();
-        }
+        let screens = self.screens_px();
         let Some((x, y, w, h)) = osc1337::clamp_window_frame((x, y, w, h), min, &screens, osc1337::MIN_VISIBLE_POINTS * scale) else { return };
-        g.window.set_outer_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+        // Wayland lets a program size its window but never place it: there the position is unknown.
+        if g.window.outer_position().is_ok() {
+            g.window.set_outer_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+        } else {
+            crate::dlog!("SetWindowFrame: this display server does not let a window place itself, so only the size is applied");
+        }
         let _ = crate::platform::caption::request_inner_size(&g.window, PhysicalSize::new((w - dw).max(1.0).round() as u32, (h - dh).max(1.0).round() as u32));
     }
 

@@ -228,6 +228,24 @@ pub fn from_points(x: f64, y: f64, w: f64, h: f64, primary_height_px: f64, scale
     (x * scale, primary_height_px - y * scale - h, w, h)
 }
 
+/// The monitor frames are measured from: the one holding the virtual screen's (0, 0), else the first
+/// (as `placement::primary_first`).
+pub fn primary_of(monitors: &[Frame]) -> Option<Frame> {
+    monitors.iter().copied().find(|m| m.0 <= 0.0 && m.1 <= 0.0 && m.0 + m.2 > 0.0 && m.1 + m.3 > 0.0).or_else(|| monitors.first().copied())
+}
+
+/// `to_points` for a primary monitor anywhere in the virtual screen: `primary` is its x, y, width and
+/// height in pixels. Windows and macOS put it at the origin; an X11 desktop may not.
+pub fn to_points_at(f: Frame, primary: Frame, scale: f64) -> Frame {
+    to_points(f.0 - primary.0, f.1 - primary.1, f.2, f.3, primary.3, scale)
+}
+
+/// The reverse of `to_points_at`.
+pub fn from_points_at(f: Frame, primary: Frame, scale: f64) -> Frame {
+    let (x, y, w, h) = from_points(f.0, f.1, f.2, f.3, primary.3, scale);
+    (x + primary.0, y + primary.1, w, h)
+}
+
 /// What `Env=` does to the screen's exfiltrated environment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EnvUpdate {
@@ -342,6 +360,30 @@ mod tests {
     use super::*;
     use crate::screen::{Request, Screen};
     use alacritty_terminal::grid::Dimensions;
+
+    #[test]
+    fn primary_monitor_is_the_one_at_the_origin() {
+        let (a, b) = ((1920.0, 0.0, 1280.0, 1024.0), (0.0, 0.0, 1920.0, 1080.0));
+        assert_eq!(primary_of(&[a, b]), Some(b));
+        assert_eq!(primary_of(&[a]), Some(a));
+        assert_eq!(primary_of(&[]), None);
+        let off = (-1920.0, 0.0, 1920.0, 1080.0);
+        assert_eq!(primary_of(&[off, a]), Some(off), "none holds the origin: the first");
+    }
+
+    #[test]
+    fn frames_are_measured_from_a_primary_anywhere() {
+        let at_origin = (0.0, 0.0, 1920.0, 1080.0);
+        let f = (100.0, 200.0, 800.0, 600.0);
+        let (x, y, w, h) = from_points_at(f, at_origin, 1.0);
+        assert_eq!((x, y, w, h), (100.0, 1080.0 - 200.0 - 600.0, 800.0, 600.0));
+        assert_eq!(to_points_at((x, y, w, h), at_origin, 1.0), f);
+        // A primary at (1000, 50): the same points land 1000 and 50 further along.
+        let moved = (1000.0, 50.0, 1920.0, 1080.0);
+        let (mx, my, ..) = from_points_at(f, moved, 2.0);
+        assert_eq!((mx, my), (1000.0 + 200.0, 50.0 + 1080.0 - 400.0 - 1200.0));
+        assert_eq!(to_points_at(from_points_at(f, moved, 2.0), moved, 2.0), f);
+    }
 
     #[test]
     fn window_frame_parses_strictly() {
