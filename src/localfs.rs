@@ -412,14 +412,22 @@ pub(crate) mod tests {
 
     #[test]
     fn a_refused_path_is_never_judged() {
-        for p in [r"\\attacker\share\f", r"//attacker/share/f", r"\\?\UNC\h\s\f", r"C:\x\NUL", "C:\\x\\COM\u{b9}", "relative\\f", r"\\.\pipe\x"] {
+        // Shares, the device namespace and a relative path are refused on every OS.
+        for p in [r"\\attacker\share\f", r"//attacker/share/f", r"\\?\UNC\h\s\f", "relative\\f", r"\\.\pipe\x"] {
+            assert_eq!(LocalPath::judge(p), None, "{p}");
+            assert!(!judged(Path::new(p)));
+        }
+        // DOS device names are a Windows path rule.
+        #[cfg(windows)]
+        for p in [r"C:\x\NUL", "C:\\x\\COM\u{b9}"] {
             assert_eq!(LocalPath::judge(p), None, "{p}");
             assert!(!judged(Path::new(p)));
         }
         let t = LocalPath::judge(std::env::temp_dir()).expect("the temp folder is local");
         assert!(is_dir(&t));
         assert_eq!(t.parent().map(|p| p.path().to_path_buf()), std::env::temp_dir().parent().map(Path::to_path_buf));
-        assert_eq!(t.join(r"\\attacker\share"), None, "a join that leaves for a share is judged again");
+        let leaves = if cfg!(windows) { r"\\attacker\share" } else { "//attacker/share" };
+        assert_eq!(t.join(leaves), None, "a join that leaves for a share is judged again");
     }
 
     /// A listing's plain entries are local as they stand; an entry that is a reparse point is judged.
@@ -986,7 +994,9 @@ pub(crate) mod tests {
         assert!(LocalPath::judge(share).is_none(), "the judge still refuses it");
         let got = LocalPath::person_picked(share);
         assert_eq!(got.path(), share, "a picked path is the person's choice");
-        assert!(LocalPath::person_picked(Path::new(r"Z:\x")).path().ends_with("x"));
+        // A drive on Windows, a mount point elsewhere: the last name is what was picked.
+        let drive = if cfg!(windows) { r"Z:\x" } else { "/mnt/z/x" };
+        assert!(LocalPath::person_picked(Path::new(drive)).path().ends_with("x"));
     }
 
     /// Each function of one file's live code as (name, signature, body): a function runs from its
