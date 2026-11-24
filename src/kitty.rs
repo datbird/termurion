@@ -142,6 +142,72 @@ fn denied_path(path: &std::path::Path) -> bool {
     in_windows_config(&text, &root) || has_ssh_component(&text)
 }
 
+/// The bytes of an open file, at most `cap`: one more byte than that means it is too long, and
+/// nothing is returned.
+fn read_capped(f: impl std::io::Read, cap: u64) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    f.take(cap.saturating_add(1)).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= cap).then_some(bytes)
+}
+
+/// The path an open file really is, where the system can say (a swapped folder cannot fool it).
+#[cfg(target_os = "linux")]
+fn opened_path(f: &std::fs::File) -> Option<std::path::PathBuf> {
+    use std::os::fd::AsRawFd;
+    crate::localfs::read_link(&crate::localfs::LocalPath::judge(format!("/proc/self/fd/{}", f.as_raw_fd()))?)
+}
+
+#[cfg(target_os = "macos")]
+fn opened_path(f: &std::fs::File) -> Option<std::path::PathBuf> {
+    use std::os::{fd::AsRawFd, unix::ffi::OsStrExt};
+    let mut buf = [0u8; libc::PATH_MAX as usize];
+    if unsafe { libc::fcntl(f.as_raw_fd(), libc::F_GETPATH, buf.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let len = buf.iter().position(|b| *b == 0)?;
+    Some(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&buf[..len])))
+}
+
+#[cfg(windows)]
+fn opened_path(f: &std::fs::File) -> Option<std::path::PathBuf> {
+    crate::localfs::final_path(f)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn opened_path(_: &std::fs::File) -> Option<std::path::PathBuf> {
+    None
+}
+
+/// Opens a judged file once and reads that handle: it must be a regular file no larger than
+/// `MAX_BYTES` (asked of the handle, not the name), the read stops at `MAX_BYTES`, and for a file
+/// that is not temporary the handle's own path is checked again, so a folder swapped for a link
+/// after the name was checked still cannot reach a system folder. Never waits on a pipe.
+fn read_open(path: &crate::localfs::LocalPath, check_path: bool) -> Option<Vec<u8>> {
+    let file = {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            crate::localfs::open_custom(path, |o| {
+                o.read(true).custom_flags(libc::O_NONBLOCK);
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            crate::localfs::open(path)
+        }
+    }
+    .ok()?;
+    let meta = crate::localfs::file_stat(&file).ok()?;
+    if !meta.is_file || meta.len > MAX_BYTES {
+        return None;
+    }
+    if check_path && opened_path(&file).is_some_and(|p| denied_path(&p)) {
+        return None;
+    }
+    read_capped(file, MAX_BYTES)
+}
+
 /// A file a program asked Termurion to read: only a regular local file (no share, device, or
 /// folder); a temporary file (`t=t`) only in the temp folder with kitty's marker in its
 /// name, deleted after reading.
@@ -160,7 +226,7 @@ fn read_file(raw: &[u8], temporary: bool) -> Option<Vec<u8>> {
         if !real.path().starts_with(tmp.path()) || !named {
             return None;
         }
-        let bytes = crate::localfs::read(&real).ok();
+        let bytes = read_open(&real, false);
         let _ = crate::localfs::remove_file(&real);
         return bytes;
     }
@@ -169,7 +235,7 @@ fn read_file(raw: &[u8], temporary: bool) -> Option<Vec<u8>> {
     if denied_path(real.path()) {
         return None;
     }
-    crate::localfs::read(&real).ok()
+    read_open(&real, true)
 }
 
 /// The picture a transmit or query carries: width, height, RGBA.
@@ -585,6 +651,36 @@ mod tests {
         let f = dir.join("pic.bin");
         std::fs::write(&f, [1, 2, 3, 4]).unwrap();
         assert!(read_file(f.to_string_lossy().as_bytes(), false).is_none());
+    }
+
+    #[test]
+    fn read_is_capped_at_its_limit() {
+        assert_eq!(read_capped(&b"abcd"[..], 4), Some(b"abcd".to_vec()));
+        assert_eq!(read_capped(&b"abc"[..], 4), Some(b"abc".to_vec()));
+        assert_eq!(read_capped(&b"abcde"[..], 4), None, "one byte past the cap is refused");
+        // A source that never ends (a growing file, /dev/zero) stops at the cap instead of filling memory.
+        assert_eq!(read_capped(std::io::repeat(0), 1000), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_file_names_its_real_path() {
+        let td = TempDir::new("kitty-open");
+        let real = std::fs::canonicalize(td.to_path_buf()).unwrap().join("pic.bin");
+        std::fs::write(&real, [1]).unwrap();
+        let link = real.with_file_name("link.bin");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert_eq!(opened_path(&std::fs::File::open(&link).unwrap()), Some(real), "a link opens as its target");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pipe_is_refused_without_waiting() {
+        let td = TempDir::new("kitty-fifo");
+        let fifo = td.to_path_buf().join("pipe");
+        let name = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        assert!(read_file(fifo.to_string_lossy().as_bytes(), false).is_none());
     }
 
     #[test]
