@@ -79,7 +79,7 @@ fn bad_file() -> String {
 
 /// Folders t=f never reads from, with everything inside them, as lowercase components from the
 /// root (iTerm2's list, `KittyImageController.swift`). The Linux system trees (/proc, /sys, /dev)
-/// are Termurion's own addition for the same reason; /System and the keychains are the Mac's.
+/// (and /root, /run) are Termurion's own addition for the same reason; /System and the keychains are the Mac's.
 #[cfg(unix)]
 const DENIED_TREES: &[&[&str]] = &[
     &["dev"],
@@ -90,6 +90,11 @@ const DENIED_TREES: &[&[&str]] = &[
     &["proc"],
     #[cfg(target_os = "linux")]
     &["sys"],
+    // Linux's counterparts of /var/root and /var/db: root's home and the runtime secrets.
+    #[cfg(target_os = "linux")]
+    &["root"],
+    #[cfg(target_os = "linux")]
+    &["run"],
     #[cfg(target_os = "macos")]
     &["system"],
     #[cfg(target_os = "macos")]
@@ -593,7 +598,7 @@ mod tests {
         use std::path::Path;
         let mut trees = vec!["/etc", "/var/db", "/var/root", "/dev"];
         if cfg!(target_os = "linux") {
-            trees.extend(["/proc", "/sys"]);
+            trees.extend(["/proc", "/sys", "/root", "/run"]);
         }
         if cfg!(target_os = "macos") {
             trees.extend(["/System", "/Library/Keychains"]);
@@ -608,7 +613,7 @@ mod tests {
             assert!(denied_path(Path::new(p)), "{p}");
         }
         // Whole components only, and everything else reads.
-        for p in ["/etcetera/x", "/var/dbx/x", "/var/log/x.png", "/var/tmp/x.png", "/devices/x", "/home/u/pic.png", "/tmp/x.png", "/private/tmp/x.png", "/sysroot/x", "/processes/x"] {
+        for p in ["/etcetera/x", "/var/dbx/x", "/var/log/x.png", "/var/tmp/x.png", "/devices/x", "/home/u/pic.png", "/tmp/x.png", "/private/tmp/x.png", "/sysroot/x", "/processes/x", "/rootfs/x", "/running/x"] {
             assert!(!denied_path(Path::new(p)), "{p}");
         }
         // .ssh anywhere under a home folder.
