@@ -184,6 +184,18 @@ pub const DRAWING_KEYS: &[&str] = &[
     "Effects Idle",
 ];
 
+/// A number held to its key's schema range, as the settings window holds it (a spacing of 0 or a
+/// million columns would otherwise size the replay pane from the file's say-so).
+fn in_range(key: &str, v: toml::Value) -> toml::Value {
+    let Some(s) = crate::schema::find(key) else { return v };
+    let (lo, hi) = (s.min_f64().unwrap_or(f64::MIN), s.max_f64().unwrap_or(f64::MAX));
+    match v {
+        toml::Value::Integer(i) if s.min_f64().is_some() || s.max_f64().is_some() => toml::Value::Integer(i.clamp(lo.max(i64::MIN as f64) as i64, hi.min(i64::MAX as f64) as i64)),
+        toml::Value::Float(f) => toml::Value::Float(f.clamp(lo, hi)),
+        v => v,
+    }
+}
+
 /// What an imported recording's profile may carry (`iTermRecordingProfileSanitizer`): only the
 /// drawing keys, each with a value legal for its key, plus the deprecated keys that still
 /// change drawing, converted to their replacements. Everything else is dropped, so a crafted
@@ -200,7 +212,7 @@ pub fn sanitized_profile(untrusted: &Map<String, Value>) -> Vec<(String, toml::V
                 out.push((key.clone(), toml::Value::Array(names)));
             }
         } else if let Some(v) = crate::prompted::valid(base, json) {
-            out.push((key.clone(), v));
+            out.push((key.clone(), in_range(base, v)));
         }
     }
     let has = |out: &[(String, toml::Value)], k: &str| out.iter().any(|(n, _)| n == k);
@@ -544,6 +556,32 @@ mod tests {
             sanitized_profile(&obj(json!({"Use HFS Plus Mapping": true, "Unicode Normalization": 1, "Disable Bold": true, "Use Bold Font": true}))).into_iter().collect();
         assert_eq!(got["Unicode Normalization"], toml::Value::Integer(1));
         assert_eq!(got["Use Bold Font"], toml::Value::Boolean(true));
+    }
+
+    #[test]
+    fn import_numbers_obey_the_schema_range() {
+        let got: std::collections::HashMap<_, _> = sanitized_profile(&obj(json!({
+            "Horizontal Spacing": 0.0,
+            "Vertical Spacing": 1e-30,
+            "Columns": 1_000_000_000,
+            "Rows": -5,
+            "Scrollback Lines": 1_000_000_000_000_i64,
+            "Blur Radius": 1e300,
+            "Minimum Contrast": 0.5,
+            "Transparency": 7.5,
+        })))
+        .into_iter()
+        .collect();
+        use toml::Value::{Float, Integer};
+        // Out of range clamps, as the settings window does; in range stays.
+        assert_eq!(got["Horizontal Spacing"], Float(0.5), "a zero spacing cannot make a zero-width cell");
+        assert_eq!(got["Vertical Spacing"], Float(0.5));
+        assert_eq!(got["Columns"], Integer(1250), "a huge grid is never allocated");
+        assert_eq!(got["Rows"], Integer(1));
+        assert_eq!(got["Scrollback Lines"], Integer(10_000_000));
+        assert_eq!(got["Blur Radius"], Float(64.0));
+        assert_eq!(got["Minimum Contrast"], Float(0.5));
+        assert_eq!(got["Transparency"], Float(1.0));
     }
 
     #[test]
