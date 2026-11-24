@@ -455,10 +455,9 @@ impl App {
         // Keys the file lacks read their defaults. A fresh Guid keeps two imports of one
         // file apart.
         let mut profile = crate::profile::Profile::default();
-        for (k, v) in values {
-            if let Ok(v) = serde_json::from_value::<toml::Value>(v) {
-                profile.set(&k, v);
-            }
+        // The file comes from anyone: only its drawing keys count.
+        for (k, v) in recording::sanitized_profile(&values) {
+            profile.set(&k, v);
         }
         profile.set(crate::profile::GUID, toml::Value::String(uuid::Uuid::new_v4().to_string().to_uppercase()));
         self.store.sessions.push(crate::session_profile::SessionProfile { profile: profile.clone(), overridden: Default::default() });

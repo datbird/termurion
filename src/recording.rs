@@ -94,6 +94,107 @@ pub fn redact(profile: &Map<String, Value>, new_guid: &str) -> Map<String, Value
     p
 }
 
+/// The profile keys a recording may set: the ones that only change how it is drawn, as
+/// iTerm2 allows (`iTermRecordingProfileSanitizer`). Colors are allowed too, with their
+/// Light and Dark variants. A recording comes from anyone, so every other key is dropped.
+pub const DRAWING_KEYS: &[&str] = &[
+    "Use Separate Colors for Light and Dark Mode",
+    "Use Bright Bold",
+    "Brighten Bold Text",
+    "Harmonize 256 Colors",
+    "Use Selected Text Color",
+    "Use Underline Color",
+    "Use Cursor Guide",
+    "Use Tab Color",
+    "Smart Cursor Color",
+    "Minimum Contrast",
+    "Faint Text Alpha",
+    "Cursor Boost",
+    "HDR Cursor",
+    "HDR Cursor Brightness",
+    "Use Active Pane Border",
+    "Normal Font",
+    "Non Ascii Font",
+    "Use Non-ASCII Font",
+    "Special Font Config",
+    "Horizontal Spacing",
+    "Vertical Spacing",
+    "Use Bold Font",
+    "Use Italic Font",
+    "Thin Strokes",
+    "ASCII Anti Aliased",
+    "Non-ASCII Anti Aliased",
+    "ASCII Ligatures",
+    "Non-ASCII Ligatures",
+    "Draw Powerline Glyphs",
+    "Cursor Type",
+    "Blinking Cursor",
+    "Cursor Shadow",
+    "Cursor Hidden When Unfocused",
+    "Blink Allowed",
+    "Cursor Smooth Slide",
+    "Cursor Smooth Blink",
+    "Cursor Blink Fade In Duration",
+    "Cursor Blink Fade Out Duration",
+    "Cursor Blink Fade In Curve",
+    "Cursor Blink Fade Out Curve",
+    "Cursor Blink Visible Dwell",
+    "Cursor Blink Hidden Dwell",
+    "Animate Movement",
+    "Animate Movement Only in Interactive Apps",
+    "Transparency",
+    "Initial Use Transparency",
+    "Blur",
+    "Blur Radius",
+    "Only The Default BG Color Uses Transparency",
+    "Ambiguous Double Width",
+    "Unicode Normalization",
+    "Unicode Version",
+    "Show Mark Indicators",
+    "Use Theme Mark Colors",
+    "Timestamps Style",
+    "Timestamps Visible",
+    "Show Offscreen Command line",
+    "Show Offscreen Command line for Current Command",
+    "Enable Progress Bars",
+    "Progress Bar Height",
+    "Progress Bar Color Scheme",
+    "Reduce Flicker",
+    "Rows",
+    "Columns",
+    "Scrollback Lines",
+    "Unlimited Scrollback",
+];
+
+/// What an imported recording's profile may carry (`iTermRecordingProfileSanitizer`): only the
+/// drawing keys, each with a value legal for its key, plus the deprecated keys that still
+/// change drawing, converted to their replacements. Everything else is dropped, so a crafted
+/// file can never bring triggers, a command or any other active key.
+pub fn sanitized_profile(untrusted: &Map<String, Value>) -> Vec<(String, toml::Value)> {
+    let mut out: Vec<(String, toml::Value)> = Vec::new();
+    for (key, json) in untrusted {
+        let base = crate::bindings::base_key(key);
+        if !(crate::bindings::is_color_key(key) || DRAWING_KEYS.contains(&base)) {
+            continue;
+        }
+        if let Some(v) = crate::prompted::valid(base, json) {
+            out.push((key.clone(), v));
+        }
+    }
+    let has = |out: &[(String, toml::Value)], k: &str| out.iter().any(|(n, _)| n == k);
+    if !has(&out, "Unicode Normalization")
+        && let Some(on) = untrusted.get("Use HFS Plus Mapping").and_then(Value::as_bool)
+    {
+        out.push(("Unicode Normalization".into(), toml::Value::Integer(if on { 3 } else { 0 })));
+    }
+    if !has(&out, "Use Bold Font")
+        && let Some(off) = untrusted.get("Disable Bold").and_then(Value::as_bool)
+    {
+        out.push(("Use Bold Font".into(), toml::Value::Boolean(!off)));
+    }
+    out
+}
+
 /// The file's bytes: `gzip({ dvr, profile, version: 4 })` (`RC:177-185`).
 pub fn encode(dvr: Value, profile: Map<String, Value>) -> Vec<u8> {
     let mut dict = Map::new();
@@ -315,5 +416,98 @@ mod tests {
         assert_eq!((EXTENSION, DEFAULT_NAME, VERSION), ("itr", "Recording", 4));
         assert_eq!(SAVE_FAILED, "The recording could not be saved.");
         assert_eq!(ENCODE_FAILED, "Error encoding recording.");
+    }
+
+    fn red() -> Value {
+        json!({"Red Component": 1.0, "Green Component": 0.0, "Blue Component": 0.0, "Alpha Component": 1.0})
+    }
+
+    fn keys(profile: &Map<String, Value>) -> Vec<String> {
+        sanitized_profile(profile).into_iter().map(|(k, _)| k).collect()
+    }
+
+    fn one(k: &str) -> Map<String, Value> {
+        let mut m = Map::new();
+        m.insert(k.to_string(), json!(1));
+        m
+    }
+
+    fn obj(v: Value) -> Map<String, Value> {
+        v.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn import_drops_every_active_key() {
+        let hostile = obj(json!({
+            "Triggers": [{"action": "ScriptTrigger", "parameter": "open -a Calculator", "regex": ""}],
+            "Triggers Use Interpolated Strings": true,
+            "Command": "open -a Calculator",
+            "Custom Command": "Yes",
+            "Initial Text": "open -a Calculator",
+            "Smart Selection Rules": [{"regex": ".*"}],
+            "Semantic History": {"action": "command", "text": "x"},
+            "Keyboard Map": {"0x61-0x0": {"Action": 35, "Text": "x"}},
+            "Bindings": {"Foreground Color": "x"},
+            "Answerback String": "x",
+            "Badge": "x",
+            "Send Code When Idle": true,
+            "Working Directory": "/",
+            "Log Directory": "/tmp",
+            "Background Image Location": "/etc/passwd",
+            "Render Plugins": ["x"],
+            "Some Future Key": "x",
+            "Normal Font": "Menlo-Regular 14",
+            "Foreground Color": red(),
+            "Background Color (Dark)": red(),
+            "Transparency": 0.25,
+            "Cursor Type": 1,
+            "Columns": 80,
+        }));
+        let mut got = keys(&hostile);
+        got.sort();
+        assert_eq!(got, ["Background Color (Dark)", "Columns", "Cursor Type", "Foreground Color", "Normal Font", "Transparency"]);
+    }
+
+    #[test]
+    fn import_keeps_the_values_of_drawing_keys() {
+        let got: std::collections::HashMap<_, _> =
+            sanitized_profile(&obj(json!({"Normal Font": "Menlo-Regular 14", "Foreground Color": red(), "Minimum Contrast": 0.5}))).into_iter().collect();
+        assert_eq!(got["Normal Font"], toml::Value::String("Menlo-Regular 14".into()));
+        assert_eq!(got["Minimum Contrast"], toml::Value::Float(0.5));
+        assert_eq!(got["Foreground Color"].get("r"), Some(&toml::Value::Float(1.0)));
+    }
+
+    #[test]
+    fn import_drops_an_allowed_key_with_an_illegal_value() {
+        assert!(keys(&obj(json!({"Transparency": "not a number", "Normal Font": {"not": "a string"}}))).is_empty());
+    }
+
+    #[test]
+    fn import_migrates_the_deprecated_drawing_keys() {
+        let got: std::collections::HashMap<_, _> = sanitized_profile(&obj(json!({"Use HFS Plus Mapping": true, "Disable Bold": true}))).into_iter().collect();
+        assert_eq!(got["Unicode Normalization"], toml::Value::Integer(3));
+        assert_eq!(got["Use Bold Font"], toml::Value::Boolean(false));
+        assert!(!got.contains_key("Use HFS Plus Mapping") && !got.contains_key("Disable Bold"));
+        // A modern key wins over a deprecated one.
+        let got: std::collections::HashMap<_, _> =
+            sanitized_profile(&obj(json!({"Use HFS Plus Mapping": true, "Unicode Normalization": 1, "Disable Bold": true, "Use Bold Font": true}))).into_iter().collect();
+        assert_eq!(got["Unicode Normalization"], toml::Value::Integer(1));
+        assert_eq!(got["Use Bold Font"], toml::Value::Boolean(true));
+    }
+
+    #[test]
+    fn import_decides_every_profile_key() {
+        // Like iTerm2: a key added to the schema must be allowed or ruled out on purpose.
+        let denied: Vec<&str> = include_str!("../schema/profile.toml")
+            .lines()
+            .filter_map(|l| l.strip_prefix("key = \"")?.strip_suffix('"'))
+            .filter(|k| !crate::bindings::is_color_key(k) && !DRAWING_KEYS.contains(k))
+            .collect();
+        for k in &denied {
+            assert!(!keys(&one(k)).iter().any(|g| g == k), "{k} must not import");
+        }
+        for k in DRAWING_KEYS {
+            assert!(crate::schema::find(k).is_some() || *k == "HDR Cursor Brightness", "{k} is not a profile key");
+        }
     }
 }
