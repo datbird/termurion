@@ -23,9 +23,15 @@ pub fn visible_frames() -> Option<Vec<(f64, f64, f64, f64)>> {
     )
 }
 
-/// `NSWindow.minFrameWidth(withTitle: "", styleMask: .titled)`: how narrow a person can drag a titled
+/// The style of Termurion's decorated window (winit's): a title bar with its close, minimize and zoom
+/// buttons, which is what sets how narrow the bar can get.
+fn title_bar_style() -> NSWindowStyleMask {
+    NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Miniaturizable | NSWindowStyleMask::Resizable
+}
+
+/// `NSWindow.minFrameWidth(withTitle: "", styleMask: titled, closable, miniaturizable, resizable)`: how narrow a person can drag a titled
 /// window (its title bar buttons need that much), in points.
 pub fn min_titled_width() -> Option<f64> {
     let mtm = MainThreadMarker::new()?;
-    Some(NSWindow::minFrameWidthWithTitle_styleMask(&NSString::from_str(""), NSWindowStyleMask::Titled, mtm))
+    Some(NSWindow::minFrameWidthWithTitle_styleMask(&NSString::from_str(""), title_bar_style(), mtm))
 }
