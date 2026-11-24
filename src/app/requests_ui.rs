@@ -336,8 +336,9 @@ impl App {
         // The frame came from program output: at least two cells each way (what a tab needs) plus
         // the frame, and the title bar's own floor; no bigger than the screens; part of it on one.
         let cell = self.cell();
-        let floor = crate::platform::display::min_track_size().unwrap_or((0.0, 0.0));
-        let min = (((dw + 2.0 * cell.0 as f64) / space.unit).max(floor.0), ((dh + 2.0 * cell.1 as f64) / space.unit).max(floor.1));
+        // A titled window cannot be dragged narrower than its title bar needs (`00ff77e7`).
+        let floor = if cfg!(target_os = "macos") && !g.window.is_decorated() { None } else { crate::platform::display::min_track_size() }.unwrap_or((0.0, 0.0));
+        let min = osc1337::minimum_frame_size(((dw + 2.0 * cell.0 as f64) / space.unit, (dh + 2.0 * cell.1 as f64) / space.unit), floor);
         let Some((x, y, w, h)) = osc1337::clamp_window_frame((x, y, w, h), min, &space.screens, osc1337::MIN_VISIBLE_POINTS * space.scale) else { return };
         let (x, y, w, h) = (x * space.unit, y * space.unit, w * space.unit, h * space.unit);
         // Wayland lets a program size its window but never place it: there the position is unknown.

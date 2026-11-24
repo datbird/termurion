@@ -271,6 +271,12 @@ pub fn within_work_area(monitors: &[Frame], work: Frame) -> Vec<Frame> {
         .collect()
 }
 
+/// The smallest frame a person could drag the window to (`SetWindowFrameRequest.minimumFrameSize`):
+/// what its contents need, or the narrowest a titled window's title bar allows, whichever is more.
+pub fn minimum_frame_size(content: (f64, f64), title_bar: (f64, f64)) -> (f64, f64) {
+    (content.0.max(title_bar.0), content.1.max(title_bar.1))
+}
+
 /// What `Env=` does to the screen's exfiltrated environment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EnvUpdate {
@@ -426,6 +432,14 @@ mod tests {
         assert_eq!(within_work_area(&[a, b], work), vec![(0.0, 30.0, 1920.0, 1050.0), (1920.0, 30.0, 1920.0, 1050.0)]);
         // A work area that is only one monitor's leaves the other whole.
         assert_eq!(within_work_area(&[a, b], (0.0, 0.0, 1920.0, 1000.0)), vec![(0.0, 0.0, 1920.0, 1000.0), b]);
+    }
+
+    #[test]
+    fn the_title_bar_sets_a_minimum_width() {
+        // SetWindowFrame=0;0;0;0 once gave a 24-point sliver; a titled window stops near 87.
+        assert_eq!(minimum_frame_size((24.0, 40.0), (87.0, 0.0)), (87.0, 40.0));
+        assert_eq!(minimum_frame_size((300.0, 40.0), (87.0, 0.0)), (300.0, 40.0));
+        assert_eq!(clamp_window_frame((0.0, 0.0, 0.0, 0.0), minimum_frame_size((24.0, 40.0), (87.0, 0.0)), &[(0.0, 0.0, 1440.0, 900.0)], 40.0), Some((0.0, 0.0, 87.0, 40.0)));
     }
 
     #[test]

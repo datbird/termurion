@@ -24,9 +24,17 @@ pub fn primary_height() -> Option<f64> {
     None
 }
 
-/// No floor of its own: the window manager keeps the window as large as it needs.
+/// The narrowest a person can drag a titled window, in the units frames are measured in (macOS:
+/// points, from AppKit; elsewhere the window manager keeps a window as large as it needs).
 pub fn min_track_size() -> Option<(f64, f64)> {
-    None
+    #[cfg(target_os = "macos")]
+    {
+        crate::platform::macos::screens::min_titled_width().map(|w| (w, 0.0))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
 }
 
 /// Each screen's visible frame in points (the menu bar and Dock left out), top left origin; macOS only.
