@@ -268,8 +268,10 @@ impl App {
         // panel and a 1x external are not one space. Points are: everything is measured in them.
         #[cfg(target_os = "macos")]
         {
-            let screens = osc1337::monitors_in_points(&monitors());
-            let primary = osc1337::primary_of(&screens)?;
+            let full = osc1337::monitors_in_points(&monitors());
+            let primary = osc1337::primary_of(&full)?;
+            // The visible frames leave out the menu bar and Dock, as upstream clamps to them.
+            let screens = crate::platform::display::visible_screens().filter(|v| !v.is_empty()).unwrap_or(full);
             Some(FrameSpace { screens, primary, unit: window_scale, scale: 1.0 })
         }
         // Windows and X11 list every monitor in one pixel space.

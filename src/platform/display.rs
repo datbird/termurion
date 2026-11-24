@@ -40,6 +40,19 @@ pub fn min_track_size() -> Option<(f64, f64)> {
     imp::min_track_size()
 }
 
+/// Each screen's visible frame in points, top left origin (macOS: the menu bar and Dock left out).
+/// None elsewhere, and off the main thread.
+pub fn visible_screens() -> Option<Vec<(f64, f64, f64, f64)>> {
+    #[cfg(unix)]
+    {
+        imp::visible_screens()
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
 /// Each monitor's work area (without the taskbar) as x, y, width, height in virtual-screen pixels.
 /// Empty where the OS gives no monitor list without a window (Unix: winit lists monitors per window).
 pub fn work_areas() -> Vec<(f64, f64, f64, f64)> {

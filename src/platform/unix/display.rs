@@ -29,6 +29,18 @@ pub fn min_track_size() -> Option<(f64, f64)> {
     None
 }
 
+/// Each screen's visible frame in points (the menu bar and Dock left out), top left origin; macOS only.
+pub fn visible_screens() -> Option<Vec<(f64, f64, f64, f64)>> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::platform::macos::screens::visible_frames()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 /// No monitor list without a window yet (winit's `available_monitors` needs one).
 pub fn work_areas() -> Vec<(f64, f64, f64, f64)> {
     Vec::new()
