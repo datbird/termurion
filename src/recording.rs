@@ -219,6 +219,12 @@ pub fn sanitized_profile<S: AsRef<str>>(installed: &[S], untrusted: &Map<String,
                 }
                 out.push((key.clone(), toml::Value::Array(kept.into_iter().map(|n| toml::Value::String(n.into())).collect())));
             }
+        } else if base == crate::font_table::KEY {
+            // The table is stored as JSON text; keep it only when `Config::parse` accepts it whole
+            // (bounded entries, code points and sizes).
+            if let Some(text) = json.as_str().filter(|t| crate::font_table::Config::parse(t).is_some()) {
+                out.push((key.clone(), toml::Value::String(text.into())));
+            }
         } else if let Some(v) = crate::prompted::valid(base, json) {
             out.push((key.clone(), in_range(base, v)));
         }
@@ -605,6 +611,17 @@ mod tests {
         assert_eq!(got["Blur Radius"], Float(64.0));
         assert_eq!(got["Minimum Contrast"], Float(0.5));
         assert_eq!(got["Transparency"], Float(1.0));
+    }
+
+    #[test]
+    fn import_keeps_a_well_formed_special_font_config() {
+        let table = r#"{"entries":[{"start":12354,"count":10,"fontName":"Menlo-Regular","pointSize":14}],"version":2}"#;
+        let got: std::collections::HashMap<_, _> = sanitized_profile(&INSTALLED, &obj(json!({ "Special Font Config": table }))).into_iter().collect();
+        assert_eq!(got["Special Font Config"], toml::Value::String(table.into()));
+        // Malformed, out of range or not text: dropped.
+        for bad in [json!("not json"), json!(""), json!(5), json!({"entries": []}), json!(r#"{"entries":[{"start":-1,"count":1,"fontName":"x"}]}"#), json!(r#"{"entries":[{"start":200,"count":1,"fontName":""}]}"#)] {
+            assert!(keys(&obj(json!({ "Special Font Config": bad }))).is_empty(), "{bad}");
+        }
     }
 
     #[test]
