@@ -237,6 +237,7 @@ Termurion 1.1.11 is the current stable release. Get it from
 **Linux (x86_64)**
 
 - `Termurion-1.1.11-x86_64.AppImage`. Run `chmod +x` on it, then run it. The first run adds Termurion to the app launcher with its icon.
+- AppImageUpdate and AppImage managers can update it in place from the latest GitHub release.
 - It needs FUSE (`fusermount3`), which most desktops have. Where FUSE is missing, start it with `--appimage-extract-and-run`.
 - Tested on Ubuntu 26.04 with GNOME on Wayland. X11 also works. System-wide hotkeys work on X11 only.
 
@@ -258,7 +259,7 @@ cargo build --release
 The build copies `conpty.dll` and `OpenConsole.exe` next to the exe. The browser pane needs the
 WebView2 runtime, which Windows 10 and 11 normally have.
 
-On macOS and Linux, `cargo build --release` builds the same programs. `scripts/linux-appimage` makes the Linux AppImage (it writes `target/linux/Termurion-<version>-x86_64.AppImage`).
+On macOS and Linux, `cargo build --release` builds the same programs. `scripts/linux-appimage` makes the Linux AppImage (it writes `target/linux/Termurion-<version>-x86_64.AppImage` and its `.zsync` update file; it needs `zsyncmake`, from the `zsync` package).
 
 `.cargo/config.toml` sets `+crt-static`. The build stops if that flag is missing.
 

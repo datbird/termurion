@@ -3,6 +3,9 @@
 # appimagetool and the type2 runtime (the first code that runs on a user's machine) are fetched once
 # to ~/.cache/termurion/ at pinned releases and used only after their SHA-256 matches; the runtime is
 # handed to appimagetool, which would otherwise fetch the moving "continuous" one.
+# It also writes the .zsync beside it and embeds the update information, so AppImageUpdate and
+# AppImage managers can update the file in place from the latest GitHub release.
+# Needs zsyncmake on the host (apt install zsync); appimagetool runs here, not in the container.
 # Usage: scripts/linux-appimage
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
@@ -19,6 +22,7 @@ tool="$cache/appimagetool-$tool_ver-x86_64.AppImage"
 runtime="$cache/runtime-$runtime_ver-x86_64"
 die() { echo "linux-appimage: $1" >&2; exit 1; }
 [ "$(uname -m)" = x86_64 ] || die "x86_64 only"
+command -v zsyncmake > /dev/null || die "zsyncmake is missing (apt install zsync); the .zsync file is part of the release"
 
 ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 [ -n "$ver" ] || die "no version in Cargo.toml"
@@ -77,8 +81,17 @@ cp "$icon" "$app/dev.termurion.Termurion.png"
 cp "$icon" "$app/usr/share/icons/hicolor/256x256/apps/dev.termurion.Termurion.png"
 
 out="target/linux/Termurion-$ver-x86_64.AppImage"
-rm -f "$out"
+# The release asset keeps this name; AppImageUpdate looks up the newest release and its .zsync.
+upd='gh-releases-zsync|datbird|termurion|latest|Termurion-*-x86_64.AppImage.zsync'
+# appimagetool leaves the .zsync in the current folder; it is moved beside the AppImage below.
+zs="$(basename "$out").zsync"
+rm -f "$out" "$out.zsync" "$zs"
 # Checked again right before use: nothing may swap the cached runtime after the fetch.
 ok "$runtime" "$runtime_sha" || die "the AppImage runtime changed in the cache, not using it"
-ARCH=x86_64 "$tool" --appimage-extract-and-run --runtime-file "$runtime" "$app" "$out" >&2 || die "appimagetool failed"
+ARCH=x86_64 "$tool" --appimage-extract-and-run --runtime-file "$runtime" -u "$upd" "$app" "$out" >&2 || die "appimagetool failed"
+[ -s "$zs" ] || die "appimagetool wrote no $zs"
+mv "$zs" "$out.zsync"
+got=$("$out" --appimage-updateinformation 2>&1) || die "could not read the update information from $out"
+[ "$got" = "$upd" ] || die "wrong update information in $out: $got"
 echo "linux-appimage: $out"
+echo "linux-appimage: $out.zsync"

@@ -97,6 +97,8 @@ Ubuntu 26.04 with GNOME on Wayland. X11 also works.
 The AppImage is built on Ubuntu 22.04, so it runs on glibc 2.35 or newer (Ubuntu 22.04, Debian 12,
 Fedora 36 and later). It carries libxkbcommon and its X11 helper.
 
+AppImageUpdate and AppImage managers can update the file in place from the latest GitHub release.
+
 The AppImage needs FUSE (`fusermount3`), which most desktops have. Where FUSE is missing, start it
 with `--appimage-extract-and-run`.
 
