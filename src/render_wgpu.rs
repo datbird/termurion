@@ -58,7 +58,7 @@ impl QuadPipeline {
                 entry_point: Some("vs"),
                 compilation_options: Default::default(),
                 buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: 6 * 4,
+                    array_stride: QUAD_STRIDE,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &attributes,
                 })],
@@ -175,7 +175,7 @@ impl ImagePipeline {
                 entry_point: Some("vs"),
                 compilation_options: Default::default(),
                 buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: 4 * 4,
+                    array_stride: IMAGE_STRIDE,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &attributes,
                 })],
@@ -349,21 +349,21 @@ impl WgpuDraw {
     /// Draws `list` into `view`. `raw` is a non-sRGB view of the same target for the fade pass
     /// (see `Renderer::draw_with`).
     #[allow(clippy::too_many_arguments)]
-    pub fn run(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, list: &DrawList, up: Uploads, text: TextInputs<'_>, view: &wgpu::TextureView, raw: Option<&wgpu::TextureView>) -> Result<(), String> {
+    pub fn run(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, list: &DrawList, up: &Uploads, text: TextInputs<'_>, view: &wgpu::TextureView, raw: Option<&wgpu::TextureView>) -> Result<(), String> {
         // The buffer writes go first: a text prepare that fails must not leave the CPU's copy of a
         // buffer ahead of the GPU's (the belt sends them with the next frame).
         if self.quad_uniform != Some(list.quad_uniform) {
             self.uploads.write(device, &self.quads.uniform, 0, bytemuck::cast_slice(&list.quad_uniform));
             self.quad_uniform = Some(list.quad_uniform);
         }
-        for w in up.buffers {
+        for w in &up.buffers {
             match w {
-                BufferWrite::Grow { which, size } => self.bufs[which.index()].buf = GpuVec::alloc(device, size),
-                BufferWrite::Quads { which, offset, bytes } => self.uploads.write(device, &self.bufs[which.index()].buf, offset, &bytes),
+                BufferWrite::Grow { which, size } => self.bufs[which.index()].buf = GpuVec::alloc(device, *size),
+                BufferWrite::Quads { which, offset, bytes } => self.uploads.write(device, &self.bufs[which.index()].buf, *offset, bytes),
             }
         }
-        for op in up.atlas {
-            match op {}
+        for op in &up.atlas {
+            match *op {}
         }
 
         let (width, height) = list.size;

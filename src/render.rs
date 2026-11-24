@@ -5,14 +5,14 @@ use glyphon::{Attrs, Buffer, Color, CustomGlyph, Family, FontSystem, Metrics, Sh
 
 use glyphon::cosmic_text::CacheKeyFlags;
 
-use crate::draw_list::{DrawList, GlyphDraws, ImageDraw, QuadBuf, RowDraw, RowDraws, Shadow, Uploads};
+use crate::draw_list::{Bounds, DrawList, ImageDraw, QuadBuf, RowDraw, Shadow, Uploads};
 use crate::fonts;
 use crate::render_wgpu::{TextInputs, WgpuDraw};
 use crate::scene::{Frame, Quad, Span, Spans, TextRow};
 
 /// Two triangles per rectangle: position and color per vertex.
-fn quad_vertices(quads: &[Quad]) -> Vec<f32> {
-    let mut v = Vec::with_capacity(quads.len() * 36);
+fn quad_vertices<'q>(quads: impl IntoIterator<Item = &'q Quad>, v: &mut Vec<f32>) {
+    v.clear();
     for q in quads {
         let (x0, y0, x1, y1) = (q.rect.x, q.rect.y, q.rect.x + q.rect.w, q.rect.y + q.rect.h);
         for (x, y) in [(x0, y0), (x1, y0), (x0, y1), (x0, y1), (x1, y0), (x1, y1)] {
@@ -20,12 +20,11 @@ fn quad_vertices(quads: &[Quad]) -> Vec<f32> {
             v.extend_from_slice(&q.color);
         }
     }
-    v
 }
 
 /// Two triangles per picture: position and uv per vertex.
-fn image_vertices(images: &[crate::scene::ImageQuad]) -> Vec<f32> {
-    let mut v = Vec::with_capacity(images.len() * 24);
+fn image_vertices(images: &[crate::scene::ImageQuad], v: &mut Vec<f32>) {
+    v.clear();
     for q in images {
         let (x0, y0, x1, y1) = (q.rect.x, q.rect.y, q.rect.x + q.rect.w, q.rect.y + q.rect.h);
         let [u0, v0, u1, v1] = q.uv;
@@ -33,7 +32,6 @@ fn image_vertices(images: &[crate::scene::ImageQuad]) -> Vec<f32> {
             v.extend_from_slice(&[x, y, u, w]);
         }
     }
-    v
 }
 
 /// What drawing on a `cpu_only` renderer returns.
@@ -326,6 +324,12 @@ pub struct Renderer {
     gpu: Option<GpuHalf>,
     /// What each persistent vertex buffer holds, in `QuadBuf` order.
     shadows: [Shadow; 6],
+    /// This frame's vertex lists, in `QuadBuf` order; kept so a frame does not allocate them.
+    verts: [Vec<f32>; 6],
+    /// The last drawn list and uploads, reused by the next `prepare`.
+    spare: Option<(DrawList, Uploads)>,
+    /// The box glyph groups' clips (`glyph_groups`).
+    clips: Vec<crate::layout::Rect>,
     font_system: FontSystem,
     swash: SwashCache,
     /// Each glyph's ink placement (left, top, width, height) from the swash image, keyed by the
@@ -427,6 +431,9 @@ impl Renderer {
         let mut r = Renderer {
             gpu: None,
             shadows: QuadBuf::ALL.map(Shadow::new),
+            verts: Default::default(),
+            spare: None,
+            clips: Vec::new(),
             font_system,
             swash: SwashCache::new(),
             ink_cache: std::collections::HashMap::new(),
@@ -1325,9 +1332,9 @@ impl Renderer {
     /// `frame.underlines` cut around the ink of the glyphs in their row (`SolidUnderlines` off). Only
     /// rows that carry a stroke are measured, and each glyph's ink placement is looked up once and
     /// kept in `ink_cache`, so a steady screen costs a hash lookup per glyph, not a rasterization.
-    fn gapped_underlines(&mut self, frame: &Frame, rows: &[TextRow]) -> Vec<Quad> {
+    fn gapped_underlines<'f>(&mut self, frame: &'f Frame, rows: &[TextRow]) -> std::borrow::Cow<'f, [Quad]> {
         if !frame.gap_underlines || frame.underlines.is_empty() {
-            return frame.underlines.clone();
+            return std::borrow::Cow::Borrowed(&frame.underlines);
         }
         if self.ink_cache.len() > INK_CACHE_MAX {
             self.ink_cache.clear();
@@ -1362,7 +1369,7 @@ impl Renderer {
             }
             crate::underline::merge_band(&mut bands, crate::underline::Band { top, bottom, left, right, inks });
         }
-        crate::underline::cut_quads_around(&frame.underlines, &bands, 1.0)
+        std::borrow::Cow::Owned(crate::underline::cut_quads_around(&frame.underlines, &bands, 1.0))
     }
 
     /// The second copies of bold terminal text whose face has no bold weight (iTerm2's `fakeBold`
@@ -1448,8 +1455,10 @@ impl Renderer {
     /// The frame's box and block glyphs as glyphon custom glyphs, grouped by clip rectangle. Each
     /// cell is snapped to whole pixels on both edges (`round(x)` to `round(x + w)`), so neighbors
     /// meet exactly at a fractional cell width; a cell of no size, or too big, is skipped.
-    fn glyph_groups(&mut self, glyphs: &[crate::scene::CellGlyph]) -> Vec<(crate::layout::Rect, Vec<CustomGlyph>)> {
-        let mut groups: Vec<(crate::layout::Rect, Vec<CustomGlyph>)> = Vec::new();
+    fn glyph_groups(&mut self, glyphs: &[crate::scene::CellGlyph], groups: &mut Vec<(Bounds, Vec<CustomGlyph>)>) {
+        // Last frame's groups keep their glyph lists' storage.
+        let mut n = 0;
+        self.clips.clear();
         for g in glyphs {
             let (x0, x1) = (g.rect.x.round(), (g.rect.x + g.rect.w).round());
             let (y0, y1) = (g.rect.y.round(), (g.rect.y + g.rect.h).round());
@@ -1459,12 +1468,25 @@ impl Renderer {
             }
             let Some(id) = self.custom.id(g.c, self.scale) else { continue };
             let glyph = CustomGlyph { id, left: x0, top: y0, width: w, height: h, color: Some(Color::rgb(g.color.r, g.color.g, g.color.b)), snap_to_physical_pixel: true, metadata: 0 };
-            match groups.iter_mut().rev().find(|(clip, _)| *clip == g.clip) {
-                Some((_, list)) => list.push(glyph),
-                None => groups.push((g.clip, vec![glyph])),
+            // Grouped by the clip itself, not its rounded bounds.
+            match self.clips.iter().rposition(|clip| *clip == g.clip) {
+                Some(at) => groups[at].1.push(glyph),
+                None => {
+                    let c = g.clip;
+                    let bounds = [c.x.round() as i32, c.y.round() as i32, (c.x + c.w).round() as i32, (c.y + c.h).round() as i32];
+                    if n < groups.len() {
+                        groups[n].0 = bounds;
+                        groups[n].1.clear();
+                        groups[n].1.push(glyph);
+                    } else {
+                        groups.push((bounds, vec![glyph]));
+                    }
+                    self.clips.push(c);
+                    n += 1;
+                }
             }
         }
-        groups
+        groups.truncate(n);
     }
 
     pub fn draw(&mut self, frame: &Frame, view: &wgpu::TextureView, width: u32, height: u32) -> Result<(), String> {
@@ -1481,12 +1503,21 @@ impl Renderer {
         let (list, up) = self.prepare(frame, width, height);
         let g = self.gpu.as_mut().expect("checked above");
         let text = TextInputs { font_system: &mut self.font_system, swash: &mut self.swash, buffers: &self.buffers, blank: &self.blank, custom: &self.custom };
-        g.draw.run(&g.device, &g.queue, &list, up, text, view, raw)
+        let drawn = g.draw.run(&g.device, &g.queue, &list, &up, text, view, raw);
+        self.recycle(list, up);
+        drawn
+    }
+
+    /// Hands a drawn frame's list and uploads back, so the next `prepare` reuses their storage.
+    pub(crate) fn recycle(&mut self, list: DrawList, up: Uploads) {
+        self.spare = Some((list, up));
     }
 
     /// The CPU half of a draw: shapes the rows, builds the vertex lists and works out which bytes
-    /// of the persistent buffers change. No GPU is touched.
-    pub fn prepare(&mut self, frame: &Frame, width: u32, height: u32) -> (DrawList, Uploads) {
+    /// of the persistent buffers change. No GPU is touched. It already counts the returned
+    /// `Uploads` as on the GPU: they must reach the backend before the next `prepare`, or the
+    /// persistent buffers fall behind for good.
+    pub(crate) fn prepare(&mut self, frame: &Frame, width: u32, height: u32) -> (DrawList, Uploads) {
         let (_, ch) = self.cell;
         let metrics = Metrics::new(self.font_px, ch);
         let mixed = frame.rows.iter().any(|r| r.spans.windows(2).any(|w| w[0].ligatures != w[1].ligatures));
@@ -1644,52 +1675,45 @@ impl Renderer {
             self.font_system.shape_run_cache.trim(SHAPE_KEEP_FRAMES);
         }
 
+        let (mut list, mut up) = self.spare.take().unwrap_or_default();
+        up.reset();
         let bounds = |row: &TextRow| [row.clip.x as i32, row.clip.y as i32, (row.clip.x + row.clip.w) as i32, (row.clip.y + row.clip.h) as i32];
-        let rows_drawn = self.buffers.iter().zip(all_rows.iter().copied()).enumerate().map(|(slot, ((.., serial), row))| RowDraw { slot, serial: *serial, left: row.x, top: row.y, bounds: bounds(row) }).collect();
-        let glyphs = self
-            .glyph_groups(&frame.glyphs)
-            .into_iter()
-            .map(|(clip, glyphs)| ([clip.x.round() as i32, clip.y.round() as i32, (clip.x + clip.w).round() as i32, (clip.y + clip.h).round() as i32], glyphs))
-            .collect();
+        list.rows.kept = self.row_instances;
+        list.rows.rows.clear();
+        list.rows.rows.extend(self.buffers.iter().zip(all_rows.iter().copied()).enumerate().map(|(slot, ((.., serial), row))| RowDraw { slot, serial: *serial, left: row.x, top: row.y, bounds: bounds(row) }));
+        self.glyph_groups(&frame.glyphs, &mut list.glyphs.groups);
 
-        let mut up = Uploads::default();
-        let under = quad_vertices(&frame.quads);
         // Underline strokes lie under the overlay (the dimming, the cursor extras); with gaps on they
         // break around the ink of the glyphs in their row, strikethrough stays whole.
         let underlines = self.gapped_underlines(frame, rows);
-        let over = quad_vertices(&underlines.iter().chain(&frame.strikes).chain(&frame.scrollbars).chain(&frame.overlay).copied().collect::<Vec<_>>());
-        let pops = quad_vertices(&frame.popups);
-        let picture = image_vertices(&frame.images);
-        let backdrop = image_vertices(&frame.backgrounds);
         let fade = (frame.fade < 1.0).then(|| frame.fade.clamp(0.0, 1.0));
-        let cover = fade.map(|_| quad_vertices(&[Quad { rect: crate::layout::Rect { x: 0.0, y: 0.0, w: width as f32, h: height as f32 }, color: [0.0; 4] }]));
-        for (which, v) in [(QuadBuf::Under, &under), (QuadBuf::Over, &over), (QuadBuf::Pops, &pops), (QuadBuf::Picture, &picture), (QuadBuf::Backdrop, &backdrop)] {
-            self.shadows[which.index()].write(bytemuck::cast_slice(v), &mut up.buffers);
-        }
-        if let Some(cover) = &cover {
-            self.shadows[QuadBuf::Cover.index()].write(bytemuck::cast_slice(cover), &mut up.buffers);
+        let cover = Quad { rect: crate::layout::Rect { x: 0.0, y: 0.0, w: width as f32, h: height as f32 }, color: [0.0; 4] };
+        let [under, over, pops, picture, backdrop, covers] = &mut self.verts;
+        quad_vertices(&frame.quads, under);
+        quad_vertices(underlines.iter().chain(&frame.strikes).chain(&frame.scrollbars).chain(&frame.overlay), over);
+        quad_vertices(&frame.popups, pops);
+        image_vertices(&frame.images, picture);
+        image_vertices(&frame.backgrounds, backdrop);
+        quad_vertices(fade.map(|_| &cover), covers);
+        for which in QuadBuf::ALL {
+            // An empty list (the cover with no fade) writes nothing.
+            self.shadows[which.index()].write(bytemuck::cast_slice(&self.verts[which.index()]), &mut up);
         }
         // Six vertices of 6 floats per quad.
         let verts = |v: &[f32]| 0..(v.len() / 6) as u32;
-        let images = |list: &[crate::scene::ImageQuad]| {
-            list.iter()
-                .enumerate()
-                .map(|(i, q)| ImageDraw { key: q.key, repeat: q.repeat, size: q.size, pixels: q.pixels.clone(), vertices: (i * 6) as u32..(i * 6 + 6) as u32 })
-                .collect()
+        let images = |out: &mut Vec<ImageDraw>, list: &[crate::scene::ImageQuad]| {
+            out.clear();
+            out.extend(list.iter().enumerate().map(|(i, q)| ImageDraw { key: q.key, repeat: q.repeat, size: q.size, pixels: q.pixels.clone(), vertices: (i * 6) as u32..(i * 6 + 6) as u32 }));
         };
-        let list = DrawList {
-            clear: frame.clear,
-            size: (width, height),
-            quad_uniform: [width as f32, height as f32, 0.0, 0.0],
-            backdrop: images(&frame.backgrounds),
-            under: verts(&under),
-            picture: images(&frame.images),
-            pops: verts(&pops),
-            rows: RowDraws { kept: self.row_instances, rows: rows_drawn },
-            glyphs: GlyphDraws { groups: glyphs },
-            over: verts(&over),
-            fade,
-        };
+        images(&mut list.backdrop, &frame.backgrounds);
+        images(&mut list.picture, &frame.images);
+        list.clear = frame.clear;
+        list.size = (width, height);
+        list.quad_uniform = [width as f32, height as f32, 0.0, 0.0];
+        list.under = verts(&self.verts[QuadBuf::Under.index()]);
+        list.pops = verts(&self.verts[QuadBuf::Pops.index()]);
+        list.over = verts(&self.verts[QuadBuf::Over.index()]);
+        list.fade = fade;
         (list, up)
     }
 }

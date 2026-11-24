@@ -569,3 +569,70 @@ fn prepare_is_pure_cpu() {
     }
     assert!(r.draw_offscreen(&Frame::default(), 8, 8).is_err(), "a renderer with no device drew");
 }
+
+/// The bytes one quad's six vertices upload: position, then color.
+fn quad_bytes(q: &crate::scene::Quad) -> Vec<u8> {
+    let (x0, y0, x1, y1) = (q.rect.x, q.rect.y, q.rect.x + q.rect.w, q.rect.y + q.rect.h);
+    let floats: Vec<f32> = [(x0, y0), (x1, y0), (x0, y1), (x0, y1), (x1, y0), (x1, y1)].iter().flat_map(|&(x, y)| [x, y, q.color[0], q.color[1], q.color[2], q.color[3]]).collect();
+    bytemuck::cast_slice(&floats).to_vec()
+}
+
+fn quad_writes(up: &crate::draw_list::Uploads) -> Vec<(crate::draw_list::QuadBuf, u64, Vec<u8>)> {
+    up.buffers
+        .iter()
+        .map(|w| match w {
+            crate::draw_list::BufferWrite::Quads { which, offset, bytes } => (*which, *offset, bytes.clone()),
+            other => panic!("unexpected {other:?}"),
+        })
+        .collect()
+}
+
+/// What `prepare` sends up for a small frame: every byte of a new list, nothing for the same
+/// frame again, only the changed list after a change, and the cover while fading.
+#[test]
+fn prepare_writes_exactly_the_changed_bytes() {
+    use crate::draw_list::QuadBuf;
+    let mut r = Renderer::cpu_only(FACE, PX);
+    let mut frame = quad_frame(2, [1.0, 0.0, 0.0, 1.0]);
+    frame.popups = vec![quad(40.0, [0.0, 0.0, 1.0, 1.0])];
+    let both: Vec<u8> = frame.quads.iter().flat_map(quad_bytes).collect();
+    let (list, up) = r.prepare(&frame, 64, 16);
+    assert_eq!(quad_writes(&up), vec![(QuadBuf::Under, 0, both), (QuadBuf::Pops, 0, quad_bytes(&frame.popups[0]))]);
+    assert_eq!((list.under.clone(), list.pops.clone(), list.over.clone(), list.fade), (0..12, 0..6, 0..0, None));
+    r.recycle(list, up);
+    let (list, up) = r.prepare(&frame, 64, 16);
+    assert!(up.buffers.is_empty(), "the same frame wrote {:?}", up.buffers);
+    r.recycle(list, up);
+    // The first quad's color: the one 4 KB chunk holding the list goes up again, whole.
+    frame.quads[0].color = [0.0, 1.0, 0.0, 1.0];
+    frame.fade = 0.5;
+    let (list, up) = r.prepare(&frame, 64, 16);
+    let cover = crate::scene::Quad { rect: crate::layout::Rect { x: 0.0, y: 0.0, w: 64.0, h: 16.0 }, color: [0.0; 4] };
+    assert_eq!(quad_writes(&up), vec![(QuadBuf::Under, 0, frame.quads.iter().flat_map(quad_bytes).collect()), (QuadBuf::Cover, 0, quad_bytes(&cover))]);
+    assert_eq!(list.fade, Some(0.5));
+}
+
+/// A steady frame reuses the last frame's lists: the rows, glyph groups, pictures and writes
+/// keep their storage.
+#[test]
+fn a_steady_frame_reuses_the_list_storage() {
+    let mut r = Renderer::cpu_only(FACE, PX);
+    let size = grid_size(&r, 40.0, 6.0);
+    let mut s = crate::screen::Screen::new(40, 6);
+    s.feed("\u{250c}\u{2500}\u{2510} text\r\n\u{2514}\u{2500}\u{2518} more".as_bytes());
+    let mut c = screen_case("boxes", &r, &s, size, true);
+    c.frame.images = vec![crate::scene::ImageQuad { rect: crate::layout::Rect { x: 0.0, y: 0.0, w: 4.0, h: 4.0 }, uv: [0.0, 0.0, 1.0, 1.0], key: (1, 0), pixels: std::sync::Arc::new(vec![0; 16]), size: (2, 2), repeat: false }];
+    let ptrs = |list: &crate::draw_list::DrawList, up: &crate::draw_list::Uploads| {
+        (list.rows.rows.as_ptr(), list.glyphs.groups.as_ptr(), list.glyphs.groups[0].1.as_ptr(), list.picture.as_ptr(), up.buffers.as_ptr())
+    };
+    let (list, up) = r.prepare(&c.frame, size.0, size.1);
+    assert!(!list.rows.rows.is_empty() && !list.glyphs.groups.is_empty() && !up.buffers.is_empty());
+    let first = ptrs(&list, &up);
+    r.recycle(list, up);
+    // A changed quad list so the writes list is used again too.
+    c.frame.quads.push(quad(2.0, [1.0, 1.0, 1.0, 1.0]));
+    let (list, up) = r.prepare(&c.frame, size.0, size.1);
+    assert!(!up.buffers.is_empty());
+    assert_eq!(ptrs(&list, &up), first, "a steady frame made new lists");
+}
+

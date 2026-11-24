@@ -44,6 +44,27 @@ pub enum AtlasOp {}
 pub struct Uploads {
     pub buffers: Vec<BufferWrite>,
     pub atlas: Vec<AtlasOp>,
+    /// Byte buffers of spent writes, kept so the next frame's writes do not allocate.
+    pool: Vec<Vec<u8>>,
+}
+
+impl Uploads {
+    /// Empties the lists for the next frame, keeping their storage.
+    pub fn reset(&mut self) {
+        for w in self.buffers.drain(..) {
+            if let BufferWrite::Quads { bytes, .. } = w {
+                self.pool.push(bytes);
+            }
+        }
+        self.atlas.clear();
+    }
+
+    fn push_quads(&mut self, which: QuadBuf, offset: u64, from: &[u8]) {
+        let mut bytes = self.pool.pop().unwrap_or_default();
+        bytes.clear();
+        bytes.extend_from_slice(from);
+        self.buffers.push(BufferWrite::Quads { which, offset, bytes });
+    }
 }
 
 /// One picture: the texture it samples (kept by the backend by `key` and `repeat`) and its six
@@ -84,6 +105,24 @@ pub struct RowDraws {
 #[derive(Clone, Debug, Default)]
 pub struct GlyphDraws {
     pub groups: Vec<(Bounds, Vec<glyphon::CustomGlyph>)>,
+}
+
+impl Default for DrawList {
+    fn default() -> DrawList {
+        DrawList {
+            clear: [0.0; 4],
+            size: (0, 0),
+            quad_uniform: [0.0; 4],
+            backdrop: Vec::new(),
+            under: 0..0,
+            picture: Vec::new(),
+            pops: 0..0,
+            rows: RowDraws::default(),
+            glyphs: GlyphDraws::default(),
+            over: 0..0,
+            fade: None,
+        }
+    }
 }
 
 /// One frame, in draw order: clear, backdrop images, quads under the pictures, pictures, popup
@@ -133,7 +172,7 @@ impl Shadow {
     }
 
     /// Brings the buffer to `bytes`. An empty list writes nothing and keeps what the buffer holds.
-    pub fn write(&mut self, bytes: &[u8], out: &mut Vec<BufferWrite>) {
+    pub fn write(&mut self, bytes: &[u8], out: &mut Uploads) {
         if bytes.is_empty() {
             return;
         }
@@ -143,13 +182,13 @@ impl Shadow {
             while self.cap < len {
                 self.cap *= 2;
             }
-            out.push(BufferWrite::Grow { which, size: self.cap });
-            out.push(BufferWrite::Quads { which, offset: 0, bytes: bytes.to_vec() });
+            out.buffers.push(BufferWrite::Grow { which, size: self.cap });
+            out.push_quads(which, 0, bytes);
             self.written += len;
         } else {
             let mut run: Option<usize> = None;
             let mut flush = |from: usize, to: usize, written: &mut u64| {
-                out.push(BufferWrite::Quads { which, offset: from as u64, bytes: bytes[from..to].to_vec() });
+                out.push_quads(which, from as u64, &bytes[from..to]);
                 *written += (to - from) as u64;
             };
             for (i, chunk) in bytes.chunks(CHUNK).enumerate() {
@@ -182,8 +221,9 @@ mod tests {
         }
     }
 
-    fn offsets(out: &[BufferWrite]) -> Vec<(u64, usize)> {
-        out.iter()
+    fn offsets(out: &Uploads) -> Vec<(u64, usize)> {
+        out.buffers
+            .iter()
             .filter_map(|w| match w {
                 BufferWrite::Quads { offset, bytes, .. } => Some((*offset, bytes.len())),
                 BufferWrite::Grow { .. } => None,
@@ -194,14 +234,14 @@ mod tests {
     #[test]
     fn a_shadow_writes_only_changed_chunks() {
         let mut s = Shadow::new(QuadBuf::Under);
-        let mut out = Vec::new();
+        let mut out = Uploads::default();
         let mut bytes = vec![1u8; 3 * CHUNK + 10];
         s.write(&bytes, &mut out);
-        assert_eq!(out.first(), Some(&BufferWrite::Grow { which: QuadBuf::Under, size: 4 * CHUNK as u64 }));
+        assert_eq!(out.buffers.first(), Some(&BufferWrite::Grow { which: QuadBuf::Under, size: 4 * CHUNK as u64 }));
         assert_eq!(offsets(&out), [(0, bytes.len())]);
-        out.clear();
+        out.reset();
         s.write(&bytes, &mut out);
-        assert!(out.is_empty(), "the same bytes wrote {out:?}");
+        assert!(out.buffers.is_empty(), "the same bytes wrote {out:?}");
         // Chunks 0 and 2 change: two writes; chunk 3 (the short tail) is the same.
         bytes[5] = 2;
         bytes[2 * CHUNK + 1] = 2;
@@ -213,12 +253,12 @@ mod tests {
     #[test]
     fn a_shadow_keeps_its_bytes_over_an_empty_frame() {
         let mut s = Shadow::new(QuadBuf::Over);
-        let mut out = Vec::new();
+        let mut out = Uploads::default();
         s.write(&[7; 100], &mut out);
-        out.clear();
+        out.reset();
         s.write(&[], &mut out);
         s.write(&[7; 100], &mut out);
-        assert!(out.is_empty());
+        assert!(out.buffers.is_empty());
         s.forget();
         s.write(&[7; 100], &mut out);
         assert_eq!(offsets(&out), [(0, 100)]);
@@ -227,13 +267,26 @@ mod tests {
     #[test]
     fn a_longer_list_writes_its_new_tail() {
         let mut s = Shadow::new(QuadBuf::Pops);
-        let mut out = Vec::new();
+        let mut out = Uploads::default();
         s.write(&[1; 100], &mut out);
-        out.clear();
+        out.reset();
         let mut more = vec![1u8; 200];
         more[150] = 3;
         s.write(&more, &mut out);
         // The first chunk is one chunk of a different length: written whole.
         assert_eq!(offsets(&out), [(0, 200)]);
+    }
+
+    #[test]
+    fn uploads_reuse_their_byte_buffers() {
+        let mut s = Shadow::new(QuadBuf::Under);
+        let mut out = Uploads::default();
+        s.write(&[1; 100], &mut out);
+        let BufferWrite::Quads { bytes, .. } = &out.buffers[0] else { panic!("{out:?}") };
+        let first = bytes.as_ptr();
+        out.reset();
+        s.write(&[2; 100], &mut out);
+        let BufferWrite::Quads { bytes, .. } = &out.buffers[0] else { panic!("{out:?}") };
+        assert_eq!((bytes.as_ptr(), bytes.as_slice()), (first, &[2u8; 100][..]), "the second frame's write took a new buffer");
     }
 }
