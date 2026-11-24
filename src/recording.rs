@@ -111,7 +111,7 @@ pub const DRAWING_KEYS: &[&str] = &[
     "Faint Text Alpha",
     "Cursor Boost",
     "HDR Cursor",
-    "HDR Cursor Brightness",
+    // iTerm2 also allows "HDR Cursor Brightness"; Termurion has no such key yet (the parity plan adds it).
     "Use Active Pane Border",
     "Normal Font",
     "Non Ascii Font",
@@ -164,6 +164,24 @@ pub const DRAWING_KEYS: &[&str] = &[
     "Columns",
     "Scrollback Lines",
     "Unlimited Scrollback",
+    // Termurion's own, drawing only. Badge Text is left out (it is an expression).
+    "Badge Font",
+    "Badge Top Margin",
+    "Badge Right Margin",
+    "Badge Max Width",
+    "Badge Max Height",
+    // The effect switches are plain bools. Render Plugins is a list of names that must match a
+    // plugin already installed (built in or in the user's folder): the file can carry no shader
+    // source or path (`sanitized_profile` accepts only a list of strings).
+    "Render Plugins",
+    "Effects Claude Enter",
+    "Effects Claude Done",
+    "Effects Claude Line Color",
+    "Effects Claude Live Lines",
+    "Effects Claude Prompt",
+    "Effects Signals",
+    "Effects Jumps",
+    "Effects Idle",
 ];
 
 /// What an imported recording's profile may carry (`iTermRecordingProfileSanitizer`): only the
@@ -177,7 +195,11 @@ pub fn sanitized_profile(untrusted: &Map<String, Value>) -> Vec<(String, toml::V
         if !(crate::bindings::is_color_key(key) || DRAWING_KEYS.contains(&base)) {
             continue;
         }
-        if let Some(v) = crate::prompted::valid(base, json) {
+        if base == crate::render_fx::PROFILE_KEY {
+            if let Some(names) = json.as_array().and_then(|a| a.iter().map(|n| n.as_str().map(|n| toml::Value::String(n.into()))).collect::<Option<Vec<_>>>()) {
+                out.push((key.clone(), toml::Value::Array(names)));
+            }
+        } else if let Some(v) = crate::prompted::valid(base, json) {
             out.push((key.clone(), v));
         }
     }
@@ -454,7 +476,6 @@ mod tests {
             "Working Directory": "/",
             "Log Directory": "/tmp",
             "Background Image Location": "/etc/passwd",
-            "Render Plugins": ["x"],
             "Some Future Key": "x",
             "Normal Font": "Menlo-Regular 14",
             "Foreground Color": red(),
@@ -475,6 +496,36 @@ mod tests {
         assert_eq!(got["Normal Font"], toml::Value::String("Menlo-Regular 14".into()));
         assert_eq!(got["Minimum Contrast"], toml::Value::Float(0.5));
         assert_eq!(got["Foreground Color"].get("r"), Some(&toml::Value::Float(1.0)));
+    }
+
+    #[test]
+    fn import_keeps_termurions_own_drawing_keys() {
+        let got: std::collections::HashMap<_, _> = sanitized_profile(&obj(json!({
+            "Badge Font": "Menlo-Bold 20",
+            "Badge Top Margin": 10.0,
+            "Badge Right Margin": 12.0,
+            "Badge Max Width": 0.5,
+            "Badge Max Height": 0.2,
+            "Badge Text": "run something",
+            "Badge Color": red(),
+            "Effects Idle": false,
+            "Effects Claude Done": true,
+            "Render Plugins": ["cursor_blaze", "tft"],
+        })))
+        .into_iter()
+        .collect();
+        let mut names: Vec<_> = got.keys().map(String::as_str).collect();
+        names.sort();
+        assert_eq!(names, ["Badge Color", "Badge Font", "Badge Max Height", "Badge Max Width", "Badge Right Margin", "Badge Top Margin", "Effects Claude Done", "Effects Idle", "Render Plugins"]);
+        assert_eq!(got["Render Plugins"], toml::Value::Array(vec!["cursor_blaze".into(), "tft".into()]));
+    }
+
+    #[test]
+    fn import_render_plugins_are_names_only() {
+        // Only a list of names (which must match an installed plugin): never a shader, a table or a number.
+        for bad in [json!("x"), json!(1), json!([1]), json!([{"shader": "void main(){}"}]), json!([["a"]]), json!(["a", 2])] {
+            assert!(keys(&obj(json!({ "Render Plugins": bad }))).is_empty(), "{bad}");
+        }
     }
 
     #[test]
@@ -507,7 +558,7 @@ mod tests {
             assert!(!keys(&one(k)).iter().any(|g| g == k), "{k} must not import");
         }
         for k in DRAWING_KEYS {
-            assert!(crate::schema::find(k).is_some() || *k == "HDR Cursor Brightness", "{k} is not a profile key");
+            assert!(crate::schema::find(k).is_some(), "{k} is not a profile key");
         }
     }
 }
