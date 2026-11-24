@@ -5568,16 +5568,29 @@ pub(crate) mod tests {
         (device, queue, frame, u)
     }
 
+    /// The with-views leg needs a second view of a texture, which GL cannot make; there only the
+    /// plain-texture leg (what the app runs on GL) exists.
+    fn view_legs() -> Vec<bool> {
+        if views_supported() { vec![true, false] } else { vec![false] }
+    }
+
+    /// A Lightning chain for a device with or without view formats.
+    fn lightning_chain(device: &wgpu::Device, format: wgpu::TextureFormat, views: bool) -> crate::render_fx_gpu::Chain {
+        let c = crate::render_fx_gpu::Chain::new(device, format, lightning().compile().unwrap(), false).unwrap();
+        if views { c } else { c.without_view_formats(device) }
+    }
+
     fn lightning() -> crate::render_fx::Plugin {
         crate::render_fx::discover(None).0.into_iter().find(|p| p.id.contains("lightning")).expect("the Lightning plugin")
     }
 
     #[test]
     fn chain_keeps_its_bind_groups_between_frames() {
+        serial_on_gl();
         let (device, queue, frame, u) = fx_bench();
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
         let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
-        for views in [true, false] {
+        for views in view_legs() {
             r.set_view_formats(views);
             let mut chain = crate::render_fx_gpu::Chain::new(&device, format, lightning().compile().unwrap(), false).unwrap();
             if !views {
@@ -5597,13 +5610,16 @@ pub(crate) mod tests {
 
     #[test]
     fn unchanged_uniforms_are_not_written() {
+        serial_on_gl();
         let (device, queue, frame, mut u) = fx_bench();
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
         let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        let views = views_supported();
+        r.set_view_formats(views);
         let shaders = lightning().compile().unwrap();
         let with_layout = shaders.iter().filter(|s| crate::render_fx::uniform_layout(&s.module).is_some()).count() as u64;
         assert!(with_layout > 0);
-        let mut chain = crate::render_fx_gpu::Chain::new(&device, format, shaders, false).unwrap();
+        let mut chain = lightning_chain(&device, format, views);
         r.draw_offscreen_fx(&frame, Some((&mut chain, &u)), 96, 48).unwrap();
         assert_eq!(chain.uniform_writes(), with_layout, "the first frame writes every pass");
         r.draw_offscreen_fx(&frame, Some((&mut chain, &u)), 96, 48).unwrap();
@@ -5618,9 +5634,13 @@ pub(crate) mod tests {
     /// or a picture a screenshot drew into the frame texture says no.
     #[test]
     fn a_still_effect_frame_is_not_drawn() {
+        serial_on_gl();
         let (device, queue, frame, mut u) = fx_bench();
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
         let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        let views = views_supported();
+        r.set_view_formats(views);
+        let twin = [format.remove_srgb_suffix()];
         let window = device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d { width: 96, height: 48, depth_or_array_layers: 1 },
@@ -5629,10 +5649,10 @@ pub(crate) mod tests {
             dimension: wgpu::TextureDimension::D2,
             format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[format.remove_srgb_suffix()],
+            view_formats: if views { &twin } else { &[] },
         });
-        let out = window.create_view(&wgpu::TextureViewDescriptor { format: Some(format.remove_srgb_suffix()), ..Default::default() });
-        let mut chain = crate::render_fx_gpu::Chain::new(&device, format, lightning().compile().unwrap(), false).unwrap();
+        let out = if views { window.create_view(&wgpu::TextureViewDescriptor { format: Some(format.remove_srgb_suffix()), ..Default::default() }) } else { window.create_view(&Default::default()) };
+        let mut chain = lightning_chain(&device, format, views);
         assert!(!chain.skip_if_still(&u, (96, 48), true), "a chain that never ran has drawn nothing");
         r.draw_fx_for(&frame, &mut chain, &u, &out, 96, 48, false, None).unwrap();
         assert!(chain.skip_if_still(&u, (96, 48), true), "the same bytes show the same window");
@@ -5654,10 +5674,11 @@ pub(crate) mod tests {
     /// give the bytes a fresh chain gives each frame.
     #[test]
     fn kept_bind_groups_draw_the_same_pixels() {
+        serial_on_gl();
         let (device, queue, frame, u) = fx_bench();
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
         let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
-        for views in [true, false] {
+        for views in view_legs() {
             r.set_view_formats(views);
             let make = || {
                 let c = crate::render_fx_gpu::Chain::new(&device, format, lightning().compile().unwrap(), false).unwrap();
