@@ -181,11 +181,28 @@ fn opened_path(_: &std::fs::File) -> Option<std::path::PathBuf> {
     None
 }
 
+/// What an opened handle's own path must satisfy.
+enum Rule<'a> {
+    /// Not in a system folder.
+    System,
+    /// Inside this (canonical) temp folder, named with kitty's marker.
+    Temporary(&'a std::path::Path),
+}
+
+/// Whether the path an open file reports passes `rule`. None (the system cannot say) fails.
+fn handle_allowed(opened: Option<&std::path::Path>, rule: &Rule) -> bool {
+    let Some(path) = opened else { return false };
+    match rule {
+        Rule::System => !denied_path(path),
+        Rule::Temporary(tmp) => path.starts_with(tmp) && path.file_name().is_some_and(|n| n.to_string_lossy().contains("tty-graphics-protocol")),
+    }
+}
+
 /// Opens a judged file once and reads that handle: it must be a regular file no larger than
 /// `MAX_BYTES` (asked of the handle, not the name), the read stops at `MAX_BYTES`, and for a file
-/// that is not temporary the handle's own path is checked again, so a folder swapped for a link
+/// the handle's own path is checked again (a temporary file must still be in the temp folder, named with the marker; a handle that cannot name its path is refused), so a folder swapped for a link
 /// after the name was checked still cannot reach a system folder. Never waits on a pipe.
-fn read_open(path: &crate::localfs::LocalPath, check_path: bool) -> Option<Vec<u8>> {
+fn read_open(path: &crate::localfs::LocalPath, rule: &Rule) -> Option<Vec<u8>> {
     let file = {
         #[cfg(unix)]
         {
@@ -204,7 +221,7 @@ fn read_open(path: &crate::localfs::LocalPath, check_path: bool) -> Option<Vec<u
     if !meta.is_file || meta.len > MAX_BYTES {
         return None;
     }
-    if check_path && opened_path(&file).is_some_and(|p| denied_path(&p)) {
+    if !handle_allowed(opened_path(&file).as_deref(), rule) {
         return None;
     }
     read_capped(file, MAX_BYTES)
@@ -228,7 +245,7 @@ fn read_file(raw: &[u8], temporary: bool) -> Option<Vec<u8>> {
         if !real.path().starts_with(tmp.path()) || !named {
             return None;
         }
-        let bytes = read_open(&real, false);
+        let bytes = read_open(&real, &Rule::Temporary(tmp.path()));
         let _ = crate::localfs::remove_file(&real);
         return bytes;
     }
@@ -237,7 +254,7 @@ fn read_file(raw: &[u8], temporary: bool) -> Option<Vec<u8>> {
     if denied_path(real.path()) {
         return None;
     }
-    read_open(&real, true)
+    read_open(&real, &Rule::System)
 }
 
 /// The picture a transmit or query carries: width, height, RGBA.
@@ -653,6 +670,23 @@ mod tests {
         let f = dir.join("pic.bin");
         std::fs::write(&f, [1, 2, 3, 4]).unwrap();
         assert!(read_file(f.to_string_lossy().as_bytes(), false).is_none());
+    }
+
+    #[test]
+    fn an_open_file_must_name_itself_and_pass() {
+        use std::path::PathBuf;
+        let p = |t: &str| Some(PathBuf::from(t));
+        let tmp = PathBuf::from("/tmp");
+        // A handle that cannot say where it is gets no benefit of the doubt.
+        assert!(!handle_allowed(None, &Rule::System));
+        assert!(!handle_allowed(None, &Rule::Temporary(&tmp)));
+        assert!(handle_allowed(p("/home/u/pic.png").as_deref(), &Rule::System));
+        #[cfg(unix)]
+        assert!(!handle_allowed(p("/etc/hosts").as_deref(), &Rule::System));
+        // A temporary file stays in the temp folder and keeps kitty's marker.
+        assert!(handle_allowed(p("/tmp/tty-graphics-protocol-1.png").as_deref(), &Rule::Temporary(&tmp)));
+        assert!(!handle_allowed(p("/tmp/pic.png").as_deref(), &Rule::Temporary(&tmp)));
+        assert!(!handle_allowed(p("/home/u/tty-graphics-protocol-1.png").as_deref(), &Rule::Temporary(&tmp)));
     }
 
     #[test]
