@@ -104,10 +104,13 @@ const DENIED_TREES: &[&[&str]] = &[
 /// Whether a t=f path, already resolved, lies in a system folder that is never read. Compares
 /// whole components, ignoring case and "." (a Mac's disk is case-blind), and reads /private/etc,
 /// /private/var and /private/tmp as /etc, /var and /tmp, which are links to them. Any .ssh folder
-/// is refused too. Windows keeps the judge's rules alone.
+/// is refused too. Windows has its own rules, below.
 #[cfg(unix)]
 fn denied_path(path: &std::path::Path) -> bool {
     use std::path::Component;
+    // Only for a path that is already resolved: this drops ".." instead of following it, so a caller
+    // that skipped the canonical path would be told "/tmp/../etc" is "/tmp/etc".
+    debug_assert!(!path.components().any(|c| c == Component::ParentDir), "denied_path wants a resolved path");
     let mut parts: Vec<String> = path.components().filter_map(|c| if let Component::Normal(n) = c { Some(n.to_string_lossy().to_lowercase()) } else { None }).collect();
     if parts.len() > 1 && parts[0] == "private" && matches!(parts[1].as_str(), "etc" | "var" | "tmp") {
         parts.remove(0);
@@ -619,6 +622,13 @@ mod tests {
         // .ssh anywhere under a home folder.
         assert!(denied_path(Path::new("/home/u/.ssh/id_ed25519")));
         assert!(denied_path(Path::new("/Users/u/.ssh")));
+    }
+
+    #[cfg(all(unix, debug_assertions))]
+    #[test]
+    #[should_panic(expected = "resolved")]
+    fn denied_path_wants_a_resolved_path() {
+        denied_path(std::path::Path::new("/tmp/../etc/hosts"));
     }
 
     #[cfg(unix)]
