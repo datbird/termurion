@@ -232,12 +232,12 @@ mod tests {
     fn wake_keeps_bindings_and_selection_deadlines() {
         let src = include_str!("mod.rs");
         let body = &src[src.find("let bindings_due = self.tick_bindings();").expect("the bindings tick runs in about_to_wait")..];
-        let wake = &body[body.find("let wake = [").unwrap()..];
-        let wake = &wake[..wake.find("].into_iter()").unwrap()];
+        let wake = &body[body.find("let other_dues = [").unwrap()..];
+        let wake = &wake[..wake.find("];").unwrap()];
         for due in ["bindings_due", "sel_scroll_due", "command_due", "cmdinfo_due", "sleep_due"] {
-            assert!(wake.split(", ").any(|d| d.trim_start_matches("let wake = [") == due), "{due} missing from the wake array");
+            assert!(wake.split(", ").any(|d| d.trim_start_matches("let other_dues = [") == due), "{due} missing from the wake array");
         }
-        assert!(body.find("let command_due = self.command_click_tick();").unwrap() < body.find("let wake = [").unwrap());
+        assert!(body.find("let command_due = self.command_click_tick();").unwrap() < body.find("let other_dues = [").unwrap());
     }
 
     /// A pane whose profile binds "Foreground Color" to "user.fg": an answer sets the session

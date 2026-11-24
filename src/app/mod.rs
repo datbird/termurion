@@ -1613,6 +1613,8 @@ pub struct App {
     full_pass_at: Instant,
     /// What the last full frame's upkeep was done for: the window, the settings generation and the size.
     fx_full: Option<(WindowId, u64, (u32, u32))>,
+    /// When the RedrawRequested arm decided whether its frame reuses the kept scene.
+    frame_at: Option<Instant>,
     /// The profiles the panes last picked from, as the FX Profiles page sees the store change.
     fx_seen: Vec<usize>,
     settings: Option<SettingsWindow>,
@@ -2609,7 +2611,7 @@ pub fn run() {
     let composer_worker = crate::composer_worker::Worker::new(notify.clone(), Arc::new(crate::composer_worker::RealFs));
     let ui_element_confirmed = globals.bool(crate::presence::UI_ELEMENT_KEY);
     let cockpit_view = cockpit_app::initial_view(&globals);
-    let (web_envs, web_events) = webhost_app::Envs::seeded(adblock_app::proxy_args_of(&globals), globals.bool("WebKitAdblockEnabled"));
+    let (web_envs, web_events) = webhost_app::Envs::seeded(adblock_app::proxy_args_of(&globals), globals.bool("WebKitAdblockEnabled"), notify.clone());
     let fx_profiles = crate::fx_store::Store::open(&crate::fx_store::user_dir());
     let mut app = App {
         host,
@@ -3054,6 +3056,7 @@ pub fn run() {
         other_wake: None,
         full_pass_at: Instant::now(),
         fx_full: None,
+        frame_at: None,
         fx_seen: Vec::new(),
         settings: None,
         save_due: None,
@@ -7628,7 +7631,7 @@ impl App {
             }
         }
         // Recorded first: a frame that finds no surface still ends the wait for one.
-        let now = Instant::now();
+        let now = self.frame_at.take().unwrap_or_else(Instant::now);
         let before = self.pacer.last();
         self.pacer.drew(now);
         self.note_frame(before, now);
@@ -7961,13 +7964,35 @@ fn worth_comparing(frame: &Frame) -> bool {
     frame.images.is_empty() && frame.backgrounds.is_empty()
 }
 
-/// A wake with nothing to do but the effect's next frame, and a full pass this old, at most.
+/// A wake nothing explains, or one that left a full pass undone, waits at most this long for one.
 const FULL_PASS_MAX: Duration = Duration::from_millis(100);
 
 /// The loop timer is the effect's own only when its frame is the earliest wake by itself.
 fn fx_wake_time(wake: Option<Instant>, fx_frame_due: Option<Instant>, other: Option<Instant>, gpu: Option<Instant>, cursor: Option<Instant>) -> Option<Instant> {
     let t = fx_frame_due?;
     (wake == Some(t) && [other, gpu, cursor].into_iter().flatten().all(|o| o > t)).then_some(t)
+}
+
+/// What the fast pass needs to know to run instead of the full one.
+#[derive(Clone, Copy)]
+struct FastPass {
+    /// The other wake the last full pass cached (None: no full pass has cached one).
+    cached: Option<Option<Instant>>,
+    now: Instant,
+    full_pass_at: Instant,
+    parse_owed: bool,
+    quitting: bool,
+    has_gpu: bool,
+    resident: bool,
+    /// The front-window state moved since the full pass saw it (an OS state polled there).
+    front_moved: bool,
+}
+
+impl FastPass {
+    fn allowed(&self) -> bool {
+        let Some(other) = self.cached else { return false };
+        self.has_gpu && !self.parse_owed && !self.quitting && !self.resident && !self.front_moved && self.now.saturating_duration_since(self.full_pass_at) < FULL_PASS_MAX && !other.is_some_and(|t| t <= self.now)
+    }
 }
 
 impl App {
@@ -7978,14 +8003,13 @@ impl App {
         if !self.fx_only.take() {
             return false;
         }
-        let now = Instant::now();
-        let Some(other) = self.other_wake else { return false };
-        if self.gpu.is_none() || self.parse_owed || self.quitting || now.saturating_duration_since(self.full_pass_at) >= FULL_PASS_MAX || other.is_some_and(|t| t <= now) {
-            return false;
-        }
+        let ok = FastPass { cached: self.other_wake, now: Instant::now(), full_pass_at: self.full_pass_at, parse_owed: self.parse_owed, quitting: self.quitting, has_gpu: self.gpu.is_some(), resident: self.resident, front_moved: hotkey_ui::termurion_in_front() != self.app_active };
+        let (Some(other), true) = (self.other_wake, ok.allowed()) else { return false };
         if let Some(w) = self.last_window {
             self.enter(w);
         }
+        // The keyboard layout is read from the OS, not announced.
+        self.locale_tick();
         let gpu_due = self.gpu_recovery_tick();
         let cursor_due = self.tick_cursor();
         let fx_frame_due = self.fx_frame_tick();
@@ -8273,13 +8297,19 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
-    /// Runs the cursor blink when the focused pane's profile asks for it.
     /// Tells the effect's own wake from every other: its frame timer, or the redraw it asked
-    /// for. Those need none of `about_to_wait`'s upkeep. Whatever else woke the loop marks
-    /// itself (`window_event`, `user_event`), so a wake nothing explains counts as other.
+    /// for. Those need none of `about_to_wait`'s upkeep. Whatever else woke the loop (a winit
+    /// event, a worker's notify, a web view's post) marks itself, and a wake nothing explains
+    /// counts as other.
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
-        let own_timer = matches!(cause, StartCause::ResumeTimeReached { requested_resume, .. } if self.fx_wake_at == Some(requested_resume));
-        let own_redraw = matches!(cause, StartCause::WaitCancelled { .. } | StartCause::Poll) && self.gpu.as_ref().is_some_and(|g| g.scene.only_fx_asked());
+        let own_timer = match cause {
+            StartCause::ResumeTimeReached { requested_resume, .. } => self.fx_wake_at == Some(requested_resume),
+            StartCause::WaitCancelled { requested_resume: Some(t), .. } => self.fx_wake_at == Some(t),
+            _ => false,
+        };
+        // The redraw the effect asked for; not with a web view around, whose callbacks run in
+        // this loop's own message pump and may wake it with no event.
+        let own_redraw = matches!(cause, StartCause::WaitCancelled { .. } | StartCause::Poll) && !self.web_envs.any() && self.gpu.as_ref().is_some_and(|g| g.scene.only_fx_asked());
         if own_timer || own_redraw {
             self.fx_only.fx_fired();
         } else {
@@ -8287,6 +8317,7 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
+    /// Runs the cursor blink when the focused pane's profile asks for it.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // The next paint is outside a drag: it only draws.
         self.waits += 1;
@@ -8552,6 +8583,7 @@ impl ApplicationHandler<UserEvent> for App {
         let hold_wake = update_app::hold_due(self.launched_at, Instant::now(), self.terminal_presented, self.scripts_alerts.iter().any(|a| update_app::launch_ask(&a.then)));
         let egui_due = crate::egui_host::delayed_repaints(Instant::now());
         let gpu_due = self.gpu_recovery_tick();
+        let layout_due = self.gpu.as_ref().and_then(|g| g.layout).map(|p| p.at + STALE_RESIZE);
         let fx_due = self.tick_fx_profiles();
         let fx_frame_due = self.fx_frame_tick();
         // Unread output: the next slice runs at once, not at the next event.
@@ -8561,12 +8593,10 @@ impl ApplicationHandler<UserEvent> for App {
                 return event_loop.set_control_flow(flow);
             }
         }
-        // The fast pass (`fx_wake_pass`) reruns these three itself: the cached wake leaves them out.
-        let (fx_frame_due_now, gpu_due_now, cursor_due_now) = (fx_frame_due, gpu_due, cursor_due);
-        let (fx_frame_due, gpu_due, cursor_due) = (None::<Instant>, None::<Instant>, None::<Instant>);
-        let wake = [fx_due, fx_frame_due, gpu_due, egui_due, tray_due, workgroup_due, jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, badge_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, panels_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, hold_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
-        let other_wake = wake;
-        let (fx_frame_due, gpu_due, cursor_due) = (fx_frame_due_now, gpu_due_now, cursor_due_now);
+        let other_dues = [fx_due, layout_due, egui_due, tray_due, workgroup_due, jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, badge_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, panels_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, hold_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, frame_due, flicker_due, progress_due, sleep_due];
+        // The fast pass (`fx_wake_pass`) reruns the effect frame, the GPU recovery and the cursor
+        // itself, so the cached wake leaves them out.
+        let other_wake = other_dues.into_iter().flatten().min();
         self.other_wake = Some(other_wake);
         let wake = [other_wake, fx_frame_due, gpu_due, cursor_due].into_iter().flatten().min();
         self.fx_wake_at = fx_wake_time(wake, fx_frame_due, other_wake, gpu_due, cursor_due);
@@ -8648,8 +8678,9 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        // Anything the window hears is a reason for the full upkeep; only the redraw is not.
-        if !matches!(event, WindowEvent::RedrawRequested) {
+        // Anything the window hears is a reason for the full upkeep. A redraw is not, unless it
+        // is another window's (a panel's own repaint request).
+        if !matches!(event, WindowEvent::RedrawRequested) || self.gpu.as_ref().is_none_or(|g| g.window.id() != id) {
             self.fx_only.other();
         }
         if self.quitting {
@@ -9003,7 +9034,10 @@ impl ApplicationHandler<UserEvent> for App {
                 // A frame that draws the kept scene again (only the effect asked) has nothing new
                 // to measure unless the settings or the window size moved since the last full one.
                 let size = self.gpu.as_ref().map_or((0, 0), |g| (g.config.width, g.config.height));
-                let reuse = self.gpu.as_ref().is_some_and(|g| g.scene.would_reuse(size, Instant::now())) && self.fx_full == Some((id, self.globals.generation(), size));
+                // The frame below decides reuse at this same time.
+                let frame_at = Instant::now();
+                self.frame_at = Some(frame_at);
+                let reuse = self.gpu.as_ref().is_some_and(|g| g.scene.would_reuse(size, frame_at)) && self.fx_full == Some((id, self.globals.generation(), size));
                 if !reuse {
                     // A built frame is not a wake that only moved the effect.
                     self.fx_only.other();
@@ -9022,6 +9056,7 @@ impl ApplicationHandler<UserEvent> for App {
                     self.fx_full = Some((id, self.globals.generation(), size));
                 }
                 let parsed = self.render_parsing();
+                self.frame_at = None;
                 // What follows the output parsed during the frame, before anything else.
                 if let Some(parsed) = parsed {
                     self.pump_tail(parsed, event_loop);

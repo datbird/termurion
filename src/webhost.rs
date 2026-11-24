@@ -1116,7 +1116,35 @@ impl Posted {
     }
 }
 
-pub type Sink = std::sync::mpsc::Sender<Posted>;
+/// What a view posts through: the queue the app drains, and the loop's wake. A web view's
+/// callbacks run in the loop's own message pump with no winit event, so every post wakes it
+/// (`untracked_queues_wake_the_loop`).
+#[derive(Clone)]
+pub struct Sink {
+    tx: std::sync::mpsc::Sender<Posted>,
+    wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+}
+
+impl Sink {
+    pub fn new(tx: std::sync::mpsc::Sender<Posted>, wake: std::sync::Arc<dyn Fn() + Send + Sync>) -> Sink {
+        Sink { tx, wake: Some(wake) }
+    }
+
+    pub fn send(&self, posted: Posted) -> Result<(), std::sync::mpsc::SendError<Posted>> {
+        self.tx.send(posted)?;
+        if let Some(wake) = &self.wake {
+            wake();
+        }
+        Ok(())
+    }
+}
+
+/// A sink that wakes nobody (tests that read the queue themselves).
+impl From<std::sync::mpsc::Sender<Posted>> for Sink {
+    fn from(tx: std::sync::mpsc::Sender<Posted>) -> Sink {
+        Sink { tx, wake: None }
+    }
+}
 
 // --- Caps on everything a page can post (preflight B5) ---
 

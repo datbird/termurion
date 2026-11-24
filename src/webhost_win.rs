@@ -658,8 +658,8 @@ fn rect_of(b: (i32, i32, i32, i32)) -> RECT {
 impl WebView {
     /// Starts creating a view in `parent_hwnd` (a winit window's HWND). Asynchronous: `Event::Created`
     /// or `Event::Failed` follows; calls made before then are kept and run when the view exists.
-    pub fn create(env: &Env, parent_hwnd: isize, id: ViewId, bounds: (i32, i32, i32, i32), setup: ViewSetup, sink: Sink) -> WebView {
-        let poster = Poster { view: id, tx: sink, gate: ViewGate::new(), last_log: Rc::new(RefCell::new(None)) };
+    pub fn create(env: &Env, parent_hwnd: isize, id: ViewId, bounds: (i32, i32, i32, i32), setup: ViewSetup, sink: impl Into<Sink>) -> WebView {
+        let poster = Poster { view: id, tx: sink.into(), gate: ViewGate::new(), last_log: Rc::new(RefCell::new(None)) };
         let inner = Rc::new(RefCell::new(Inner {
             id,
             poster: poster.clone(),

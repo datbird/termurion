@@ -706,9 +706,11 @@ impl App {
             let custom = !command.trim().is_empty();
             let command = command.trim().to_string();
             let flag = cancel.clone();
+            let notify = self.notify.clone();
             std::thread::spawn(move || {
                 let report = run_usage(&command, &flag);
                 let _ = tx.send(report);
+                notify();
             });
             if let Some(inst) = self.workgroups.get_mut(&instance) {
                 let slot = inst.usage.entry(key).or_insert(UsageSlot { report: None, custom, started: None, rx: None, cancel: cancel.clone() });

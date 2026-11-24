@@ -456,7 +456,7 @@ mod tests {
         assert!(gate < tick.find("UpdateWindow::open(").unwrap(), "the gate comes before any window opens");
         let m = std::fs::read_to_string(format!("{}/src/app/mod.rs", env!("CARGO_MANIFEST_DIR"))).unwrap();
         assert!(m.contains("let (update_wake, tip_of_day_wake) = (update_app::idle_due(self.update_due, self.resident), update_app::idle_due(self.tip_due, self.resident));"));
-        let wake = m.split("let wake = [").nth(1).and_then(|r| r.split("].into_iter()").next()).unwrap();
+        let wake = m.split("let other_dues = [").nth(1).and_then(|r| r.split("];").next()).unwrap();
         assert!(wake.contains("update_wake, tip_of_day_wake"), "the wake array takes the resident-aware deadlines");
         assert!(!wake.contains(" self.update_due,") && !wake.contains(" self.tip_due,"), "no bare update or tip deadline in the wake array");
     }

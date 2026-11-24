@@ -79,11 +79,11 @@ impl Rasterizer {
     /// Starts rendering `svg` in a new view `id`. Err when the candidate is refused by
     /// `svg_icon::check` or the window cannot be made. Events of the view come back through
     /// `on_event`; the result after at most `svg_icon::RENDER_TIMEOUT` (see `expired`).
-    pub fn start(env: &Env, svg: &str, id: ViewId, sink: Sink) -> Result<Rasterizer, String> {
+    pub fn start(env: &Env, svg: &str, id: ViewId, sink: impl Into<Sink>) -> Result<Rasterizer, String> {
         svg_icon::check(svg).map_err(|why| format!("the SVG was not rendered ({why:?})"))?;
         let hwnd = make_window()?;
         let side = svg_icon::SIDE as i32;
-        let view = WebView::create(env, hwnd as isize, id, (0, 0, side, side), setup(), sink);
+        let view = WebView::create(env, hwnd as isize, id, (0, 0, side, side), setup(), sink.into());
         // Visible before the capture, so the renderer does not treat the page as occluded.
         view.set_visible(true);
         // Served by the host's one function on Termurion's own origin (never NavigateToString).

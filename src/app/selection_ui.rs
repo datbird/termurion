@@ -815,7 +815,7 @@ mod tests {
         let drag = code.find("selection_ui::drag_decision(on_selection").unwrap();
         let commit = code.find("let carried = self.commit_live_selection(id, append, count > 1);").unwrap();
         assert!(press < drag && drag < commit);
-        let wake = &code[code.find("let wake = [").unwrap()..];
+        let wake = &code[code.find("let other_dues = [").unwrap()..];
         let wake = &wake[..wake.find(';').unwrap()];
         for t in ["cmdinfo_due", "pathnav_due", "sel_scroll_due", "find_due"] {
             assert!(wake.contains(t), "{t}");

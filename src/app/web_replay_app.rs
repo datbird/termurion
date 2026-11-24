@@ -245,8 +245,10 @@ impl App {
         let (frames, size) = w.movie_input();
         w.saving = true;
         let (tx, rx) = std::sync::mpsc::channel();
+        let notify = self.notify.clone();
         std::thread::spawn(move || {
             let _ = tx.send(save_movie(&frames, size));
+            notify();
         });
         self.web_replay_save = Some(rx);
     }

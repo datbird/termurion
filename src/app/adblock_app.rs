@@ -466,13 +466,13 @@ mod tests {
     /// from the launch settings), so it resets the views and shows the notice.
     #[test]
     fn the_first_change_after_launch_counts() {
-        let (envs, _) = webhost_app::Envs::seeded("--proxy-server=http://a:1".to_string(), true);
+        let (envs, _) = webhost_app::Envs::seeded("--proxy-server=http://a:1".to_string(), true, std::sync::Arc::new(|| {}));
         assert_eq!(envs.proxy_seen.as_deref(), Some("--proxy-server=http://a:1"));
         assert_eq!(envs.adblock_seen, Some(true));
-        let (off, _) = webhost_app::Envs::seeded(String::new(), false);
+        let (off, _) = webhost_app::Envs::seeded(String::new(), false, std::sync::Arc::new(|| {}));
         assert_eq!((off.proxy_seen.as_deref(), off.adblock_seen), (Some(""), Some(false)), "off at launch is a value too");
         let m = include_str!("mod.rs");
-        assert!(m.contains("webhost_app::Envs::seeded(adblock_app::proxy_args_of(&globals), globals.bool(\"WebKitAdblockEnabled\"))"));
+        assert!(m.contains("webhost_app::Envs::seeded(adblock_app::proxy_args_of(&globals), globals.bool(\"WebKitAdblockEnabled\"), notify.clone())"));
     }
 
     /// Off means off: the tick clears everything and starts nothing; the download needs a browser

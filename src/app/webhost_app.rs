@@ -60,16 +60,17 @@ pub(super) struct Envs {
 
 impl Envs {
     /// The state and the receiving end of everything views post.
-    pub(super) fn new() -> (Envs, Receiver<Posted>) {
+    pub(super) fn new(wake: crate::platform::pty::Notify) -> (Envs, Receiver<Posted>) {
         let (tx, rx) = channel();
+        let tx = Sink::new(tx, wake);
         (Envs { tx, slots: HashMap::new(), runtime: RefCell::new(None), fixed: RefCell::new(None), refusal: RefCell::new(None), next_view: 1, seen: (String::new(), String::new()), proxy_seen: None, adblock_seen: None, rebuild_until: None, retry_at: None, dev_null: None, swept: false, lost_at: HashMap::new() }, rx)
     }
 
     /// The state at launch: `proxy` and `ad` are what the browser environments and views will be
     /// made with, so the first change after launch is a change (no silent direct traffic while the
     /// toolbar says the proxy is on).
-    pub(super) fn seeded(proxy: String, ad: bool) -> (Envs, Receiver<Posted>) {
-        let (mut envs, rx) = Envs::new();
+    pub(super) fn seeded(proxy: String, ad: bool, wake: crate::platform::pty::Notify) -> (Envs, Receiver<Posted>) {
+        let (mut envs, rx) = Envs::new(wake);
         envs.proxy_seen = Some(proxy);
         envs.adblock_seen = Some(ad);
         (envs, rx)
@@ -91,6 +92,11 @@ impl Envs {
         self.lost_at.insert(store, now);
         self.slots.remove(&store);
         true
+    }
+
+    /// Whether any store has an environment (or is making one): web views may exist.
+    pub(super) fn any(&self) -> bool {
+        !self.slots.is_empty()
     }
 
     /// What a view posts through.
@@ -527,7 +533,7 @@ mod tests {
     /// next request), once per crash: the other views' reports of the same exit keep the new one.
     #[test]
     fn a_lost_browser_process_drops_its_environment_once() {
-        let (mut envs, _rx) = Envs::new();
+        let (mut envs, _rx) = Envs::new(std::sync::Arc::new(|| {}));
         let t0 = Instant::now();
         envs.slots.insert(Store::Browser, Rc::new(Slot::default()));
         envs.slots.insert(Store::Default, Rc::new(Slot::default()));
@@ -585,7 +591,7 @@ mod tests {
         assert!(!t.contains("allow_rate("), "no per-minute-only retry");
         assert!(t.contains(".succeeded()"), "a good start resets the count");
         // Only the registry's own store set decides a drop: every store, not only the browser's.
-        let (mut envs, _rx) = Envs::new();
+        let (mut envs, _rx) = Envs::new(std::sync::Arc::new(|| {}));
         envs.slots.insert(Store::Default, Rc::new(Slot::default()));
         assert!(envs.env_lost(Store::Default, Instant::now()));
         assert!(!envs.slots.contains_key(&Store::Default));
