@@ -2,6 +2,7 @@
 
 use std::time::{Duration, Instant};
 
+#[cfg(not(target_os = "macos"))]
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 
 use super::*;
@@ -490,7 +491,9 @@ struct FrameSpace {
     scale: f64,
 }
 
-/// The primary monitor's height in pixels (it sits at the virtual screen's origin).
+/// The primary monitor's height in pixels (it sits at the virtual screen's origin). macOS measures
+/// in points from its own screen list instead.
+#[cfg(not(target_os = "macos"))]
 fn primary_height() -> Option<f64> {
     crate::platform::display::primary_height()
 }
