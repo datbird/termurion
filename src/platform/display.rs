@@ -53,6 +53,19 @@ pub fn visible_screens() -> Option<Vec<(f64, f64, f64, f64)>> {
     }
 }
 
+/// The X11 desktop's work area (`_NET_WORKAREA`) in pixels, panels and docks left out. None on any
+/// other system, under Wayland, or when the window manager publishes none.
+pub fn desktop_work_area() -> Option<(f64, f64, f64, f64)> {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        crate::platform::linux::workarea::work_area()
+    }
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    {
+        None
+    }
+}
+
 /// Each monitor's work area (without the taskbar) as x, y, width, height in virtual-screen pixels.
 /// Empty where the OS gives no monitor list without a window (Unix: winit lists monitors per window).
 pub fn work_areas() -> Vec<(f64, f64, f64, f64)> {

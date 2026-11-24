@@ -282,7 +282,11 @@ impl App {
                 None => {
                     let px: Vec<osc1337::Frame> = monitors().into_iter().map(|(f, _)| f).collect();
                     let primary = osc1337::primary_of(&px)?;
-                    (px, primary)
+                    // X11: keep clear of the panels (`_NET_WORKAREA`); with none published, whole monitors.
+                    match crate::platform::display::desktop_work_area() {
+                        Some(work) => (osc1337::within_work_area(&px, work), primary),
+                        None => (px, primary),
+                    }
                 }
             };
             Some(FrameSpace { screens, primary, unit: 1.0, scale: window_scale })
