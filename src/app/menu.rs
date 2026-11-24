@@ -974,7 +974,7 @@ impl App {
             return self.relayout();
         }
         match item.selector.as_str() {
-            "showAbout:" => info_box(&about_text(crate::update::current_version())),
+            "showAbout:" => self.show_about(event_loop),
             "showPrefWindow:" => self.open_settings(event_loop, Mode::Settings),
             "checkForUpdatesFromMenu:" => self.check_for_updates(true),
             // Help pages and the license file: fixed targets, the page through the one guard.
@@ -1867,11 +1867,6 @@ pub(super) fn set_move_session_items(bar: &MenuBar, tabs: &[super::Tab], active:
     }
 }
 
-/// The About box text: version, one line on what it is, and where the project lives.
-fn about_text(version: &str) -> String {
-    format!("Termurion {version}\nAn iTerm2-style terminal for Windows.\n{}", crate::links::REPO)
-}
-
 pub(super) fn info_box(text: &str) {
     crate::platform::dialog::message(None, "Termurion", text, crate::platform::dialog::Kind::Info);
 }
@@ -2173,15 +2168,6 @@ mod tests {
         assert_eq!(super::move_session_enabled(false, 2, 1), (true, false));
         assert_eq!(super::move_session_enabled(false, 2, 2), (true, true));
         assert_eq!(super::move_session_enabled(true, 3, 2), (false, false));
-    }
-
-    /// About names the version and the project repository (not iTerm2's site).
-    #[test]
-    fn about_points_at_the_repo() {
-        let t = super::about_text("1.2.3");
-        assert!(t.starts_with("Termurion 1.2.3\n"));
-        assert!(t.contains(crate::links::REPO));
-        assert!(!t.contains(&["iterm2", ".com"].concat()));
     }
 
     /// Help opens the project repository, and the guard lets it through.
