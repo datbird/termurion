@@ -121,10 +121,17 @@ fn in_windows_config(path: &str, system_root: &str) -> bool {
     p == folder || p.strip_prefix(&folder).is_some_and(|rest| rest.starts_with('\\'))
 }
 
+/// Whether any component of a Windows-style path is `.ssh` (iTerm2 refuses it on every OS).
+#[cfg(any(windows, test))]
+fn has_ssh_component(path: &str) -> bool {
+    path.split(['/', '\\']).any(|c| c.eq_ignore_ascii_case(".ssh"))
+}
+
 #[cfg(windows)]
 fn denied_path(path: &std::path::Path) -> bool {
     let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
-    in_windows_config(&path.to_string_lossy(), &root)
+    let text = path.to_string_lossy();
+    in_windows_config(&text, &root) || has_ssh_component(&text)
 }
 
 /// A file a program asked Termurion to read: only a regular local file (no share, device, or
@@ -549,6 +556,27 @@ mod tests {
         }
         // A system folder on another drive is that drive's.
         assert!(in_windows_config("D:\\WINNT\\System32\\config\\SAM", "D:\\WINNT"));
+    }
+
+    #[test]
+    fn ssh_folder_is_refused_on_windows_too() {
+        for p in ["C:\\Users\\u\\.ssh\\id_ed25519", "C:\\Users\\u\\.SSH", "\\\\?\\C:\\Users\\u\\.ssh\\x.png", "c:/users/u/.ssh/x.png"] {
+            assert!(has_ssh_component(p), "{p}");
+        }
+        for p in ["C:\\Users\\u\\ssh\\x.png", "C:\\Users\\u\\x.ssh\\y.png", "C:\\Users\\u\\.sshx\\y.png", "C:\\Users\\u\\pic.png"] {
+            assert!(!has_ssh_component(p), "{p}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_read_refuses_a_file_under_ssh() {
+        let td = TempDir::new("kitty-ssh");
+        let dir = td.to_path_buf().join(".ssh");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("pic.bin");
+        std::fs::write(&f, [1, 2, 3, 4]).unwrap();
+        assert!(read_file(f.to_string_lossy().as_bytes(), false).is_none());
     }
 
     #[test]
