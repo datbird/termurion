@@ -258,6 +258,7 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("app/menu.rs", 3),
     ("app/mod.rs", 9),
     ("app/page_saver_app.rs", 1),
+    ("app/requests_ui.rs", 1),
     ("app/restore_ui.rs", 2),
     ("app/selection_ui.rs", 1),
     ("app/session_end_ui.rs", 1),
