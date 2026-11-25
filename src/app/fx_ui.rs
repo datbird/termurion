@@ -1,10 +1,9 @@
 //! Render plugins in a window: the chain for the focused pane's profile, its uniforms each frame,
-//! and the redraws its animation asks for. The chain lives on the window's `Gpu`, so each window
-//! has its own and a GPU reset drops it with the rest.
+//! and the redraws its animation asks for. The chain lives in the window's `WindowGpu`, so each
+//! window has its own and a GPU reset drops it with the rest.
 
 use super::*;
 use crate::render_fx::{self, Animation, Clock, Uniforms};
-use crate::render_fx_gpu::{self, Chain};
 
 /// The banner key for plugin errors.
 const BANNER: &str = "render-plugins";
@@ -17,7 +16,10 @@ pub(super) struct FxRuntime {
     pub(super) signals: bool,
     /// Built for a transparent window (its last pass keeps the shaders' alpha).
     keep_alpha: bool,
-    chain: Option<Chain>,
+    /// The window's chain was built (`WindowGpu::set_effect`).
+    active: bool,
+    /// Where the chain's effects can draw, as the chain was given them.
+    terms: render_fx::RegionTerms,
     clock: Clock,
     uniforms: Uniforms,
     /// Last frame's uniforms: an animation frame also shades where last frame's effect drew.
@@ -124,7 +126,7 @@ impl App {
     pub(super) fn fx_sync(&mut self) {
         let wanted = self.fx_wanted();
         let Some(gpu) = self.gpu.as_mut() else { return };
-        let keep_alpha = gpu.config.alpha_mode == wgpu::CompositeAlphaMode::PreMultiplied;
+        let keep_alpha = gpu.win.keeps_alpha();
         if gpu.fx.as_ref().map(|f| (&f.ids, f.keep_alpha)) == Some((&wanted, keep_alpha)) || (gpu.fx.is_none() && wanted.0.is_empty()) {
             return;
         }
@@ -132,6 +134,8 @@ impl App {
         gpu.scene.invalidate();
         if wanted.0.is_empty() {
             gpu.fx = None;
+            // No chain to build: this cannot fail.
+            let _ = gpu.win.set_effect(None, None);
             self.banners.clear(BANNER);
             return;
         }
@@ -159,32 +163,17 @@ impl App {
                 Err(e) => errors.push(e),
             }
         }
-        let format = gpu.config.format;
-        // The passes write the window through its non-sRGB view, so the surface must offer one.
-        // A card with no second view (OpenGL) gets copy passes instead (`without_view_formats`).
-        let views = render_fx_gpu::view_formats_supported(gpu.render_adapter());
-        let raw = render_fx_gpu::raw_format(format);
-        if views && raw != format && !gpu.config.view_formats.contains(&raw) {
-            gpu.config.view_formats.push(raw);
-            gpu.reconfigure();
-        }
-        let chain = if shaders.is_empty() {
-            None
-        } else {
-            // Where the plugins say they draw: an animation frame shades only there.
-            let terms = render_fx::chain_region(&manifests);
-            match Chain::new(gpu.render_device(), format, shaders, keep_alpha) {
-                Ok(mut c) => {
-                    c.set_region_terms(terms);
-                    Some(if views { c } else { c.without_view_formats(gpu.render_device()) })
-                }
-                Err(e) => {
-                    errors.push(format!("the graphics card refused an effect: {e}"));
-                    None
-                }
+        // Where the plugins say they draw: an animation frame shades only there.
+        let any = !shaders.is_empty();
+        let terms = if any { render_fx::chain_region(&manifests) } else { None };
+        let active = match gpu.win.set_effect(Some(shaders), terms.clone()) {
+            Ok(()) => any,
+            Err(e) => {
+                errors.push(format!("the graphics card refused an effect: {e}"));
+                false
             }
         };
-        gpu.fx = Some(FxRuntime { ids: wanted, chain, clock: Clock::default(), uniforms: Uniforms::default(), last_uniforms: Uniforms::default(), live_lines, animation: strongest(&animations), preset, keep_alpha, signals, due: None, colors: None, palette_fills: 0, rects: Default::default() });
+        gpu.fx = Some(FxRuntime { ids: wanted, active, terms: terms.filter(|_| active), clock: Clock::default(), uniforms: Uniforms::default(), last_uniforms: Uniforms::default(), live_lines, animation: strongest(&animations), preset, keep_alpha, signals, due: None, colors: None, palette_fills: 0, rects: Default::default() });
         if errors.is_empty() {
             self.banners.clear(BANNER);
         } else {
@@ -204,7 +193,12 @@ impl App {
 
 impl FxRuntime {
     pub(super) fn active(&self) -> bool {
-        self.chain.is_some()
+        self.active
+    }
+
+    /// The uniforms `prepare` packed for this frame.
+    pub(super) fn uniforms(&self) -> &Uniforms {
+        &self.uniforms
     }
 
     /// The cursor color the scene draws while the effects run (`DrawPrefs::fx_cursor`).
@@ -267,22 +261,13 @@ impl FxRuntime {
     /// Where this frame's effects can draw, alone and with last frame's (`render_fx::frame_rects`;
     /// None runs the full pass). `cell` is the focused pane's cell.
     pub(super) fn region(&mut self, cell: (f32, f32), size: (u32, u32)) -> std::sync::Arc<render_fx::FrameRegion> {
-        let Some(terms) = self.chain.as_ref().and_then(|c| c.region_terms()) else { return self.rects.none() };
+        let Some(terms) = self.terms.as_deref().filter(|_| self.active) else { return self.rects.none() };
         self.rects.get(terms, &self.uniforms, &self.last_uniforms, cell, self.live_lines, size)
     }
 
     #[cfg(test)]
     fn bare() -> FxRuntime {
-        FxRuntime { ids: Default::default(), signals: false, keep_alpha: false, chain: None, clock: Clock::default(), uniforms: Uniforms::default(), last_uniforms: Uniforms::default(), live_lines: false, animation: Animation::Off, preset: None, due: None, colors: None, palette_fills: 0, rects: Default::default() }
-    }
-
-    /// Whether the chain's last copy writes the window's own raw view (`Chain::wants_raw_out`).
-    pub(super) fn wants_raw_out(&self) -> bool {
-        self.chain.as_ref().is_some_and(|c| c.wants_raw_out())
-    }
-
-    pub(super) fn chain_mut(&mut self) -> Option<(&mut Chain, &Uniforms)> {
-        self.chain.as_mut().map(|c| (c, &self.uniforms))
+        FxRuntime { ids: Default::default(), signals: false, keep_alpha: false, active: false, terms: None, clock: Clock::default(), uniforms: Uniforms::default(), last_uniforms: Uniforms::default(), live_lines: false, animation: Animation::Off, preset: None, due: None, colors: None, palette_fills: 0, rects: Default::default() }
     }
 
     /// When the animation's next frame is due under `pacing`; None when it needs none.

@@ -262,7 +262,7 @@ impl App {
     pub(super) fn list_metrics(&self) -> ListMetrics {
         let scale = self.scale();
         let (_, ch) = self.cell();
-        let (px, font_px) = self.gpu.as_ref().map_or((11.0 * 4.0 / 3.0 * scale, ch / 1.2), |g| (g.renderer.toolbelt_px(scale), g.renderer.font_px()));
+        let (px, font_px) = self.gpu.as_ref().map_or((11.0 * 4.0 / 3.0 * scale, ch / 1.2), |g| (g.win.renderer().toolbelt_px(scale), g.win.renderer().font_px()));
         let text_scale = px / font_px.max(1.0);
         let line = ch * text_scale;
         // The tag font is 2 points smaller, 3 above the small system size (`PLV:574-582`).
@@ -452,7 +452,7 @@ impl App {
         let avail = (width - 2.0 * tool_list_inset(scale)).max(0.0);
         let range = visible.start.min(shown.len())..visible.end.min(shown.len());
         let Some(g) = self.gpu.as_mut() else { return Vec::new() };
-        let renderer = std::cell::RefCell::new(&mut g.renderer);
+        let renderer = std::cell::RefCell::new(g.win.renderer_mut());
         let width = |s: &str| renderer.borrow_mut().toolbelt_width(s, scale);
         let second_width = |s: &str| renderer.borrow_mut().text_width(s, true, m.text_scale * m.second_scale);
         let plain = |text: String, bold: bool| scene::ListRow { text: tool_list::truncate_tail(&text, avail, &width), bold, ..scene::ListRow::default() };
@@ -565,7 +565,7 @@ impl App {
             let focus = self.belt.focus.filter(|(t, _)| *t == tool).map(|(_, f)| f);
             let field = match (l.field, self.gpu.as_mut()) {
                 (Some(r), Some(g)) => {
-                    let renderer = std::cell::RefCell::new(&mut g.renderer);
+                    let renderer = std::cell::RefCell::new(g.win.renderer_mut());
                     let w = |s: &str| renderer.borrow_mut().toolbelt_width(s, scale);
                     let shown_text = fit_end(&st.field.text, (r.w - 8.0 * scale).max(0.0), &w);
                     let width = w(&shown_text);

@@ -15,11 +15,11 @@ pub(crate) struct PixelCase {
 /// The font each system draws the cases in. The harness fails if it is missing rather than
 /// falling back to another face.
 #[cfg(target_os = "linux")]
-const FACE: &str = "DejaVu Sans Mono";
+pub(crate) const FACE: &str = "DejaVu Sans Mono";
 #[cfg(target_os = "macos")]
-const FACE: &str = "Menlo";
+pub(crate) const FACE: &str = "Menlo";
 #[cfg(windows)]
-const FACE: &str = "Cascadia Mono";
+pub(crate) const FACE: &str = "Cascadia Mono";
 const PX: f32 = 14.0;
 const FLOOD_FRAMES: usize = 300;
 

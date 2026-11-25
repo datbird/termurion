@@ -416,30 +416,14 @@ enum Drag {
     Title { pane: PaneId, from: (f32, f32) },
 }
 
-/// One wgpu instance with its adapter, device and queue.
-#[derive(Clone)]
-struct GpuHandles {
-    instance: wgpu::Instance,
-    adapter: wgpu::Adapter,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-}
+use crate::gpu_window::{FxFrame, GpuHandles, RenderError, WgpuWindow, WindowGpu};
 
 /// The second instance (DX12 with DirectComposition swapchains) that serves only windows that need alpha.
 type AlphaGpu = GpuHandles;
 
 struct Gpu {
-    surface: wgpu::Surface<'static>,
-    /// The primary instance, adapter, device and queue (the first window's): every egui window, prompt
-    /// and new opaque window takes its handles from here, whatever kind this window's own surface is.
-    adapter: wgpu::Adapter,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
-    renderer: Renderer,
-    instance: wgpu::Instance,
-    /// Set on a window that needs alpha: the handles its surface and renderer were made on.
-    alpha: Option<AlphaGpu>,
+    /// The surface, renderer and effect chain, behind one backend object.
+    win: WindowGpu,
     /// The pointer shape last set on the window (`refresh_pointer_shape` writes it only on change).
     shape: Option<crate::pointer_shape::Shape>,
     /// Render plugins for this window (`fx_ui`); None when its profile lists none.
@@ -466,7 +450,7 @@ struct Gpu {
 impl Gpu {
     /// The shared handles egui windows open on.
     fn shared(&self) -> crate::gpu_shared::GpuShared {
-        crate::gpu_shared::GpuShared::Wgpu { instance: self.instance.clone(), adapter: self.adapter.clone(), device: self.device.clone(), queue: self.queue.clone() }
+        self.win.shared()
     }
 
     /// Asks the window to draw a newly built frame. Every request but the animation's comes
@@ -489,10 +473,10 @@ impl Gpu {
         self.window.set_minimized(minimized);
     }
 
-    /// Configures the surface again. Its contents are undefined after that, so the next frame
+    /// The surface takes a new size. Its contents are undefined after that, so the next frame
     /// draws even when it equals the last.
-    fn reconfigure(&self) {
-        self.surface.configure(self.render_device(), &self.config);
+    fn resize(&mut self, w: u32, h: u32) {
+        self.win.resize(w, h, self.window.scale_factor());
         self.scene.invalidate();
     }
 
@@ -511,26 +495,6 @@ impl Gpu {
     fn redraw_fx(&mut self) {
         self.scene.fx_asked();
         self.window.request_redraw();
-    }
-
-    /// The instance this window's surface was made on.
-    fn render_instance(&self) -> &wgpu::Instance {
-        self.alpha.as_ref().map_or(&self.instance, |a| &a.instance)
-    }
-
-    /// The device its renderer draws on.
-    fn render_device(&self) -> &wgpu::Device {
-        self.alpha.as_ref().map_or(&self.device, |a| &a.device)
-    }
-
-    /// The queue that presents its surface.
-    /// The adapter its surface was made against.
-    fn render_adapter(&self) -> &wgpu::Adapter {
-        self.alpha.as_ref().map_or(&self.adapter, |a| &a.adapter)
-    }
-
-    fn render_queue(&self) -> &wgpu::Queue {
-        self.alpha.as_ref().map_or(&self.queue, |a| &a.queue)
     }
 }
 
@@ -3418,13 +3382,13 @@ impl App {
     }
 
     fn cell(&self) -> (f32, f32) {
-        self.gpu.as_ref().map_or((8.0, 16.0), |g| g.renderer.cell)
+        self.gpu.as_ref().map_or((8.0, 16.0), |g| g.win.renderer().cell)
     }
 
     /// The font's own cell, without the spacings; (0, 0) before the renderer exists, which
     /// the cursor reads as "the same as the cell".
     fn base_cell(&self) -> (f32, f32) {
-        self.gpu.as_ref().map_or((0.0, 0.0), |g| g.renderer.base_cell())
+        self.gpu.as_ref().map_or((0.0, 0.0), |g| g.win.renderer().base_cell())
     }
 
     /// The edge the tab bar sits on (`TabViewType`).
@@ -3649,7 +3613,7 @@ impl App {
     /// padding as the side margin.
     pub(super) fn side_bar_width(&self) -> f32 {
         let scale = self.scale();
-        let w = self.gpu.as_ref().map_or(800.0, |g| g.config.width as f32);
+        let w = self.gpu.as_ref().map_or(800.0, |g| g.win.size().0 as f32);
         (tab_position::side_width(self.side_bar_preferred, w / scale, SIDE_TAB_MARGIN, self.side_bar_minimum()) * scale).round()
     }
 
@@ -3810,7 +3774,7 @@ impl App {
         let inputs = self.tab_inputs(looks);
         let vertical = tab_position::vertical(self.tab_position());
         let (scale, active, hovered) = (self.scale(), self.active, self.tab_hover.map(|(i, _)| i));
-        let renderer = self.gpu.as_mut().map(|g| std::cell::RefCell::new(&mut g.renderer));
+        let renderer = self.gpu.as_mut().map(|g| std::cell::RefCell::new(g.win.renderer_mut()));
         // Points to pixels and back: a text of `pt` points is drawn at `pt * scale` pixels.
         let measure = |text: &str, pt: f32, bold: bool| match &renderer {
             Some(r) => {
@@ -4179,7 +4143,7 @@ impl App {
         let scale = self.scale();
         let dx = (x - start_x) / scale;
         let dx = if self.tab_position() == TabPosition::Right { -dx } else { dx };
-        let w = self.gpu.as_ref().map_or(800.0, |g| g.config.width as f32) / scale;
+        let w = self.gpu.as_ref().map_or(800.0, |g| g.win.size().0 as f32) / scale;
         let preferred = tab_position::side_width(start_width + dx, w, SIDE_TAB_MARGIN, self.side_bar_minimum()).round();
         if preferred != self.side_bar_preferred {
             self.side_bar_preferred = preferred;
@@ -4203,7 +4167,7 @@ impl App {
     /// toolbelt, the tab bar and the sessions share (`window_layout`). The line's pixel is
     /// taken here, so panes and tmux's size report see it (`PT:13235-13237`).
     fn window_room(&self) -> Rect {
-        let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| g.layout.map_or((g.config.width as f32, g.config.height as f32), |p| (p.want.0 as f32, p.want.1 as f32)));
+        let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| g.layout.map_or({ let (w, h) = g.win.size(); (w as f32, h as f32) }, |p| (p.want.0 as f32, p.want.1 as f32)));
         let bottom = if self.banners.text().is_some() { self.cell().1 + 8.0 } else { 0.0 };
         let top = self.division_height() + self.bar_strip().unwrap_or(0.0);
         Rect { x: 0.0, y: top, w, h: (h - bottom - top).max(1.0) }
@@ -5429,12 +5393,12 @@ impl App {
     fn apply_fonts(&mut self) {
         // Linux's default is a font that is installed here, so Settings names the drawn face.
         if let Some(g) = self.gpu.as_ref() {
-            profile::settle_default_font(crate::platform::OS_NAME, &|f| g.renderer.has_family(f), &|| g.renderer.monospace_families());
+            profile::settle_default_font(crate::platform::OS_NAME, &|f| g.win.renderer().has_family(f), &|| g.win.renderer().monospace_families());
         }
         // A profile saved with another OS's default font moves to this OS's own, quietly, and
         // the fix is written back so it sticks.
         if let Some(g) = self.gpu.as_ref()
-            && self.store.migrate_fonts(crate::platform::OS_NAME, &|f| g.renderer.has_family(f), profile::default_font())
+            && self.store.migrate_fonts(crate::platform::OS_NAME, &|f| g.win.renderer().has_family(f), profile::default_font())
             && let Err(e) = self.save_store()
         {
             self.banners.set("save", format!("Could not save settings: {e}"));
@@ -5456,8 +5420,8 @@ impl App {
             p.held_until = None;
         }
         if let Some(g) = self.gpu.as_ref() {
-            normal.family = g.renderer.resolve_family(&normal.family);
-            alt = alt.map(|a| g.renderer.resolve_family(&a));
+            normal.family = g.win.renderer().resolve_family(&normal.family);
+            alt = alt.map(|a| g.win.renderer().resolve_family(&a));
         }
         let generous = self.globals.string("FontsForGenerousRounding");
         let bold_difference = self.globals.int("MinimumWeightDifferenceForBoldFont") as i32;
@@ -5466,19 +5430,19 @@ impl App {
         let Some(g) = self.gpu.as_mut() else { return };
         let px = profile::text_px(normal.size_pt, g.window.scale_factor() as f32);
         // The other panes' faces re-measure in place at a new scale (their ids stay valid).
-        g.renderer.set_scale(g.window.scale_factor() as f32);
-        g.renderer.set_generous_list(&generous);
-        g.renderer.set_bold_difference(bold_difference);
-        g.renderer.set_contextual_alternates(calt);
-        g.renderer.set_shape_cache(shape_cache);
-        g.renderer.set_fonts(&normal.family, alt.as_deref(), px, p.float("Horizontal Spacing") as f32, p.float("Vertical Spacing") as f32);
-        g.renderer.set_badge_family(&badge_ui::badge_family(badge_ui::profile_font(&p), &self.globals.string("BadgeFont")));
-        g.renderer.set_badge_bold(self.globals.bool("BadgeFontIsBold"));
+        g.win.renderer_mut().set_scale(g.window.scale_factor() as f32);
+        g.win.renderer_mut().set_generous_list(&generous);
+        g.win.renderer_mut().set_bold_difference(bold_difference);
+        g.win.renderer_mut().set_contextual_alternates(calt);
+        g.win.renderer_mut().set_shape_cache(shape_cache);
+        g.win.renderer_mut().set_fonts(&normal.family, alt.as_deref(), px, p.float("Horizontal Spacing") as f32, p.float("Vertical Spacing") as f32);
+        g.win.renderer_mut().set_badge_family(&badge_ui::badge_family(badge_ui::profile_font(&p), &self.globals.string("BadgeFont")));
+        g.win.renderer_mut().set_badge_bold(self.globals.bool("BadgeFontIsBold"));
         // Read with the window's other fonts, not on every change (iTerm2: "Changing this
         // setting does not affect existing windows").
-        g.renderer.set_toolbelt_family(&self.globals.string("ToolbeltFont"));
-        g.renderer.set_toolbelt_size(self.globals.get("ToolbeltFontSize").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(0.0) as f32);
-        let missing = profile::banner_fonts(std::iter::once(normal.family).chain(alt).collect(), profile::default_font(), &|f| g.renderer.has_family(f));
+        g.win.renderer_mut().set_toolbelt_family(&self.globals.string("ToolbeltFont"));
+        g.win.renderer_mut().set_toolbelt_size(self.globals.get("ToolbeltFontSize").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(0.0) as f32);
+        let missing = profile::banner_fonts(std::iter::once(normal.family).chain(alt).collect(), profile::default_font(), &|f| g.win.renderer().has_family(f));
         if missing.is_empty() {
             self.banners.clear("font");
         } else {
@@ -5600,10 +5564,8 @@ impl App {
         let Some(g) = self.gpu.as_mut() else { return };
         let size = g.window.inner_size();
         let Some(now) = usable_size(size.width, size.height) else { return };
-        if now != (g.config.width, g.config.height) {
-            g.config.width = now.0;
-            g.config.height = now.1;
-            g.reconfigure();
+        if now != g.win.size() {
+            g.resize(now.0, now.1);
         }
         g.layout = pending_for(now, want, std::time::Instant::now());
     }
@@ -7087,9 +7049,9 @@ impl App {
     pub(super) fn draw_prefs(&mut self) -> scene::DrawPrefs {
         // The same switch keeps the renderer's prepared rows (a drawing bug can be turned off here).
         if let Some(g) = self.gpu.as_mut() {
-            apply_row_switch(&mut g.renderer, &self.globals);
+            apply_row_switch(g.win.renderer_mut(), &self.globals);
         }
-        let metrics = self.gpu.as_mut().map(|g| g.renderer.underline_metrics()).unwrap_or(scene::DrawPrefs::default().metrics);
+        let metrics = self.gpu.as_mut().map(|g| g.win.renderer_mut().underline_metrics()).unwrap_or(scene::DrawPrefs::default().metrics);
         let fx_cursor = self.gpu.as_ref().and_then(|g| g.fx.as_ref()).and_then(|f| f.cursor_color());
         scene::DrawPrefs { fx_cursor, ..scene::DrawPrefs::from_globals(&self.globals, metrics, self.scale()) }
     }
@@ -7156,7 +7118,7 @@ impl App {
             let offset = self.bar_offset();
             let scrolled = (offset > 0.0).then(|| self.layout_tab_bar(&looks, area, offset));
             let scale = self.scale();
-            let font_px = self.gpu.as_ref().map_or(cell.1, |g| g.renderer.font_px()).max(1.0);
+            let font_px = self.gpu.as_ref().map_or(cell.1, |g| g.win.renderer().font_px()).max(1.0);
             // A dragged tab follows the pointer along the bar, drawn over the others.
             let dragged = self.dragged_bar(scrolled.as_ref().unwrap_or(&self.tab_bar), &mut looks, area);
             let drawn = dragged.as_ref().or(scrolled.as_ref()).unwrap_or(&self.tab_bar);
@@ -7498,7 +7460,7 @@ impl App {
         self.draw_status_bars(&mut frame, cell);
         // After the bars, so the overlay cuts their text out (P22).
         overlay_drawn.extend(self.draw_pane_move(&mut frame, cell).into_iter().map(|r| (mouse::Overlay::PaneMove, r)));
-        let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
+        let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| { let (w, h) = g.win.size(); (w as f32, h as f32) });
         let mut tip_rect: Option<Rect> = None;
         let line = self.division_height();
         if line > 0.0 {
@@ -7545,7 +7507,7 @@ impl App {
             }
         }
         if see_through {
-            let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
+            let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| { let (w, h) = g.win.size(); (w as f32, h as f32) });
             let chrome = rgba(palette_bg, 1.0);
             let mut quads = crate::transparency::backdrop(Rect { x: 0.0, y: 0.0, w: ww, h: wh }, area, chrome, &[]);
             quads.append(&mut frame.quads);
@@ -7560,7 +7522,7 @@ impl App {
         self.chat_indicator_hits = indicator_hits;
         let error = self.banners.text().or_else(|| self.panes.values().find_map(|p| p.error.clone()));
         if let Some(text) = error {
-            let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
+            let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| { let (w, h) = g.win.size(); (w as f32, h as f32) });
             overlay_drawn.push((mouse::Overlay::Banner, scene::banner(&mut frame, &text, Rect { x: 0.0, y: 0.0, w, h }, cell)));
         }
         // The offscreen command lines, last: over the pane's rows and strokes (they are cut out)
@@ -7645,7 +7607,7 @@ impl App {
         self.note_frame(before, now);
         // A frame only the effects' animation wants draws the kept scene again (`scene_cache`),
         // and then has no frame work to do: nothing it shows changed.
-        let size = self.gpu.as_ref().map_or((0, 0), |g| (g.config.width, g.config.height));
+        let size = self.gpu.as_ref().map_or((0, 0), |g| g.win.size());
         let will_reuse = self.gpu.as_ref().is_some_and(|g| g.scene.would_reuse(size, now));
         if !will_reuse {
             // A status bar field whose bar went away gives the keyboard back before drawing.
@@ -7661,7 +7623,7 @@ impl App {
             self.fx_sync();
         }
         if let Some(g) = self.gpu.as_ref() {
-            g.scene.sync_look(g.renderer.look_epoch());
+            g.scene.sync_look(g.win.renderer().look_epoch());
         }
         // Read before `take` uses the kept frame up: does the screen show it exactly?
         let shown = self.gpu.as_ref().is_some_and(|g| g.scene.shown());
@@ -7735,7 +7697,7 @@ impl App {
         // scene whose passes would write the bytes they wrote last time shows what the window
         // already shows (`Chain::skip_if_still`). Anything drawn over or around the picture
         // since, a surface change or a fade says otherwise, and the frame draws.
-        let (w, h) = (gpu.config.width, gpu.config.height);
+        let (w, h) = gpu.win.size();
         // Sampled before the acquire wait now: the effects' clock then runs a few ms ahead of
         // the present, which the 33 ms and 16 ms frame gaps already allow.
         let fx_now = Instant::now();
@@ -7747,7 +7709,7 @@ impl App {
         // equal frame (`skip_gpu` makes the same assumption); every compositor in use keeps the
         // last presented picture.
         let eligible = same_scene && shown && !skip.bar_busy && !alpha_changed && frame.fade >= 1.0;
-        let still = gpu.fx.as_mut().filter(|f| f.active()).and_then(|f| f.chain_mut()).is_some_and(|(chain, u)| chain.skip_if_still(u, (w, h), eligible));
+        let still = gpu.fx.as_ref().filter(|f| f.active()).is_some_and(|f| gpu.win.skip_if_still(f.uniforms(), eligible));
         if still {
             gpu.scene.keep(frame, built, size);
             self.perf_frames.entry(window_n).or_default().frame(before.map(|b| now.saturating_duration_since(b).as_secs_f64() * 1000.0), None, false, &mut self.perf, window_n);
@@ -7762,115 +7724,85 @@ impl App {
         // meanwhile (`the_scope_reads_no_pane`).
         let draw = || {
             let Some(gpu) = self.gpu.as_mut() else { return None };
-            let wait_start = Instant::now();
-            let acquired = gpu.surface.get_current_texture();
-            // The renderer's timings for Copy Performance Stats: counters and milliseconds only.
-            let dropped = matches!(acquired, wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded);
             let start_gap = before.map(|b| now.saturating_duration_since(b).as_secs_f64() * 1000.0);
-            let wait = wait_start.elapsed().as_secs_f64() * 1000.0;
-            self.perf_frames.entry(window_n).or_default().frame(start_gap, Some(wait), dropped, &mut self.perf, window_n);
-            let texture = match acquired {
-                wgpu::CurrentSurfaceTexture::Success(t) => t,
-                wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+            // A frame shades only its region (`draw_fx_for`); a frame whose own region is full
+            // tells the chain no next frame can, so it skips the kept output.
+            let region = gpu.fx.as_mut().filter(|f| f.active()).map(|fx| fx.region(fx_cell, (w, h)));
+            let fx = gpu.fx.as_ref().zip(region.as_deref()).map(|(fx, region)| FxFrame { uniforms: fx.uniforms(), region: Some(region), same_scene, keep_output: region.own.is_some() });
+            // The menu bar and any open menu go over the terminal, on the same frame.
+            let menu = self.menu_bar.as_ref().map(|b| &b.menu).filter(|_| bar_on);
+            let bar = &mut gpu.bar;
+            let mut paint = |o: &crate::gpu_window::Overlay<'_>| bar.draw(&menu_bar_ui::BarFrame { device: o.device, queue: o.queue, target: o.target, format: o.format, size: o.size, scale: bar_scale, dark: bar_dark }, menu);
+            #[cfg(debug_assertions)]
+            let capturing = gpu.win.wgpu_device().is_some_and(gpu_capture::begin);
+            let rendered = gpu.win.render(&frame, fx, if bar_draws { Some(&mut paint) } else { None });
+            #[cfg(debug_assertions)]
+            if capturing && let Some(d) = gpu.win.wgpu_device() {
+                gpu_capture::end(d);
+            }
+            // The renderer's timings for Copy Performance Stats: counters and milliseconds only.
+            let acquire = gpu.win.last_acquire();
+            self.perf_frames.entry(window_n).or_default().frame(start_gap, Some(acquire.wait.as_secs_f64() * 1000.0), acquire.dropped, &mut self.perf, window_n);
+            let drawn = match rendered {
+                Ok(d) => d,
+                Err(RenderError::Skip) => {
                     // No drawable ends the frame early; the animation still asks for its next one, a gap away.
                     gpu.pace_fx(fx_now, focused_window, fx_pacing, true);
                     return None;
                 }
-                wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Suboptimal(_) => {
-                    gpu.reconfigure();
+                Err(RenderError::Outdated) => {
+                    // The window configured its surface again.
+                    gpu.scene.invalidate();
                     gpu.redraw();
                     return None;
                 }
-                wgpu::CurrentSurfaceTexture::Lost => {
+                Err(RenderError::Lost(why)) => {
                     // A fade running now stops, and fades stay off for the run.
                     if self.hotkey.as_ref().is_some_and(|h| h.fading()) {
                         self.fade_failed = true;
                     }
-                    match gpu.render_instance().create_surface(gpu.window.clone()) {
-                        Ok(s) => gpu.surface = s,
-                        Err(e) => self.banners.set("gpu", format!("Lost the window surface: {e}")),
+                    if let Err(e) = gpu.win.remake_surface() {
+                        self.banners.set("gpu", format!("{why}: {e}"));
                     }
-                    if let Some(gpu) = self.gpu.as_mut() {
-                        gpu.reconfigure();
-                        gpu.redraw();
-                    }
+                    gpu.scene.invalidate();
+                    gpu.redraw();
                     return None;
                 }
-                wgpu::CurrentSurfaceTexture::Validation => {
+                Err(RenderError::Refused(why)) => {
                     if self.hotkey.as_ref().is_some_and(|h| h.fading()) {
                         self.fade_failed = true;
                     }
-                    self.banners.set("gpu", "GPU validation error");
+                    self.banners.set("gpu", why);
                     return None;
                 }
-            };
-            // An effect chain that writes the raw view never reads the sRGB one, unless the bar draws on it.
-            let fx_raw = gpu.fx.as_ref().filter(|f| f.active()).is_some_and(|f| f.wants_raw_out());
-            let view = (!fx_raw || bar_draws).then(|| texture.texture.create_view(&wgpu::TextureViewDescriptor::default()));
-            // The non-sRGB view a fade needs on an sRGB target; no fade, no view.
-            let raw = gpu.config.view_formats.first().filter(|_| frame.fade < 1.0).map(|f| texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(*f), ..Default::default() }));
-            #[cfg(debug_assertions)]
-            let capturing = gpu_capture::begin(gpu.render_device());
-            let draw_start = timing.then(Instant::now);
-            let drawn = match gpu.fx.as_mut().filter(|f| f.active()) {
-                Some(fx) => {
-                    // The passes write the window through its non-sRGB view (fx_sync made sure it has one).
-                    // A frame shades only its region (`draw_fx_for`); a frame whose own region is
-                    // full tells the chain no next frame can, so it skips the kept output.
-                    let region = fx.region(fx_cell, (w, h));
-                    let (chain, uniforms) = fx.chain_mut().expect("active");
-                    chain.keep_output(region.own.is_some());
-                    // Without view formats (OpenGL) the chain's last copy writes the window's own view.
-                    let out = if chain.wants_raw_out() { texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(crate::render_fx_gpu::raw_format(gpu.config.format)), ..Default::default() }) } else { view.clone().expect("made unless the chain writes the raw view") };
-                    gpu.renderer.draw_fx_for(&frame, chain, uniforms, &out, w, h, same_scene, Some(&*region))
-                }
-                None => gpu.renderer.draw_with(&frame, view.as_ref().expect("made without effects"), raw.as_ref(), w, h),
             };
             // Animated effects keep the window drawing while they run, at the pace "Effects
             // animation" allows; a frame not due yet waits in the idle loop (`fx_frame_tick`).
             gpu.pace_fx(fx_now, focused_window, fx_pacing, false);
-            if drawn.is_ok() {
+            if drawn.kept.is_ok() {
                 gpu.scene.keep(frame, built, (w, h));
             } else {
                 gpu.scene.invalidate();
             }
-            if let Some(t) = draw_start {
-                self.draw_timers.stats[2].add(t.elapsed().as_secs_f64(), 1);
+            if timing {
+                self.draw_timers.stats[2].add(drawn.draw.as_secs_f64(), 1);
+                self.draw_timers.stats[3].add(drawn.present.as_secs_f64(), 1);
             }
-            if let Err(e) = drawn {
+            if let Err(e) = drawn.kept {
                 if self.hotkey.as_ref().is_some_and(|h| h.fading()) {
                     self.fade_failed = true;
                 }
                 self.banners.set("gpu", e);
             }
-            // The menu bar and any open menu go over the terminal, on the same frame.
-            let mut chosen = None;
-            if let Some(gpu) = self.gpu.as_mut()
-                && bar_draws
-            {
-                let (device, queue) = (gpu.render_device().clone(), gpu.render_queue().clone());
-                let frame = menu_bar_ui::BarFrame { device: &device, queue: &queue, target: view.as_ref().expect("made when the bar draws"), format: gpu.config.format, size: (w, h), scale: bar_scale, dark: bar_dark };
-                let menu = self.menu_bar.as_ref().map(|b| &b.menu).filter(|_| bar_on);
-                chosen = gpu.bar.draw(&frame, menu);
+            if bar_draws {
                 // Drawn over the frame, which does not say so: the next one draws whole.
                 gpu.scene.invalidate();
                 if gpu.bar.animating() {
                     gpu.redraw();
                 }
             }
-            let present_start = timing.then(Instant::now);
-            if let Some(gpu) = self.gpu.as_ref() {
-                gpu.render_queue().present(texture);
-                self.terminal_presented = true;
-                #[cfg(debug_assertions)]
-                if capturing {
-                    gpu_capture::end(gpu.render_device());
-                }
-            }
-            if let Some(t) = present_start {
-                self.draw_timers.stats[3].add(t.elapsed().as_secs_f64(), 1);
-            }
-            chosen
+            self.terminal_presented = true;
+            drawn.bar
         };
         let (chosen, parsed) = match job {
             None => (draw(), None),
@@ -8342,9 +8274,7 @@ impl ApplicationHandler<UserEvent> for App {
                 g.layout = None;
                 let s = g.window.inner_size();
                 if let Some((w, h)) = usable_size(s.width, s.height) {
-                    g.config.width = w;
-                    g.config.height = h;
-                    g.reconfigure();
+                    g.resize(w, h);
                 }
             }
             self.relayout();
@@ -8768,7 +8698,7 @@ impl ApplicationHandler<UserEvent> for App {
                     if win.fonts.is_empty()
                         && let Some(g) = self.gpu.as_ref()
                     {
-                        win.fonts = g.renderer.installed_families();
+                        win.fonts = g.win.renderer().installed_families();
                     }
                     let fx_screen = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).map(|p| &p.screen);
                     let edit = win.redraw(&mut self.store, &mut self.globals, &mut self.snippets, &mut self.fx_profiles, fx_screen);
@@ -8778,11 +8708,11 @@ impl ApplicationHandler<UserEvent> for App {
                     let named = std::mem::take(&mut win.font_info_questions);
                     if let (false, Some(g)) = (asked.is_empty() && named.is_empty(), self.gpu.as_ref()) {
                         for (family, ppem) in asked {
-                            let wants = g.renderer.font_wants_antialiasing(&family, ppem);
+                            let wants = g.win.renderer().font_wants_antialiasing(&family, ppem);
                             win.font_hints.insert(format!("{family}@{ppem}"), wants);
                         }
                         for name in named {
-                            let info = g.renderer.describe_font(&name);
+                            let info = g.win.renderer().describe_font(&name);
                             win.font_info.insert(name, info);
                         }
                         win.request_redraw();
@@ -8922,17 +8852,13 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(g) = self.gpu.as_mut()
                     && let Some(p) = g.layout {
                         if resized_is_stale(p, (w, h), std::time::Instant::now()) {
-                            g.config.width = w;
-                            g.config.height = h;
-                            g.reconfigure();
+                            g.resize(w, h);
                             return;
                         }
                         g.layout = None;
                     }
                 if let Some(g) = self.gpu.as_mut() {
-                    g.config.width = w;
-                    g.config.height = h;
-                    g.reconfigure();
+                    g.resize(w, h);
                 }
                 // Locked split pane widths hold through the resize (`TAB:6596-6640`).
                 self.apply_width_pins();
@@ -9041,7 +8967,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 // A frame that draws the kept scene again (only the effect asked) has nothing new
                 // to measure unless the settings or the window size moved since the last full one.
-                let size = self.gpu.as_ref().map_or((0, 0), |g| (g.config.width, g.config.height));
+                let size = self.gpu.as_ref().map_or((0, 0), |g| g.win.size());
                 // The frame below decides reuse at this same time.
                 let frame_at = Instant::now();
                 self.frame_at = Some(frame_at);
@@ -9060,7 +8986,7 @@ impl ApplicationHandler<UserEvent> for App {
                     if sig != self.font_sig || self.pane_faces.stale() || self.laid_out.as_ref() != Some(&self.room()) {
                         self.relayout();
                     }
-                    let size = self.gpu.as_ref().map_or((0, 0), |g| (g.config.width, g.config.height));
+                    let size = self.gpu.as_ref().map_or((0, 0), |g| g.win.size());
                     self.fx_full = Some((id, self.globals.generation(), size));
                 }
                 let parsed = self.render_parsing();
@@ -9132,14 +9058,14 @@ fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop, power_preference:
 /// OpenGL lists it, the window moves there (`gpu_pick::look_for_integrated_on_gl`). The first
 /// GPU is dropped before the second is made, so the window never has two swap chains.
 fn integrated_on_gl(gpu: Gpu, window: &Arc<Window>, display: &winit::event_loop::OwnedDisplayHandle, pref: wgpu::PowerPreference, forced: bool) -> Result<Gpu, String> {
-    let chosen = gpu_pick::Facts::of(&gpu.adapter.get_info());
+    let chosen = gpu_pick::Facts::of(&gpu.win.adapter_info());
     if !wants_gl_move(&chosen, display, pref, forced) {
         return Ok(gpu);
     }
     drop(gpu);
     match init_gpu_on(window.clone(), display, pref, wgpu::Backends::GL) {
         Ok(g) => {
-            crate::host_base::log(&format!("renderer: moved to OpenGL on {} (Prefer integrated to discrete GPU is on and {:?} offered no integrated GPU)", g.adapter.get_info().name, chosen.backend));
+            crate::host_base::log(&format!("renderer: moved to OpenGL on {} (Prefer integrated to discrete GPU is on and {:?} offered no integrated GPU)", g.win.adapter_info().name, chosen.backend));
             Ok(g)
         }
         Err(e) => {
@@ -9202,31 +9128,15 @@ fn make_handles(window: &Arc<Window>, display: &winit::event_loop::OwnedDisplayH
 
 fn init_gpu_on(window: Arc<Window>, display: &winit::event_loop::OwnedDisplayHandle, power_preference: wgpu::PowerPreference, backends: wgpu::Backends) -> Result<Gpu, String> {
     gpu_pick::next_generation();
-    let (GpuHandles { instance, adapter, device, queue }, surface, facts) = make_handles(&window, display, power_preference, backends)?;
-    let info = adapter.get_info();
+    let (handles, surface, facts) = make_handles(&window, display, power_preference, backends)?;
+    let info = handles.adapter.get_info();
     // Once per run in host.log too, so a desktop report says which renderer drew (FIXES 4).
     static LOGGED: std::sync::Once = std::sync::Once::new();
     LOGGED.call_once(|| {
         crate::host_base::log(&format!("renderer: {:?} on {} ({})", info.backend, info.name, gpu_pick::why(power_preference, &facts, &gpu_pick::Facts::of(&info))));
     });
-    let caps = surface.get_capabilities(&adapter);
-    let format = caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(caps.formats[0]);
-    let size = window.inner_size();
-    let config = wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format,
-        width: size.width.max(1),
-        height: size.height.max(1),
-        present_mode: wgpu::PresentMode::Fifo,
-        alpha_mode: crate::transparency::pick_alpha_mode(&caps.alpha_modes, false),
-        view_formats: vec![],
-        desired_maximum_frame_latency: 2,
-        color_space: wgpu::SurfaceColorSpace::Auto,
-    };
-    surface.configure(&device, &config);
-    let mut renderer = Renderer::new(&device, &queue, format, &first_font(), FONT_PX * window.scale_factor() as f32);
-    renderer.set_view_formats(crate::render_fx_gpu::view_formats_supported(&adapter));
-    Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, alpha: None, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), scene: Default::default(), painted_at: 0, display_hz: display_hz_of(&window), window })
+    let win = WgpuWindow::open(window.clone(), surface, &handles, &handles, false, &first_font(), FONT_PX * window.scale_factor() as f32);
+    Ok(Gpu { win, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), scene: Default::default(), painted_at: 0, display_hz: display_hz_of(&window), window })
 }
 
 /// The refresh rate of the monitor `window` is on, in Hz; None when the OS does not report it.
@@ -9857,15 +9767,24 @@ mod tests {
     }
 
     /// A surface configure leaves its contents undefined, so each goes through
-    /// `Gpu::reconfigure`, which invalidates the kept frame. (A new Gpu starts with no kept frame.)
+    /// `Gpu::resize`, which invalidates the kept frame. (A new Gpu starts
+    /// with no kept frame.) The window object's own configures are followed by one too.
     #[test]
     fn every_surface_configure_invalidates_the_kept_frame() {
         for (name, src) in [("mod.rs", live_source()), ("fx_ui.rs", include_str!("fx_ui.rs")), ("transparency_ui.rs", include_str!("transparency_ui.rs"))] {
             for (i, line) in src.lines().enumerate() {
-                let raw = line.contains("gpu.surface.configure(") || line.contains("g.surface.configure(") || line.contains("self.surface.configure(");
-                let helper = name == "mod.rs" && line.contains("self.surface.configure(self.render_device()");
-                assert!(!raw || helper, "{name}:{}: configure through reconfigure()", i + 1);
+                let raw = line.contains(".win.resize(");
+                let helper = name == "mod.rs" && line.contains("self.win.resize(w, h, self.window.scale_factor())");
+                assert!(!raw || helper, "{name}:{}: resize through Gpu::resize()", i + 1);
             }
+        }
+        let t = include_str!("transparency_ui.rs");
+        let at = t.find("if !g.win.set_transparent(transparent) {").expect("the alpha switch");
+        assert!(t[at..at + 120].contains("g.scene.invalidate()"), "a new alpha mode invalidates");
+        let src = live_source();
+        for arm in ["Err(RenderError::Outdated) => {", "Err(RenderError::Lost(why)) => {"] {
+            let at = src.find(arm).unwrap_or_else(|| panic!("{arm}"));
+            assert!(src[at..at + 500].contains("gpu.scene.invalidate();"), "{arm} invalidates");
         }
     }
 
@@ -9874,17 +9793,18 @@ mod tests {
         let src = live_source();
         let keep = src.find("gpu.scene.keep(frame, built, (w, h))").expect("keep after the draw");
         let head = &src[..keep];
-        assert!(head.trim_end().ends_with("if drawn.is_ok() {"), "keep only when the draw succeeded");
+        assert!(head.trim_end().ends_with("if drawn.kept.is_ok() {"), "keep only when the draw succeeded");
         assert!(src[keep..].starts_with("gpu.scene.keep(frame, built, (w, h));\n            } else {\n                gpu.scene.invalidate();"), "a failed draw invalidates");
     }
 
     #[test]
     fn effects_menus_and_shows_invalidate_the_kept_frame() {
         let src = live_source();
-        let bar = src.find("chosen = gpu.bar.draw(").unwrap();
-        assert!(src[bar..bar + 300].contains("gpu.scene.invalidate()"), "a drawn menu bar invalidates");
+        let bar = src.find("gpu.win.render(&frame, fx, if bar_draws").unwrap();
+        let bar = bar + src[bar..].find("\n            if bar_draws {\n").unwrap();
+        assert!(src[bar..bar + 200].contains("gpu.scene.invalidate()"), "a drawn menu bar invalidates");
         assert!(src.contains("WindowEvent::Occluded(false) => {\n                if let Some(g) = self.gpu.as_ref() {\n                    g.scene.invalidate();"), "an expose invalidates");
-        assert!(src.contains("g.scene.sync_look(g.renderer.look_epoch())"), "renderer settings invalidate");
+        assert!(src.contains("g.scene.sync_look(g.win.renderer().look_epoch())"), "renderer settings invalidate");
         let fx = include_str!("fx_ui.rs");
         let sync = &fx[fx.find("fn fx_sync").unwrap()..];
         let after_check = sync.find("return;\n        }").unwrap();
@@ -10303,7 +10223,7 @@ mod tests {
         assert!(early < adopt.find("collect").expect("the new panes"), "the early return comes first");
         // The non-sRGB view of the swap-chain texture is made only while a fade runs.
         let render = include_str!("mod.rs");
-        let raw = render.split("let raw = ").nth(1).and_then(|r| r.split(';').next()).expect("the raw view");
+        let raw = include_str!("../gpu_window.rs").split("let raw = ").nth(1).and_then(|r| r.split(';').next()).expect("the raw view");
         assert!(raw.contains("frame.fade < 1.0"), "the raw view is made only for a fading frame: {raw}");
         // The fade gate and the frame read see-through from one place.
         let build = fn_body(render, "fn build_frame(", "    ");

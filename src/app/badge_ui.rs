@@ -66,7 +66,7 @@ impl App {
                 continue;
             }
             let Some(gpu) = self.gpu.as_mut() else { return };
-            let r = RefCell::new(&mut gpu.renderer);
+            let r = RefCell::new(gpu.win.renderer_mut());
             // Sizes and margins are in points; the pane is in pixels.
             let measure = |t: &str, size: f32| r.borrow_mut().badge_width(t, size * scale) / scale;
             let laid = badge::layout(&text, (inner.w / scale, inner.h / scale), prefs, &measure).map(|l| BadgeLayout {
@@ -86,7 +86,7 @@ impl App {
         let Some(p) = self.panes.get(&id) else { return };
         let Some(pr) = self.store.get(&p.profile) else { return };
         let dark = self.dark();
-        let font_px = self.gpu.as_ref().map_or(16.0, |g| g.renderer.font_px());
+        let font_px = self.gpu.as_ref().map_or(16.0, |g| g.win.renderer().font_px());
         scene::badge(frame, self.text_rect(id, rect), l, pr.color_for("Badge Color", dark), pr.alpha_for("Badge Color", dark), p.own().palette.bg, font_px);
     }
 

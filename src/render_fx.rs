@@ -189,6 +189,9 @@ pub struct PxRect {
     pub h: u32,
 }
 
+/// Where a chain's effects can draw: None is the full screen (`chain_region`).
+pub type RegionTerms = Option<Vec<RegionTerm>>;
+
 /// The terms of a chain of plugins: None (the full screen) if any plugin has no region or
 /// asks for `Full`, else every term.
 pub fn chain_region(manifests: &[&Manifest]) -> Option<Vec<RegionTerm>> {

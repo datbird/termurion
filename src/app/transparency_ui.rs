@@ -12,34 +12,10 @@ pub(super) const UNAVAILABLE: &str = "Transparency needs Direct3D 12; this machi
 /// A window made for alpha: its surface, device and queue come from the second instance (`alpha`); the
 /// primary handles ride along for everything that opens from this window (egui windows, new opaque windows).
 fn init_gpu_alpha(window: Arc<Window>, primary: &Gpu, alpha: &AlphaGpu) -> Result<Gpu, String> {
-    let surface = alpha.instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
-    let caps = surface.get_capabilities(&alpha.adapter);
-    let format = caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(caps.formats[0]);
-    let size = window.inner_size();
-    let config = wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format,
-        width: size.width.max(1),
-        height: size.height.max(1),
-        present_mode: wgpu::PresentMode::Fifo,
-        alpha_mode: transparency::pick_alpha_mode(&caps.alpha_modes, false),
-        // The fade pass scales the stored values on a non-sRGB view of the target (render.rs).
-        view_formats: if format.is_srgb() && crate::render_fx_gpu::view_formats_supported(&alpha.adapter) { vec![format.remove_srgb_suffix()] } else { vec![] },
-        desired_maximum_frame_latency: 2,
-        color_space: wgpu::SurfaceColorSpace::Auto,
-    };
-    surface.configure(&alpha.device, &config);
-    let mut renderer = Renderer::new(&alpha.device, &alpha.queue, format, &super::first_font(), FONT_PX * window.scale_factor() as f32);
-    renderer.set_view_formats(crate::render_fx_gpu::view_formats_supported(&alpha.adapter));
+    let shared = crate::gpu_window::GpuHandles::of(&primary.shared())?;
+    let win = crate::gpu_window::WgpuWindow::open_new(window.clone(), alpha, &shared, true, &super::first_font(), FONT_PX * window.scale_factor() as f32)?;
     Ok(Gpu {
-        surface,
-        adapter: primary.adapter.clone(),
-        device: primary.device.clone(),
-        queue: primary.queue.clone(),
-        config,
-        renderer,
-        instance: primary.instance.clone(),
-        alpha: Some(alpha.clone()),
+        win,
         shape: None,
         fx: None,
         bar: Default::default(),
@@ -160,17 +136,11 @@ impl App {
             return false;
         }
         let Some(g) = self.gpu.as_mut() else { return false };
-        if (g.config.alpha_mode == wgpu::CompositeAlphaMode::PreMultiplied) == transparent {
+        if !g.win.set_transparent(transparent) {
             return false;
         }
-        let caps = g.surface.get_capabilities(g.render_adapter());
-        let mode = transparency::pick_alpha_mode(&caps.alpha_modes, transparent);
-        if mode != g.config.alpha_mode {
-            g.config.alpha_mode = mode;
-            g.reconfigure();
-            return true;
-        }
-        false
+        g.scene.invalidate();
+        true
     }
 
     /// The second instance, made on first use against `window`'s surface (a window made with

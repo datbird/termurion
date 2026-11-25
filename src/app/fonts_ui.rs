@@ -231,7 +231,7 @@ impl PaneFaces {
 impl App {
     /// The face key of `p` in this window (`face_key_for`, with the renderer's memoized lookup).
     pub(super) fn face_key(&self, p: &Profile) -> FaceKey {
-        let renderer = self.gpu.as_ref().map(|g| &g.renderer);
+        let renderer = self.gpu.as_ref().map(|g| g.win.renderer());
         let mut key = face_key_for(p, self.scale(), &|name| renderer.map_or_else(|| name.to_string(), |r| r.resolve_family(name)));
         // A font that names a member of its family (a PostScript name) asks for that weight.
         if let Some(r) = renderer {
@@ -271,8 +271,8 @@ impl App {
             keys.push((id, key));
         }
         let Some(g) = self.gpu.as_mut() else { return };
-        g.renderer.set_scale(scale);
-        self.pane_faces.ensure(&mut g.renderer, keys);
+        g.win.renderer_mut().set_scale(scale);
+        self.pane_faces.ensure(g.win.renderer_mut(), keys);
     }
 
     /// The face of the pane's profile (the default face before the pane is measured).
@@ -293,7 +293,7 @@ impl App {
     /// The font's own cell of a pane (without spacings): what the cursor is measured against.
     pub(super) fn pane_base_cell(&self, pane: PaneId) -> (f32, f32) {
         match (self.pane_faces.face(pane), self.gpu.as_ref()) {
-            (Some(id), Some(g)) => g.renderer.face_base(id),
+            (Some(id), Some(g)) => g.win.renderer().face_base(id),
             _ => self.base_cell(),
         }
     }
@@ -324,9 +324,9 @@ impl App {
         let key = self.face_key(p);
         let scale = self.scale();
         let Some(g) = self.gpu.as_mut() else { return self.cell() };
-        g.renderer.set_scale(scale);
-        let id = g.renderer.face(&key);
-        g.renderer.face_cell(id)
+        g.win.renderer_mut().set_scale(scale);
+        let id = g.win.renderer_mut().face(&key);
+        g.win.renderer().face_cell(id)
     }
 
     /// The panes Make Text Bigger, Smaller and Normal Size act on (`sessionsToAdjustFontSize`,
@@ -404,14 +404,14 @@ impl App {
 
     /// The underline numbers and scale of a pane's face for `scene::pane_with`.
     pub(super) fn draw_prefs_for(&self, face: u16) -> scene::DrawPrefs {
-        let metrics = self.gpu.as_ref().map(|g| g.renderer.face_underline(face)).unwrap_or(scene::DrawPrefs::default().metrics);
+        let metrics = self.gpu.as_ref().map(|g| g.win.renderer().face_underline(face)).unwrap_or(scene::DrawPrefs::default().metrics);
         let mut prefs = scene::DrawPrefs::from_globals(&self.globals, metrics, self.scale());
         if let Some(g) = self.gpu.as_ref() {
-            (prefs.ligatures, prefs.alt_level) = g.renderer.face_ligatures(face, prefs.ligatures.prefer_speed);
-            prefs.masks = g.renderer.face_masks(face, prefs.masks.retina, prefs.masks.force_aa_on_retina);
-            prefs.powerline = g.renderer.face_powerline(face);
-            prefs.table = g.renderer.face_table(face);
-            prefs.monospace = g.renderer.face_monospace(face);
+            (prefs.ligatures, prefs.alt_level) = g.win.renderer().face_ligatures(face, prefs.ligatures.prefer_speed);
+            prefs.masks = g.win.renderer().face_masks(face, prefs.masks.retina, prefs.masks.force_aa_on_retina);
+            prefs.powerline = g.win.renderer().face_powerline(face);
+            prefs.table = g.win.renderer().face_table(face);
+            prefs.monospace = g.win.renderer().face_monospace(face);
             prefs.fx_cursor = g.fx.as_ref().and_then(|f| f.cursor_color());
         }
         prefs.fx_find = Some(self.fx_find.clone());

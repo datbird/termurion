@@ -616,7 +616,7 @@ impl App {
         arrangement::without_network_folders(&mut table);
         // A saved copy that names another OS's default font takes this OS's (the state file rewrites itself).
         if let Some(g) = self.gpu.as_ref() {
-            crate::profile::migrate_font_table(&mut table, crate::platform::OS_NAME, &|f| g.renderer.has_family(f), crate::profile::default_font());
+            crate::profile::migrate_font_table(&mut table, crate::platform::OS_NAME, &|f| g.win.renderer().has_family(f), crate::profile::default_font());
         }
         let values: Vec<(String, Option<Value>)> = table.iter().map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
         copy.set(&values, &shared);

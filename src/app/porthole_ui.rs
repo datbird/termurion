@@ -113,7 +113,7 @@ impl App {
         let dark = screen.is_dark();
         // Colors do not change the rows, so the built-in theme counts them.
         let theme = render::Theme::builtin(&palette, dark);
-        let renderer = RefCell::new(&mut gpu.renderer);
+        let renderer = RefCell::new(gpu.win.renderer_mut());
         let rows_for = |ph: &Porthole| rows_needed(lay(&mut renderer.borrow_mut(), face, ph, &palette, dark, &theme, width, cell.1).height, cell.1);
         let id = screen.render_range(first, last, source, &rows_for);
         if let Some(ph) = id.and_then(|i| screen.portholes.get_mut(&i)) {
@@ -194,7 +194,7 @@ impl App {
                     }
                 };
                 let Some(gpu) = self.gpu.as_mut() else { return };
-                let layout = lay_doc_in(&mut gpu.renderer, face, &doc, ph.wide, text_width(s.term().columns(), cell.0), cell.1);
+                let layout = lay_doc_in(gpu.win.renderer_mut(), face, &doc, ph.wide, text_width(s.term().columns(), cell.0), cell.1);
                 // The terminal estimated this one's rows; the window's fonts decide once.
                 if !ph.sized {
                     resize.push((pane, *pid, rows_needed(layout.height, cell.1)));
@@ -240,7 +240,7 @@ impl App {
             .collect();
         let faces: HashMap<PaneId, u16> = panes.iter().map(|(p, _)| (*p, self.pane_faces.face(*p).unwrap_or(crate::render::DEFAULT_FACE))).collect();
         let Some(gpu) = self.gpu.as_mut() else { return };
-        let r = RefCell::new(&mut gpu.renderer);
+        let r = RefCell::new(gpu.win.renderer_mut());
         for (pane, pid, range) in work {
             let face = faces.get(&pane).copied().unwrap_or(crate::render::DEFAULT_FACE);
             let measure = |t: &str, f: Face, s: f32| r.borrow_mut().text_width_in(face, t, f == Face::Prose, s);
@@ -272,7 +272,7 @@ impl App {
         let (cell, face) = (self.pane_cell(pane), self.pane_faces.face(pane).unwrap_or(crate::render::DEFAULT_FACE));
         let view = self.porthole_views.get(&(pane, pid))?;
         let gpu = self.gpu.as_mut()?;
-        let r = RefCell::new(&mut gpu.renderer);
+        let r = RefCell::new(gpu.win.renderer_mut());
         let measure = |t: &str, f: Face, s: f32| r.borrow_mut().text_width_in(face, t, f == Face::Prose, s);
         let (ox, oy) = (frame.x + PORTHOLE_MARGIN - view.scroll_x, frame.y + PORTHOLE_MARGIN + cell.1);
         let last = view.layout.lines.len().checked_sub(1)?;

@@ -51,6 +51,7 @@ pub mod fonts;
 pub mod margins;
 pub mod gpu_pick;
 pub mod gpu_shared;
+pub mod gpu_window;
 pub mod power;
 pub mod osc;
 pub mod osc1337;

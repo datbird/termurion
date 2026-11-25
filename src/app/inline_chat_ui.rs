@@ -560,7 +560,7 @@ impl App {
         let Some(g) = self.gpu.as_mut() else { return };
         let Some(s) = self.inline.get_mut(&pane) else { return };
         s.keys = true;
-        let renderer = RefCell::new(&mut g.renderer);
+        let renderer = RefCell::new(g.win.renderer_mut());
         let measure = |t: &str| renderer.borrow_mut().toolbelt_width(&t.replace('\t', "    "), scale);
         let font = renderer.borrow().toolbelt_font_key(scale);
         let lines = s.wrap.wrap(&s.edit.text, parts.text.w, font, &measure);
@@ -642,7 +642,7 @@ impl App {
         let cut = key == EditKey::Cut;
         let Some(g) = self.gpu.as_mut() else { return false };
         let Some(s) = self.inline.get_mut(&pane) else { return false };
-        let renderer = RefCell::new(&mut g.renderer);
+        let renderer = RefCell::new(g.win.renderer_mut());
         let measure = |t: &str| renderer.borrow_mut().toolbelt_width(&t.replace('\t', "    "), scale);
         let font = renderer.borrow().toolbelt_font_key(scale);
         let lines = s.wrap.wrap(&s.edit.text, parts.text.w, font, &measure);
@@ -942,7 +942,7 @@ impl App {
             let Some(g) = self.gpu.as_mut() else { continue };
             let Some(s) = self.inline.get_mut(&pane) else { continue };
             let typing = self.chat_broker.is_typing(&chat, Participant::Agent);
-            let renderer = RefCell::new(&mut g.renderer);
+            let renderer = RefCell::new(g.win.renderer_mut());
             let toolbelt = |t: &str| renderer.borrow_mut().toolbelt_width(&t.replace('\t', "    "), scale);
             let font = renderer.borrow().toolbelt_font_key(scale);
             let (line_h, text_scale) = (m.line.max(1.0), m.text_scale);

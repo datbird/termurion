@@ -105,7 +105,7 @@ impl App {
         let work = self.monitor_rects().map(|(w, _)| w);
         let scale = f64::from(self.scale());
         let Some(g) = self.gpu.as_ref() else { return };
-        let size = web_popover::content_size(&kind, size, work, scale, f64::from(g.device.limits().max_texture_dimension_2d));
+        let size = web_popover::content_size(&kind, size, work, scale, f64::from(g.win.max_texture_side()));
         match WebPopover::open(event_loop, &g.shared(), kind, size, at, work) {
             Ok(p) => self.web_popover = Some((pane, p)),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),

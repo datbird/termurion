@@ -712,7 +712,7 @@ impl App {
         let scale = self.scale();
         let dark = self.dark();
         let avail = (width - 2.0 * scene::LIST_INSET * scale).max(0.0);
-        let renderer = self.gpu.as_mut().map(|g| RefCell::new(&mut g.renderer));
+        let renderer = self.gpu.as_mut().map(|g| RefCell::new(g.win.renderer_mut()));
         let measure = |s: &str| match &renderer {
             Some(r) => r.borrow_mut().toolbelt_width(s, scale),
             None => s.chars().count() as f32 * 7.0 * scale,
@@ -1514,7 +1514,7 @@ impl App {
     /// Runs `f` with the editor and its width measure: the toolbelt font, a tab as four spaces.
     fn with_note_measure<R>(&mut self, f: impl FnOnce(&mut super::toolbelt_ui::Belt, &dyn Fn(&str) -> f32, u64) -> R) -> R {
         let scale = self.scale();
-        let renderer = self.gpu.as_mut().map(|g| RefCell::new(&mut g.renderer));
+        let renderer = self.gpu.as_mut().map(|g| RefCell::new(g.win.renderer_mut()));
         // The measure's own key, for the editor's wrap cache (`text_edit::WrapCache`).
         let font = match &renderer {
             Some(r) => r.borrow().toolbelt_font_key(scale),
@@ -1697,7 +1697,7 @@ impl App {
         let selected = notes::MODES.iter().position(|(mode, _)| *mode == self.belt.notes_mode).unwrap_or(0);
         let clip = Rect { x: l.frame.x + 1.0, y: l.frame.y + 1.0, w: (l.frame.w - 2.0).max(0.0), h: (l.frame.h - 2.0).max(0.0) };
         let Some(g) = self.gpu.as_mut() else { return };
-        let renderer = RefCell::new(&mut g.renderer);
+        let renderer = RefCell::new(g.win.renderer_mut());
         let measure = |s: &str| renderer.borrow_mut().toolbelt_width(&s.replace('\t', TAB_AS), scale);
         let font = renderer.borrow().toolbelt_font_key(scale);
         let label_w = |s: &str| renderer.borrow_mut().text_width(s, true, m.text_scale);
@@ -1921,7 +1921,7 @@ impl App {
         };
         let mut geo = CcGeo { lines: Vec::new(), button: dead, label, label_w: 0.0, enabled, goal: None, run: None, goal_text: String::new(), check_label_w: 0.0 };
         let Some(g) = self.gpu.as_mut() else { return geo };
-        let renderer = RefCell::new(&mut g.renderer);
+        let renderer = RefCell::new(g.win.renderer_mut());
         let width = |s: &str| renderer.borrow_mut().text_width(s, true, m.text_scale);
         let inner = Rect { x: area.x + 4.0 * scale, w: (area.w - 8.0 * scale).max(0.0), ..area };
         geo.label_w = width(label);
@@ -1979,7 +1979,7 @@ impl App {
         let doc = crate::porthole::render::render(transcript, &crate::porthole::detect::Language::Markdown, &palette, dark);
         let cell_h = self.cell().1 * m.text_scale;
         let Some(g) = self.gpu.as_mut() else { return 0.0 };
-        let r = RefCell::new(&mut g.renderer);
+        let r = RefCell::new(g.win.renderer_mut());
         let measure = |t: &str, f: crate::porthole::render::Face, s: f32| r.borrow_mut().text_width(t, f == crate::porthole::render::Face::Prose, s * m.text_scale);
         let layout = crate::porthole::render::layout(&doc, width, cell_h, &measure, false);
         let height = layout.height;
@@ -2066,7 +2066,7 @@ impl App {
         let line_h = self.list_metrics().line.max(1.0);
         let clip = Rect { x: frame.x + 1.0, y: frame.y + 1.0, w: (frame.w - 2.0).max(0.0), h: (frame.h - 2.0).max(0.0) };
         let Some(g) = self.gpu.as_mut() else { return FieldParts { clip, lines: Vec::new(), selection: Vec::new(), caret: None, thumb: None } };
-        let renderer = RefCell::new(&mut g.renderer);
+        let renderer = RefCell::new(g.win.renderer_mut());
         let measure = |s: &str| renderer.borrow_mut().toolbelt_width(&s.replace('\t', TAB_AS), scale);
         let font = renderer.borrow().toolbelt_font_key(scale);
         let belt = &mut self.belt;

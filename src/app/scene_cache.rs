@@ -323,21 +323,24 @@ mod tests {
         let body = &src[src.find("fn render_frame(").unwrap()..];
         let body = &body[..body.find("\n/// iTerm2's button numbers").unwrap()];
         let at = |what: &str| body.find(what).unwrap_or_else(|| panic!("{what} in render_frame"));
-        let (prepare, still, acquire) = (at("fx.prepare("), at("skip_if_still("), at("get_current_texture()"));
+        let (prepare, still, acquire) = (at("fx.prepare("), at("skip_if_still("), at("gpu.win.render("));
         assert!(prepare < still && still < acquire, "prepare, then the still check, then the drawable");
         let check = &body[still.saturating_sub(300)..still];
         // A frame that gets no drawable still paces the next one.
         let acquire = &body[acquire..];
-        let timeout = &acquire[acquire.find("Timeout | wgpu::CurrentSurfaceTexture::Occluded").unwrap()..];
+        let timeout = &acquire[acquire.find("Err(RenderError::Skip) => {").unwrap()..];
         assert!(timeout[..timeout.find("return None;").unwrap()].contains("pace_fx(fx_now, focused_window, fx_pacing, true)"));
         // Only an active chain may skip.
-        assert!(body.contains("filter(|f| f.active()).and_then(|f| f.chain_mut())"));
+        assert!(body.contains("filter(|f| f.active()).is_some_and(|f| gpu.win.skip_if_still("));
         // A frame left out waits a frame gap before it asks again.
         assert!(body.contains("fx_pacing, true)"));
         // The menu bar's theme is read only when the bar draws.
         assert!(body.contains("let bar_dark = bar_draws && self.dark()"));
         // The sRGB view is made only when something reads it.
-        assert!(body.contains("(!fx_raw || bar_draws).then("));
+        let window = include_str!("../gpu_window.rs");
+        assert!(window.contains("(!fx_raw || bar_draws).then("));
+        // The acquire comes before the draw, inside the window object.
+        assert!(window.find("get_current_texture()").unwrap() < window.find("self.renderer.draw_with(").unwrap());
         for input in ["same_scene", "shown", "bar_busy", "alpha_changed", "frame.fade"] {
             assert!(check.contains(input), "the still check reads {input}");
         }

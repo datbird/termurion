@@ -497,8 +497,8 @@ impl App {
         let scale = self.scale();
         let dark = self.dark();
         let Some(g) = self.gpu.as_mut() else { return };
-        let text_scale = TITLE_PT * 4.0 / 3.0 * scale / g.renderer.font_px().max(1.0);
-        let renderer = std::cell::RefCell::new(&mut g.renderer);
+        let text_scale = TITLE_PT * 4.0 / 3.0 * scale / g.win.renderer().font_px().max(1.0);
+        let renderer = std::cell::RefCell::new(g.win.renderer_mut());
         let width = |s: &str| renderer.borrow_mut().text_width(s, true, text_scale);
         let mut titles = Vec::with_capacity(l.wrappers.len());
         let mut widths = Vec::with_capacity(l.wrappers.len());

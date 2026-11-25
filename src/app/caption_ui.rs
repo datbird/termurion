@@ -19,7 +19,7 @@ impl App {
         let thickness = self.hwnd().map_or((8.0 * scale).round(), frame_thickness);
         let maximized = g.window.is_maximized();
         let resize_top = caption::resize_top(thickness, maximized, g.window.is_resizable());
-        let width = g.config.width as f32;
+        let width = g.win.size().0 as f32;
         let mut l = caption::layout(width, bar_h, scale, setting, extra, 0.0, self.caption_label_w, resize_top, maximized);
         // The window name beside the tabs takes the room the tabs leave (`RTV:590-620`).
         if self.caption_name_w > 0.0 {
@@ -60,9 +60,9 @@ impl App {
         let pt = crate::tab_theme::font_pt(self.resolved_style());
         let (w, name_w) = match self.gpu.as_mut() {
             Some(g) => {
-                let row_scale = pt * scale / g.renderer.font_px().max(1.0);
-                let w = label.map_or(0.0, |text| (g.renderer.prose_width(&text, false, row_scale) + 8.0 * scale).ceil());
-                (w, name.map_or(0.0, |text| g.renderer.prose_width(&text, false, row_scale).ceil()))
+                let row_scale = pt * scale / g.win.renderer().font_px().max(1.0);
+                let w = label.map_or(0.0, |text| (g.win.renderer_mut().prose_width(&text, false, row_scale) + 8.0 * scale).ceil());
+                (w, name.map_or(0.0, |text| g.win.renderer_mut().prose_width(&text, false, row_scale).ceil()))
             }
             None => (0.0, 0.0),
         };
@@ -162,7 +162,7 @@ impl App {
         let pal = self.tab_palette();
         let scale = self.scale();
         let cell = self.cell();
-        let font_px = self.gpu.as_ref().map_or(cell.1, |g| g.renderer.font_px()).max(1.0);
+        let font_px = self.gpu.as_ref().map_or(cell.1, |g| g.win.renderer().font_px()).max(1.0);
         let font_scale = scale / font_px;
         let (title, label) = self.compact_caption();
         if let (Some(s), Some(text)) = (l.shortcut, label) {
@@ -171,14 +171,14 @@ impl App {
         if let (Some(n), Some(text)) = (l.name, self.window_name()) {
             let row_scale = pal.font_pt * scale / font_px;
             if let Some(g) = self.gpu.as_mut() {
-                let mut measure = |t: &str| g.renderer.prose_width(t, false, row_scale);
+                let mut measure = |t: &str| g.win.renderer_mut().prose_width(t, false, row_scale);
                 scene::caption_name(frame, &text, n, &mut measure, &pal, scale, font_scale, cell.1);
             }
         }
         let top_bar = self.tab_bar_visible() && self.tab_position() == TabPosition::Top;
         if !top_bar && !title.is_empty() {
             let row_scale = pal.font_pt * scale / font_px;
-            let width = self.gpu.as_mut().map_or(0.0, |g| g.renderer.prose_width(&title, false, row_scale));
+            let width = self.gpu.as_mut().map_or(0.0, |g| g.win.renderer_mut().prose_width(&title, false, row_scale));
             scene::caption_title(frame, &title, l.tabs, width, &pal, scale, font_scale, cell.1);
         }
         if let Some(m) = l.menu {

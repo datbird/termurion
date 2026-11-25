@@ -409,13 +409,13 @@ impl App {
         let own = if graph { None } else { c.font() };
         let font = own.filter(|f| !f.trim().is_empty()).or_else(|| layout.advanced.font.clone());
         let pt = font.map_or(DEFAULT_FONT_PT, |f| crate::profile::parse_font(&f).size_pt.clamp(4.0, 128.0));
-        let term_px = self.gpu.as_ref().map_or(16.0, |g| g.renderer.font_px()).max(1.0);
+        let term_px = self.gpu.as_ref().map_or(16.0, |g| g.win.renderer().font_px()).max(1.0);
         pt * self.scale() / term_px
     }
 
     /// The unread count badge's text size, as a scale of the terminal font.
     fn badge_text_scale(&self) -> f32 {
-        let term_px = self.gpu.as_ref().map_or(16.0, |g| g.renderer.font_px()).max(1.0);
+        let term_px = self.gpu.as_ref().map_or(16.0, |g| g.win.renderer().font_px()).max(1.0);
         BADGE_FONT_PT * self.scale() / term_px
     }
 
@@ -506,7 +506,7 @@ impl App {
         // up (no NSTextField padding).
         let mut measure = |t: &str, text_scale: f32| -> f32 {
             let px = match self.gpu.as_mut() {
-                Some(g) => g.renderer.text_width(t, true, text_scale),
+                Some(g) => g.win.renderer_mut().text_width(t, true, text_scale),
                 None => t.chars().count() as f32 * cell_w * text_scale,
             };
             (px / scale).ceil()
@@ -702,7 +702,7 @@ impl App {
         let view = part(0.0, w_pt);
         let now = Instant::now();
         let hint = self.paste_view.get(&bar.pane).and_then(|s| s.look(now));
-        let window = self.gpu.as_ref().map_or(Rect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 }, |g| Rect { x: 0.0, y: 0.0, w: g.config.width as f32, h: g.config.height as f32 });
+        let window = self.gpu.as_ref().map_or(Rect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 }, |g| Rect { x: 0.0, y: 0.0, w: g.win.size().0 as f32, h: g.win.size().1 as f32 });
         let under = self.panes.get(&bar.pane).map_or(crate::palette::rgb(0x2b, 0x2b, 0x2b), |p| p.screen.palette.bg);
         let hint_rect = keyboard.zip(hint).map(|(k, look)| scene::paste_hint(frame, k, window, cell, scale, look, under));
         self.paste_status_hits.push((bar.pane, scene::PasteHits { view, cancel, keyboard, hint: hint_rect }));
@@ -840,7 +840,7 @@ impl App {
         self.text_popover = None;
         self.web_popover = None;
         if let Some(g) = self.gpu.as_ref() {
-            let size = crate::status_popover_ui::popover_size(size, work, scale, f64::from(g.device.limits().max_texture_dimension_2d));
+            let size = crate::status_popover_ui::popover_size(size, work, scale, f64::from(g.win.max_texture_side()));
             let origin = g.window.inner_position().unwrap_or_default();
             let at = (origin.x as f64 + f64::from(anchor.0), origin.y as f64 + f64::from(anchor.1));
             match crate::status_popover_ui::TextPopover::open(event_loop, &g.shared(), text, size, at, work) {

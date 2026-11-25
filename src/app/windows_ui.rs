@@ -1281,26 +1281,9 @@ pub(super) fn init_gpu_shared(window: Arc<Window>, from: &Gpu) -> Result<Gpu, St
 
 /// The same on kept handles.
 pub(super) fn init_gpu_from(window: Arc<Window>, from: &crate::gpu_shared::GpuShared) -> Result<Gpu, String> {
-    let crate::gpu_shared::GpuShared::Wgpu { instance, adapter, device, queue } = from;
-    let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
-    let caps = surface.get_capabilities(adapter);
-    let format = caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(caps.formats[0]);
-    let size = window.inner_size();
-    let config = wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format,
-        width: size.width.max(1),
-        height: size.height.max(1),
-        present_mode: wgpu::PresentMode::Fifo,
-        alpha_mode: crate::transparency::pick_alpha_mode(&caps.alpha_modes, false),
-        view_formats: vec![],
-        desired_maximum_frame_latency: 2,
-        color_space: wgpu::SurfaceColorSpace::Auto,
-    };
-    surface.configure(device, &config);
-    let mut renderer = Renderer::new(device, queue, format, &super::first_font(), FONT_PX * window.scale_factor() as f32);
-    renderer.set_view_formats(crate::render_fx_gpu::view_formats_supported(adapter));
-    Ok(Gpu { surface, adapter: adapter.clone(), device: device.clone(), queue: queue.clone(), config, renderer, instance: instance.clone(), alpha: None, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), scene: Default::default(), painted_at: 0, display_hz: display_hz_of(&window), window })
+    let on = crate::gpu_window::GpuHandles::of(from)?;
+    let win = crate::gpu_window::WgpuWindow::open_new(window.clone(), &on, &on, false, &super::first_font(), FONT_PX * window.scale_factor() as f32)?;
+    Ok(Gpu { win, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), scene: Default::default(), painted_at: 0, display_hz: display_hz_of(&window), window })
 }
 
 impl App {

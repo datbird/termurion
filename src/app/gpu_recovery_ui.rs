@@ -5,59 +5,19 @@
 use super::*;
 use crate::gpu_pick::Action;
 
-/// Moves one window onto new handles. Hands the window back unchanged, with the reason, when its new
+/// Moves one window onto new handles. Leaves the window as it was, and says why, when its new
 /// surface cannot be made, so a failed attempt loses no window.
-fn rebuild_window_gpu(old: Gpu, primary: &GpuHandles, alpha: Option<&AlphaGpu>) -> Result<Gpu, (Box<Gpu>, String)> {
-    let target = if old.alpha.is_some() { alpha } else { None };
-    if old.alpha.is_some() && target.is_none() {
-        return Err((Box::new(old), "no see-through instance".to_string()));
-    }
-    let (instance, adapter, device, queue) = match target {
-        Some(a) => (&a.instance, &a.adapter, &a.device, &a.queue),
-        None => (&primary.instance, &primary.adapter, &primary.device, &primary.queue),
-    };
-    // Made before the old surface goes: a failure leaves the window as it was.
-    let surface = match instance.create_surface(old.window.clone()) {
-        Ok(s) => s,
-        Err(e) => return Err((Box::new(old), format!("no surface: {e}"))),
-    };
-    let caps = surface.get_capabilities(adapter);
-    let Some(format) = caps.formats.iter().copied().find(|f| f.is_srgb()).or_else(|| caps.formats.first().copied()) else {
-        return Err((Box::new(old), "the surface offers no format".to_string()));
-    };
-    let Gpu { surface: dead, config: old_config, mut renderer, shape, window, alpha: old_alpha, .. } = old;
-    // One swap chain per window: the old one goes before the new one is configured.
-    drop(dead);
-    let alpha_mode = if caps.alpha_modes.contains(&old_config.alpha_mode) { old_config.alpha_mode } else { crate::transparency::pick_alpha_mode(&caps.alpha_modes, false) };
-    let config = wgpu::SurfaceConfiguration {
-        format,
-        alpha_mode,
-        view_formats: if old_alpha.is_some() && format.is_srgb() && crate::render_fx_gpu::view_formats_supported(adapter) { vec![format.remove_srgb_suffix()] } else { vec![] },
-        ..old_config
-    };
-    surface.configure(device, &config);
-    renderer.rebuild_gpu(device, queue, format);
-    renderer.set_view_formats(crate::render_fx_gpu::view_formats_supported(adapter));
-    Ok(Gpu {
-        surface,
-        adapter: primary.adapter.clone(),
-        device: primary.device.clone(),
-        queue: primary.queue.clone(),
-        config,
-        renderer,
-        instance: primary.instance.clone(),
-        alpha: target.cloned(),
-        shape,
-        fx: None,
-        bar: Default::default(),
-        layout: None,
-        // The same window: its title is sent once more, which is harmless.
-        title_sent: Default::default(),
-        scene: Default::default(),
-        painted_at: 0,
-        display_hz: super::display_hz_of(&window),
-        window,
-    })
+fn rebuild_window_gpu(g: &mut Gpu, primary: &GpuHandles, alpha: Option<&AlphaGpu>) -> Result<(), String> {
+    g.win.rebuild(&primary.shared(), alpha.map(GpuHandles::shared).as_ref())?;
+    g.fx = None;
+    g.bar = Default::default();
+    g.layout = None;
+    // The same window: its title is sent once more, which is harmless.
+    g.title_sent = Default::default();
+    g.scene = Default::default();
+    g.painted_at = 0;
+    g.display_hz = super::display_hz_of(&g.window);
+    Ok(())
 }
 
 impl App {
@@ -143,23 +103,19 @@ impl App {
             }
         }
         let info = primary.adapter.get_info();
-        let needs_alpha = self.gpu.iter().any(|g| g.alpha.is_some()) || self.windows.parked().any(|(_, s)| s.gpu.as_ref().is_some_and(|g| g.alpha.is_some()));
+        let needs_alpha = self.gpu.iter().any(|g| g.win.has_alpha()) || self.windows.parked().any(|(_, s)| s.gpu.as_ref().is_some_and(|g| g.win.has_alpha()));
         let alpha = if needs_alpha {
-            let w = self.gpu.iter().chain(self.windows.parked().filter_map(|(_, s)| s.gpu.as_ref())).find(|g| g.alpha.is_some()).map(|g| g.window.clone()).unwrap_or(probe);
+            let w = self.gpu.iter().chain(self.windows.parked().filter_map(|(_, s)| s.gpu.as_ref())).find(|g| g.win.has_alpha()).map(|g| g.window.clone()).unwrap_or(probe);
             Some(transparency_ui::make_alpha_gpu(&display, &w)?)
         } else {
             None
         };
         let mut failure: Option<String> = None;
         let mut each = |slot: &mut Option<Gpu>| {
-            if let Some(old) = slot.take() {
-                match rebuild_window_gpu(old, &primary, alpha.as_ref()) {
-                    Ok(g) => *slot = Some(g),
-                    Err((g, e)) => {
-                        *slot = Some(*g);
-                        failure.get_or_insert(e);
-                    }
-                }
+            if let Some(g) = slot.as_mut()
+                && let Err(e) = rebuild_window_gpu(g, &primary, alpha.as_ref())
+            {
+                failure.get_or_insert(e);
             }
         };
         each(&mut self.gpu);

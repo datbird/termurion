@@ -42,7 +42,7 @@ impl App {
             }
             picture_pane(&mut frame, &batch, Rect { x: pad, y: 0.0, w: cols as f32 * cell.0, h }, cell, cursor, &draw, face);
             let gpu = self.gpu.as_mut().ok_or("no window")?;
-            out.extend(gpu.renderer.draw_offscreen(&frame, width as u32, h as u32)?);
+            out.extend(gpu.win.capture(&frame, None, width as u32, h as u32)?);
         }
         Ok((width as u32, total_h as u32, out))
     }
@@ -140,7 +140,7 @@ impl App {
             use alacritty_terminal::grid::Dimensions;
             let g = snap.term().grid();
             let total = g.history_size() + g.screen_lines();
-            let max = app.gpu.as_ref().map_or(8192, |g| g.device.limits().max_texture_dimension_2d as usize);
+            let max = app.gpu.as_ref().map_or(8192, |g| g.win.max_texture_side() as usize);
             let rows = crate::shotimage::minimap_rows(total, app.cell().1.ceil() as usize, max);
             let lines = crate::shotimage::minimap_lines(total, rows);
             let picked = screenshot::pick(snap, &lines);

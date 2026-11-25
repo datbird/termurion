@@ -980,7 +980,7 @@ impl App {
         let Some(g) = self.gpu.as_ref() else { return };
         let origin = g.window.inner_position().unwrap_or_default();
         let place = LogAt { x: origin.x as f64 + at.x as f64, y: origin.y as f64 + at.y as f64, above: at.above };
-        let font = LogFont { cell_w: g.renderer.cell.0 as f64, px: g.renderer.font_px(), scale: g.window.scale_factor(), dark };
+        let font = LogFont { cell_w: g.win.renderer().cell.0 as f64, px: g.win.renderer().font_px(), scale: g.window.scale_factor(), dark };
         match GitLogWindow::open(event_loop, &g.shared(), text, place, font) {
             Ok(w) => self.git_log = Some(w),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
