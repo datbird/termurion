@@ -44,7 +44,6 @@ pub struct PlaybackWindow {
 impl PlaybackWindow {
     /// Opens the window on `frames` (oldest first) whose pictures are `size` pixels; it shows the
     /// last frame, paused (`seekToLastFrame`). Err when there is nothing to show or no window.
-    #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
         gpu: &crate::gpu_shared::GpuShared,

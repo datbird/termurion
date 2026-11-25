@@ -62,7 +62,6 @@ fn ok_label_of(custom: Option<&str>) -> &str {
 const HISTORY_ROOM: f64 = 9.0 * 18.0;
 
 impl PromptWindow {
-    #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
         gpu: &crate::gpu_shared::GpuShared,
@@ -531,7 +530,6 @@ impl ConfirmWindow {
     /// The checkbox's label (`iTermWarning.m:400-406`).
     pub const SUPPRESS: &'static str = "Suppress this message permanently";
 
-    #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
         gpu: &crate::gpu_shared::GpuShared,
@@ -547,7 +545,6 @@ impl ConfirmWindow {
 
     /// A warning that cannot be silenced: the text and an OK button (Enter; Escape closes
     /// it too).
-    #[allow(clippy::too_many_arguments)]
     pub fn warning(
         event_loop: &ActiveEventLoop,
         gpu: &crate::gpu_shared::GpuShared,
@@ -563,7 +560,6 @@ impl ConfirmWindow {
     /// A warning that cannot be silenced with two actions in iTerm2's order: `first` is the
     /// default button (Enter) and answers `Cancel`, as does Escape; `second` answers `Ok`
     /// ("Not all sessions at password prompt", the password prompt check).
-    #[allow(clippy::too_many_arguments)]
     pub fn choice(
         event_loop: &ActiveEventLoop,
         gpu: &crate::gpu_shared::GpuShared,
@@ -586,7 +582,6 @@ impl ConfirmWindow {
     /// `action_keys` names, and Alt plus a letter the button `shortcut_press` names, its letter
     /// underlined with `underline`. With `forget`, "Permanently Forget Saved Selection" follows
     /// the labels and answers the index `labels.len()`.
-    #[allow(clippy::too_many_arguments)]
     pub fn actions(
         event_loop: &ActiveEventLoop,
         gpu: &crate::gpu_shared::GpuShared,

@@ -101,7 +101,6 @@ pub struct TagEditor {
 }
 
 impl TagEditor {
-    #[allow(clippy::too_many_arguments)]
     pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, pane: PaneId, url: String, title: Option<String>, tags: Vec<String>, all: Vec<String>, center: (f64, f64)) -> Result<TagEditor, String> {
         // A small dialog: on Linux its own frame (`dialog_frame`).
         let attrs = crate::dialog_frame::attributes(TITLE, f64::from(SIZE.0), f64::from(SIZE.1)).with_window_level(winit::window::WindowLevel::AlwaysOnTop);

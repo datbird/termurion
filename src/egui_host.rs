@@ -144,7 +144,6 @@ pub struct EguiHost {
 }
 
 impl EguiHost {
-    #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
         gpu: &crate::gpu_shared::GpuShared,
@@ -160,7 +159,6 @@ impl EguiHost {
 
     /// An alert or small dialog: on Linux it draws its own frame (`dialog_frame`), elsewhere it
     /// is the window `open` makes. Draw it with `paint_dialog`.
-    #[allow(clippy::too_many_arguments)]
     pub fn open_dialog(
         event_loop: &ActiveEventLoop,
         gpu: &crate::gpu_shared::GpuShared,

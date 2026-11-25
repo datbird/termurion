@@ -49,7 +49,6 @@ pub fn remove_spec() -> crate::warnings::Spec {
 }
 
 impl NoteWindow {
-    #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
         gpu: &crate::gpu_shared::GpuShared,

@@ -28,7 +28,6 @@ pub struct ListPopup {
 }
 
 impl ListPopup {
-    #[allow(clippy::too_many_arguments)]
     pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, title: &str, headers: [&str; 2], rows: Vec<(String, String)>, footer: Option<String>) -> Result<ListPopup, String> {
         let host = EguiHost::open(event_loop, gpu, title, 716.0, 320.0)?;
         Ok(ListPopup { headers: headers.map(str::to_string), footer, host, rows, filter: Filter::default(), selected: 0, started: std::time::Instant::now() })

@@ -27,7 +27,6 @@ pub struct AdvancedPasteWindow {
 }
 
 impl AdvancedPasteWindow {
-    #[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
     pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, sources: Vec<(String, String)>, source: usize, form: Form, session: Session, defaults: crate::advanced_paste::Defaults) -> Result<AdvancedPasteWindow, String> {
         let host = EguiHost::open(event_loop, gpu, "Advanced Paste", 520.0, 640.0)?;
         let text = sources.get(source).map(|s| s.1.clone()).unwrap_or_default();

@@ -119,7 +119,6 @@ pub struct StatusPopover {
 }
 
 impl StatusPopover {
-    #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
         gpu: &crate::gpu_shared::GpuShared,
@@ -267,7 +266,6 @@ pub struct InfoPopover {
 }
 
 impl InfoPopover {
-    #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
         gpu: &crate::gpu_shared::GpuShared,
@@ -333,7 +331,6 @@ pub struct TextPopover {
 impl TextPopover {
     /// `size`: the content area in points (at least one); `at`: the point its bottom centers
     /// on, screen pixels; `work`: the work area of that point's monitor.
-    #[allow(clippy::too_many_arguments)]
     pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, text: &str, size: (f64, f64), at: (f64, f64), work: Option<Rect>) -> Result<TextPopover, String> {
         let (w, h) = (size.0.max(1.0), size.1.max(1.0));
         let host = popover_window(event_loop, gpu, "Popover", w, h, at, work)?;
