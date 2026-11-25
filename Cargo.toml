@@ -162,12 +162,12 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
-# alacritty_terminal with row marks (crates/alacritty_terminal/TERMURION-PATCHES.md).
 # The MSL translation test (src/metal_backend/shaders.rs) runs on every system.
 [dev-dependencies]
 naga = { version = "30.0.1", features = ["wgsl-in", "msl-out"] }
 
 [patch.crates-io]
+# alacritty_terminal with row marks (crates/alacritty_terminal/TERMURION-PATCHES.md).
 alacritty_terminal = { path = "crates/alacritty_terminal" }
 # vte with a readable parser state (crates/vte/TERMURION-PATCHES.md).
 vte = { path = "crates/vte" }
