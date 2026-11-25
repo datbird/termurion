@@ -5349,6 +5349,10 @@ pub(crate) mod tests {
                 r.set_view_formats(false);
                 let b = r.draw_offscreen_fx(&frame, Some((&mut plain, &u)), w, h).unwrap();
                 if !views {
+                    // Nothing to compare with here: at least the picture is not one flat color.
+                    if b.chunks(4).all(|px| px == &b[..4]) {
+                        bad.push(format!("{} (keep alpha {keep}): the plain chain drew one flat color", p.id));
+                    }
                     continue;
                 }
                 r.set_view_formats(true);

@@ -10,13 +10,57 @@ struct QuadPipeline {
     pipeline: wgpu::RenderPipeline,
     /// Scales what is already in the target by the blend constant (the fade pass).
     fader: wgpu::RenderPipeline,
-    /// The fade pass for a target with no non-sRGB view: the target's own format.
-    fader_view: wgpu::RenderPipeline,
+    /// The fade pass for a target with no non-sRGB view (GL): the target's own format. Built on
+    /// the first such fade, so other backends never compile it.
+    fader_view: Option<wgpu::RenderPipeline>,
+    shader: wgpu::ShaderModule,
+    pipeline_layout: wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
     uniform: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
 }
 
 impl QuadPipeline {
+    /// The fade pass on the target's own (sRGB) view, scaling in linear space.
+    fn fade_for_view(&self, device: &wgpu::Device) -> wgpu::RenderPipeline {
+        let scale = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::Constant, operation: wgpu::BlendOperation::Add };
+        Self::make(device, &self.shader, &self.pipeline_layout, "quad fade view", self.format, wgpu::BlendState { color: scale, alpha: scale })
+    }
+
+    /// One quad pipeline writing `format` with `blend`.
+    fn make(device: &wgpu::Device, shader: &wgpu::ShaderModule, pipeline_layout: &wgpu::PipelineLayout, label: &'static str, format: wgpu::TextureFormat, blend: wgpu::BlendState) -> wgpu::RenderPipeline {
+        let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4];
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
+            layout: Some(pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: QUAD_STRIDE,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &attributes,
+                })],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(blend),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    }
+
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("quad"),
@@ -51,36 +95,7 @@ impl QuadPipeline {
             bind_group_layouts: &[Some(&layout)],
             ..Default::default()
         });
-        let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4];
-        let make = |label: &'static str, format: wgpu::TextureFormat, blend: wgpu::BlendState| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(label),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: QUAD_STRIDE,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &attributes,
-                })],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(blend),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let make = |label: &'static str, format: wgpu::TextureFormat, blend: wgpu::BlendState| Self::make(device, &shader, &pipeline_layout, label, format, blend);
         let pipeline = make("quad", format, wgpu::BlendState::ALPHA_BLENDING);
         // result = destination * constant, in every channel: a premultiplied target scaled whole.
         let scale = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::Constant, operation: wgpu::BlendOperation::Add };
@@ -89,10 +104,7 @@ impl QuadPipeline {
         // leave the color above the alpha).
         let fade_blend = wgpu::BlendState { color: scale, alpha: scale };
         let fader = make("quad fade", format.remove_srgb_suffix(), fade_blend);
-        // Without a non-sRGB view (OpenGL has none) the fade runs on the target's own view: a
-        // pipeline for that format, scaling in linear space.
-        let fader_view = if format.is_srgb() { make("quad fade view", format, fade_blend) } else { fader.clone() };
-        QuadPipeline { pipeline, fader, fader_view, uniform, bind_group }
+        QuadPipeline { pipeline, fader, fader_view: None, shader, pipeline_layout, format, uniform, bind_group }
     }
 }
 
@@ -462,7 +474,13 @@ impl WgpuDraw {
         // on the non-sRGB view.
         if let Some(f) = list.fade {
             let f = f as f64;
-            let fader = if raw.is_some() { &self.quads.fader } else { &self.quads.fader_view };
+            if raw.is_none() && self.quads.format.is_srgb() && self.quads.fader_view.is_none() {
+                self.quads.fader_view = Some(self.quads.fade_for_view(device));
+            }
+            let fader = match (raw, &self.quads.fader_view) {
+                (None, Some(v)) if self.quads.format.is_srgb() => v,
+                _ => &self.quads.fader,
+            };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
