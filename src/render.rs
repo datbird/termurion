@@ -1768,9 +1768,30 @@ pub(crate) mod test_gpu {
     pub(crate) static LOCK: Mutex<()> = Mutex::new(());
     static GPU: OnceLock<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue)> = OnceLock::new();
 
+    /// The shared device and queue. On GL the calling test thread also takes the GL lock (`serial_on_gl`).
     pub(crate) fn shared() -> (wgpu::Device, wgpu::Queue) {
-        let (_, _, device, queue) = shared_all();
+        let (_, adapter, device, queue) = shared_all();
+        serial_on_gl(&adapter);
         (device, queue)
+    }
+
+    /// GL has one context behind a lock that panics after a second ("most-likely a deadlock"), and
+    /// drawing from several threads at once on it gives black pictures. So on GL each test thread
+    /// takes this lock once, on first use, and keeps it until the test ends: tests run one at a time.
+    pub(crate) fn serial_on_gl(adapter: &wgpu::Adapter) {
+        use std::cell::RefCell;
+        use std::sync::MutexGuard;
+        static ONE: Mutex<()> = Mutex::new(());
+        thread_local!(static HELD: RefCell<Option<MutexGuard<'static, ()>>> = const { RefCell::new(None) });
+        if adapter.get_info().backend != wgpu::Backend::Gl {
+            return;
+        }
+        HELD.with(|h| {
+            let mut h = h.borrow_mut();
+            if h.is_none() {
+                *h = Some(ONE.lock().unwrap_or_else(|e| e.into_inner()));
+            }
+        });
     }
 
     /// The shared instance and adapter with the device and queue (a probe that needs a surface).
@@ -1817,7 +1838,7 @@ pub(crate) mod tests {
         // A faded frame is the same frame with every channel (alpha too) scaled: the see-through
         // window's fade, on the shared device (no new GPU instance).
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm, "Consolas", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8Unorm, "Consolas", 16.0);
         r.set_fonts("Consolas", None, 16.0, 1.0, 1.0);
         let at = |r: &mut Renderer, fade: f32| {
             let frame = Frame { clear: [0.8, 0.4, 0.2, 1.0], fade, ..Default::default() };
@@ -1838,7 +1859,7 @@ pub(crate) mod tests {
         // premultiplied, so a fade must scale them as stored: encoded color times f beside alpha
         // times f. Scaling in linear space would leave the color above alpha and brighten the window.
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Consolas", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Consolas", 16.0);
         r.set_fonts("Consolas", None, 16.0, 1.0, 1.0);
         let at = |r: &mut Renderer, fade: f32| {
             let frame = Frame { clear: [0.8, 0.4, 0.2, 1.0], fade, ..Default::default() };
@@ -1846,10 +1867,14 @@ pub(crate) mod tests {
             [px[0], px[1], px[2], px[3]]
         };
         let full = at(&mut r, 1.0);
+        // Without view formats (GL) the fade runs on the sRGB view and scales in linear space.
+        let linear = !views_supported();
+        let (decode, encode) = (|c: f32| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }, |c: f32| if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 });
         for f in [0.5f32, 0.25] {
             let faded = at(&mut r, f);
             for i in 0..3 {
-                let want = full[i] as f32 * f;
+                let c = full[i] as f32 / 255.0;
+                let want = if linear { encode(decode(c) * f) * 255.0 } else { full[i] as f32 * f };
                 assert!((faded[i] as f32 - want).abs() <= 1.5, "channel {i} at {f}: {faded:?} from {full:?}");
             }
             assert!((faded[3] as f32 - 255.0 * f).abs() <= 1.5, "alpha at {f}: {faded:?}");
@@ -1871,7 +1896,7 @@ pub(crate) mod tests {
     fn cells_follow_font_metrics() {
         // R3: the cell height is the font's own (swash metrics, generous list), not round(px * 1.2).
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Consolas", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Consolas", 16.0);
         r.set_fonts("Consolas", None, 16.0, 1.0, 1.0);
         let m = r.face_font_metrics("Consolas", 16.0).expect("Consolas is installed on the test machine");
         let (cell, base) = fonts::cell_size(m, fonts::generous("Consolas", "consolas"), 1.0, 1.0);
@@ -1904,6 +1929,19 @@ pub(crate) mod tests {
 
     fn device() -> (wgpu::Device, wgpu::Queue) {
         super::test_gpu::shared()
+    }
+
+    /// A chain as the app makes it: with no view formats on a device that has none (GL).
+    fn test_chain(device: &wgpu::Device, format: wgpu::TextureFormat, compiled: Vec<crate::render_fx::Compiled>, keep_alpha: bool) -> Result<crate::render_fx_gpu::Chain, String> {
+        let c = crate::render_fx_gpu::Chain::new(device, format, compiled, keep_alpha)?;
+        Ok(if views_supported() { c } else { c.without_view_formats(device) })
+    }
+
+    /// A renderer as the app makes it: told whether this device has view formats (GL has none).
+    fn test_renderer(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, family: &str, px: f32) -> Renderer {
+        let mut r = Renderer::new(device, queue, format, family, px);
+        r.set_view_formats(views_supported());
+        r
     }
 
     /// Final review fix 1: no GPU test makes its own instance. The Vulkan loader (vulkan-1.dll
@@ -1978,6 +2016,7 @@ pub(crate) mod tests {
     fn a_destroyed_device_is_reported_and_the_renderer_rebuilds() {
         // The shared adapter first: making it takes the lock.
         let (_instance, adapter, _shared, _queue) = super::test_gpu::shared_all();
+        super::test_gpu::serial_on_gl(&adapter);
         let _gpu = super::test_gpu::LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let make = || pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
@@ -1989,7 +2028,7 @@ pub(crate) mod tests {
         let (device, queue) = make();
         crate::gpu_pick::next_generation();
         crate::gpu_pick::watch(&device, crate::gpu_pick::current_generation());
-        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, format, "Cascadia Mono", 16.0);
         let cell = r.cell;
         assert_eq!(&r.draw_offscreen(&frame, 64, 8).unwrap()[0..4], &[255, 0, 0, 255]);
         assert!(crate::gpu_pick::take_lost().is_none(), "no loss yet");
@@ -2045,7 +2084,7 @@ pub(crate) mod tests {
                     println!("API {label}: no view formats, frame not drawn");
                     continue;
                 }
-                let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 16.0);
+                let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 16.0);
                 let rows = (0..40)
                     .map(|i| TextRow {
                         x: 4.0,
@@ -2129,7 +2168,7 @@ pub(crate) mod tests {
     fn faces_follow_profiles() {
         let (device, queue) = device();
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, format, "Cascadia Mono", 16.0);
         r.set_fonts("Cascadia Mono", None, 16.0, 1.0, 1.0);
         assert_eq!(r.face_cell(DEFAULT_FACE), r.cell, "the default face is what set_fonts made");
         assert_eq!(r.face(&key("Consolas", 16.0, 1.0, 1.0)), 1);
@@ -2179,7 +2218,7 @@ pub(crate) mod tests {
     #[test]
     fn a_face_table_picks_the_font_per_span() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         if !r.has_family("Consolas") || !r.has_family("Cascadia Mono") {
             println!("skip: Consolas or Cascadia Mono is not installed");
             return;
@@ -2211,7 +2250,7 @@ pub(crate) mod tests {
     #[test]
     fn a_face_carries_the_resolved_table() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         let text = r#"{"entries":[{"start":57344,"count":16,"fontName":"A"},{"start":57352,"count":16,"fontName":"B"},{"start":32,"count":16,"fontName":"C"}],"version":2}"#;
         let face = r.face(&FaceKey { table: Some(std::sync::Arc::from(text)), ..key("Cascadia Mono", 16.0, 1.0, 1.0) });
         let table = r.face_table(face).expect("a table");
@@ -2225,7 +2264,7 @@ pub(crate) mod tests {
     #[test]
     fn a_look_setting_moves_the_look_epoch_and_a_repeat_does_not() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         let e = r.look_epoch();
         r.set_contextual_alternates(!r.calt);
         assert!(r.look_epoch() > e, "contextual alternates");
@@ -2268,7 +2307,7 @@ pub(crate) mod tests {
     #[test]
     fn badge_weight_follows_the_key() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         r.set_badge_family("Arial");
         r.set_badge_bold(false);
         let regular = r.badge_width("bbb ddd", 40.0);
@@ -2280,7 +2319,7 @@ pub(crate) mod tests {
     #[test]
     fn bold_and_italic_switches_follow_iterm2() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         let (w, h) = (128u32, 40u32);
         let tex = target(&device, w, h);
         let view = tex.create_view(&Default::default());
@@ -2397,7 +2436,7 @@ pub(crate) mod tests {
     #[test]
     fn ligature_levels_draw_per_span() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         if !["Cascadia Code"].iter().all(|n| r.has_family(n)) {
             println!("skip: Cascadia Code is not installed");
             return;
@@ -2429,7 +2468,7 @@ pub(crate) mod tests {
     #[test]
     fn faces_keep_their_ids_across_a_scale_change() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         let a = r.face(&key("Consolas", 16.0, 1.0, 1.0));
         let b = r.face(&key("Cascadia Mono", 18.0, 1.0, 1.25));
         let (before, count) = (r.face_cell(a), r.face_count());
@@ -2448,7 +2487,7 @@ pub(crate) mod tests {
         // `underline_metrics_follow_the_pane_face` and the base of `cursor_geometry_uses_the_pane_base_cell`:
         // a face reports its own spacing-free cell and underline numbers, not the default face's.
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         r.set_fonts("Cascadia Mono", None, 16.0, 1.0, 1.0);
         let big = r.face(&key("Cascadia Mono", 32.0, 1.0, 1.0));
         let spaced = r.face(&key("Cascadia Mono", 32.0, 1.25, 1.5));
@@ -2473,7 +2512,7 @@ pub(crate) mod tests {
     fn face_lookup_does_not_scan_fonts_per_call() {
         let (device, queue) = device();
         let (ps, family) = postscript_pair();
-        let r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, &family, 16.0);
+        let r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, &family, 16.0);
         let before = r.resolve_scans();
         for _ in 0..1000 {
             assert_eq!(r.resolve_family(&ps), family);
@@ -2512,7 +2551,7 @@ pub(crate) mod tests {
     fn renders_a_range_offscreen() {
         let (device, queue) = device();
         // The window's usual format: BGRA comes back as RGBA.
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 16.0);
         let frame = Frame {
             clear: rgba(rgb(0, 0, 255), 1.0),
             quads: vec![Quad { rect: Rect { x: 0.0, y: 0.0, w: 10.0, h: 5.0 }, color: rgba(rgb(255, 0, 0), 1.0) }],
@@ -2533,7 +2572,7 @@ pub(crate) mod tests {
         // text drifts away from them along the row.
         let (device, queue) = device();
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, format, "Cascadia Mono", 16.0);
         let (w, h) = (512u32, 32u32);
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: None,
@@ -2650,7 +2689,7 @@ pub(crate) mod tests {
         let (device, queue) = device();
         // Any installed proportional face (DejaVu Sans when it is there): a box with none fails
         // here instead of passing without checking anything.
-        let probe = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "DejaVu Sans", 16.0);
+        let probe = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "DejaVu Sans", 16.0);
         let face = if probe.has_family("DejaVu Sans") {
             "DejaVu Sans".to_string()
         } else {
@@ -2658,7 +2697,7 @@ pub(crate) mod tests {
             names.sort();
             names.into_iter().next().expect("this test needs one proportional font installed")
         };
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, &face, 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, &face, 16.0);
         assert!(!r.face_monospace(DEFAULT_FACE), "{face} is proportional");
         // The cursor goes back onto the first "m" (column 13).
         let mut screen = crate::screen::Screen::new(40, 2);
@@ -2683,7 +2722,7 @@ pub(crate) mod tests {
     #[test]
     fn interface_text_draws_at_its_measured_width() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "DejaVu Sans Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "DejaVu Sans Mono", 16.0);
         for (text, bold) in [("Allow? New Tab", false), ("iiil WWW mmm", true)] {
             let span = Span { text: text.into(), color: rgb(255, 255, 255), bold, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
             let row = TextRow { x: 0.0, y: 0.0, spans: vec![span].into(), clip: Rect { x: 0.0, y: 0.0, w: 600.0, h: 32.0 }, scale: 1.0, face: DEFAULT_FACE };
@@ -2705,7 +2744,7 @@ pub(crate) mod tests {
 
     /// A renderer with the test fonts of tests/fixtures/fonts loaded.
     fn fixture_renderer(device: &wgpu::Device, queue: &wgpu::Queue) -> Renderer {
-        let mut r = Renderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb, WIDE_BOLD_TEST, 16.0);
+        let mut r = test_renderer(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb, WIDE_BOLD_TEST, 16.0);
         for data in [
             &include_bytes!("../tests/fixtures/fonts/TermurionWideBoldTest-Regular.ttf")[..],
             &include_bytes!("../tests/fixtures/fonts/TermurionWideBoldTest-Bold.ttf")[..],
@@ -3100,7 +3139,7 @@ pub(crate) mod tests {
     #[test]
     fn a_wider_bold_face_stays_on_the_cell_grid() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "DejaVu Sans Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "DejaVu Sans Mono", 16.0);
         r.font_system.db_mut().load_font_data(include_bytes!("../tests/fixtures/fonts/TermurionWideBoldTest-Regular.ttf").to_vec());
         r.font_system.db_mut().load_font_data(include_bytes!("../tests/fixtures/fonts/TermurionWideBoldTest-Bold.ttf").to_vec());
         let family = "Termurion Wide Bold Test";
@@ -3153,7 +3192,7 @@ pub(crate) mod tests {
     #[test]
     fn a_ligature_advances_one_cell_per_character() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "DejaVu Sans Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "DejaVu Sans Mono", 16.0);
         r.font_system.db_mut().load_font_data(include_bytes!("../tests/fixtures/fonts/TermurionLigatureTest-Regular.ttf").to_vec());
         let family = "Termurion Ligature Test";
         let text = "a=>b===c==W";
@@ -3177,7 +3216,7 @@ pub(crate) mod tests {
     #[test]
     fn a_missing_font_falls_back_to_a_monospace_face_on_the_grid() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "No Such Font Anywhere", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "No Such Font Anywhere", 16.0);
         let xs = laid_out_xs(&mut r, &device, &queue, "iiilllWWWiii mmm");
         assert_eq!(xs.len(), 16);
         for (col, x) in xs.iter().enumerate() {
@@ -3195,7 +3234,7 @@ pub(crate) mod tests {
     fn the_command_button_icons_are_in_the_icon_face() {
         use crate::cmdbuttons::Button::*;
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         let family = r.icon_family.clone();
         for b in [Settings, Copy, Bookmark, Share, Info, Fold, Unfold] {
             let c = b.glyph();
@@ -3246,7 +3285,7 @@ pub(crate) mod tests {
             assert!(points.contains(&n), "U+{n:04X} is in the scan");
         }
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         let family = r.icon_family.clone();
         let mut missing = Vec::new();
         for n in points {
@@ -3267,7 +3306,7 @@ pub(crate) mod tests {
     fn postscript_names_resolve_to_installed_families() {
         let (device, queue) = device();
         let (ps, family) = postscript_pair();
-        let r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, &family, 16.0);
+        let r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, &family, 16.0);
         assert_eq!(r.resolve_family(&ps), family);
         assert_eq!(r.resolve_family(&family), family);
         assert_eq!(r.resolve_family(&family.to_uppercase()), family, "case does not matter");
@@ -3323,7 +3362,7 @@ pub(crate) mod tests {
                 continue;
             }
             let frames = shot["frames"].as_u64().unwrap() as usize;
-            let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", shot["px"].as_f64().unwrap() as f32);
+            let mut r = test_renderer(&device, &queue, format, "Cascadia Mono", shot["px"].as_f64().unwrap() as f32);
             let cell = r.cell;
             let dir = out.join(id);
             let _ = std::fs::remove_dir_all(&dir);
@@ -3539,7 +3578,7 @@ pub(crate) mod tests {
                     u = Uniforms::default();
                 }
                 let p = plugins.iter().find(|q| q.id == running).unwrap();
-                let chain = chains.entry(running.clone()).or_insert_with(|| crate::render_fx_gpu::Chain::new(&device, format, p.compile_with(&switches).unwrap(), false).unwrap());
+                let chain = chains.entry(running.clone()).or_insert_with(|| test_chain(&device, format, p.compile_with(&switches).unwrap(), false).unwrap());
                 let c = crate::render_fx::hex_color(p.manifest.cursor_color.as_deref().unwrap()).unwrap();
                 let preset = [(c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8];
                 let fx = frame.fx.clone().unwrap();
@@ -3584,7 +3623,7 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&out).unwrap();
         let (device, queue) = device();
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
-        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 22.0);
+        let mut r = test_renderer(&device, &queue, format, "Cascadia Mono", 22.0);
         let cell = r.cell;
         let (cols, rows) = (78usize, 14usize);
         let pad = 16.0f32;
@@ -3655,7 +3694,7 @@ pub(crate) mod tests {
             let p = plugins.iter().find(|p| p.id == id).unwrap();
             let c = crate::render_fx::hex_color(p.manifest.cursor_color.as_deref().unwrap()).unwrap();
             let preset = [(c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8];
-            let mut chain = crate::render_fx_gpu::Chain::new(&device, format, p.compile().unwrap(), false).unwrap();
+            let mut chain = test_chain(&device, format, p.compile().unwrap(), false).unwrap();
             let (mut clock, mut u, mut sig) = (Clock::default(), Uniforms::default(), Signals::default());
             let title = format!("\x1b[1m  {}\x1b[0m  \x1b[38;5;245m{}\x1b[0m", p.title(), tagline(&p.manifest.description, cols - p.title().len() - 6));
             let base = vec![title.clone(), String::new(), "\x1b[38;5;252m\u{25cf}\x1b[0m Updated the effects and the README.".to_string(), "  \u{2514} 2 files changed, 41 insertions(+)".to_string()];
@@ -3729,7 +3768,7 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&out).unwrap();
         let (device, queue) = device();
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
-        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 20.0);
+        let mut r = test_renderer(&device, &queue, format, "Cascadia Mono", 20.0);
         let cell = r.cell;
         let (cols, rows) = (70usize, 7usize);
         let (w, h) = ((cols as f32 * cell.0).ceil() as u32 & !1, (rows as f32 * cell.1).ceil() as u32 & !1);
@@ -3750,7 +3789,7 @@ pub(crate) mod tests {
         for p in discover(None).0 {
             let c = crate::render_fx::hex_color(p.manifest.cursor_color.as_deref().unwrap()).unwrap();
             let preset = [(c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8];
-            let mut chain = crate::render_fx_gpu::Chain::new(&device, format, p.compile().unwrap(), false).unwrap();
+            let mut chain = test_chain(&device, format, p.compile().unwrap(), false).unwrap();
             let (mut clock, mut u, mut sig) = (Clock::default(), Uniforms::default(), Signals::default());
             let t0 = Instant::now();
             let mut frame_at = |ms: u64, s: &crate::screen::Screen, save: Option<String>, sig: &Signals, clock: &mut Clock, u: &mut Uniforms| {
@@ -3801,7 +3840,7 @@ pub(crate) mod tests {
         let mut bad = Vec::new();
         let mut report = Vec::new();
         for (family, px) in [("Cascadia Mono", 14.0f32), ("Consolas", 20.0)] {
-            let mut r = Renderer::new(&device, &queue, format, family, px);
+            let mut r = test_renderer(&device, &queue, format, family, px);
             let cell = r.cell;
             let (cols, rows) = (72usize, 14usize);
             let (w, h) = ((cols as f32 * cell.0).ceil() as u32, (rows as f32 * cell.1).ceil() as u32);
@@ -3826,7 +3865,7 @@ pub(crate) mod tests {
                     let mut frame = Frame { clear: rgba(bg, 1.0), fade: 1.0, ..Default::default() };
                     crate::scene::pane_with(&mut frame, &s, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE, None);
                     let plain = r.draw_offscreen(&frame, w, h).unwrap();
-                    let mut chain = crate::render_fx_gpu::Chain::new(&device, format, p.compile().unwrap(), false).unwrap();
+                    let mut chain = test_chain(&device, format, p.compile().unwrap(), false).unwrap();
                     let (mut clock, mut u, mut sig) = (Clock::default(), Uniforms::default(), Signals::default());
                     u.background = [bg.r as f32 / 255.0, bg.g as f32 / 255.0, bg.b as f32 / 255.0];
                     u.input_box = frame.fx.as_ref().and_then(|f| f.input_box).map_or([0.0; 4], |b| b.uniform());
@@ -3900,7 +3939,7 @@ pub(crate) mod tests {
         use crate::render_fx::{Clock, Signals, Uniforms};
         use std::time::{Duration, Instant};
         let (device, _) = device();
-        let mut chain = crate::render_fx_gpu::Chain::new(&device, wgpu::TextureFormat::Bgra8UnormSrgb, compiled, false).unwrap();
+        let mut chain = test_chain(&device, wgpu::TextureFormat::Bgra8UnormSrgb, compiled, false).unwrap();
         let (mut clock, mut u, mut sig) = (Clock::default(), Uniforms::default(), Signals::default());
         u.background = [bg.r as f32 / 255.0, bg.g as f32 / 255.0, bg.b as f32 / 255.0];
         let fg = frame.fx.as_ref().unwrap().fg;
@@ -3949,7 +3988,7 @@ pub(crate) mod tests {
     #[test]
     fn every_effect_lights_a_bands_edges_on_enter() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
         let ch = r.cell.1;
         let mut bad = Vec::new();
         let mut report = Vec::new();
@@ -3983,7 +4022,7 @@ pub(crate) mod tests {
     #[test]
     fn a_band_lights_only_inside_its_columns() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
         let ch = r.cell.1;
         let mut bad = Vec::new();
         for p in crate::render_fx::discover(None).0 {
@@ -4010,7 +4049,7 @@ pub(crate) mod tests {
     #[test]
     fn a_line_box_in_a_split_pane_lights_only_inside_the_pane() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
         let ch = r.cell.1;
         let mut bad = Vec::new();
         for p in crate::render_fx::discover(None).0 {
@@ -4039,7 +4078,7 @@ pub(crate) mod tests {
     #[test]
     fn line_tint_draws_a_bands_edges() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
         let cw = r.cell.0;
         let amount_re = regex::Regex::new(r"const float LINE_COLOR\s*=\s*([0-9.]+);").unwrap();
         let mut bad = Vec::new();
@@ -4101,7 +4140,7 @@ pub(crate) mod tests {
     #[test]
     fn prompt_marks_of_codex_and_agy_change_their_look() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
         let (cw, ch) = r.cell;
         let mut bad = Vec::new();
         for (name, row) in [("codex", 26.0f32), ("agy", 8.0)] {
@@ -4127,7 +4166,7 @@ pub(crate) mod tests {
     #[test]
     fn a_profile_mark_changes_its_look_in_every_effect() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
         let (cw, ch) = r.cell;
         let bg = crate::palette::rgb(30, 31, 36);
         let (cols, rows) = (60usize, 12usize);
@@ -4175,7 +4214,7 @@ pub(crate) mod tests {
         let mut report = Vec::new();
         for family in ["Cascadia Mono", "Consolas", "Courier New"] {
             for px in [13.0f32, 16.0, 19.0, 24.0] {
-                let mut r = Renderer::new(&device, &queue, format, family, px);
+                let mut r = test_renderer(&device, &queue, format, family, px);
                 let cell = r.cell;
                 let (cols, rows) = (80usize, 8usize);
                 let (w, h) = ((cols as f32 * cell.0).ceil() as u32, (rows as f32 * cell.1).ceil() as u32);
@@ -4190,7 +4229,7 @@ pub(crate) mod tests {
                 let mut frame = Frame { clear: rgba(s.palette.bg, 1.0), fade: 1.0, ..Default::default() };
                 crate::scene::pane_with(&mut frame, &s, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE, None);
                 let fx = frame.fx.clone().expect("the scene records the pane");
-                let mut chain = crate::render_fx_gpu::Chain::new(&device, format, lightning.compile().unwrap(), false).unwrap();
+                let mut chain = test_chain(&device, format, lightning.compile().unwrap(), false).unwrap();
                 let mut clock = Clock::default();
                 let mut u = Uniforms { background: unit(fx.bg), foreground: unit(fx.fg), ..Default::default() };
                 let t0 = std::time::Instant::now();
@@ -4235,7 +4274,7 @@ pub(crate) mod tests {
     fn same_scene_frames_keep_the_window_picture() {
         let (device, queue) = device();
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
-        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, format, "Cascadia Mono", 16.0);
         let frame = Frame { clear: rgba(rgb(0, 0, 0), 1.0), fade: 1.0, ..Default::default() };
         let copy = || crate::render_fx::compile_glsl("void mainImage(out vec4 c, in vec2 p) { c = texture(iChannel0, p / iResolution.xy); }").unwrap();
         let u = crate::render_fx::Uniforms { resolution: [64.0, 32.0, 1.0], ..Default::default() };
@@ -4245,12 +4284,13 @@ pub(crate) mod tests {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: format.remove_srgb_suffix(),
+            // A chain with view formats writes the raw twin; one without writes the sRGB view (GL).
+            format: if views_supported() { format.remove_srgb_suffix() } else { format },
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
         let out = out_tex.create_view(&Default::default());
-        let mut chain = crate::render_fx_gpu::Chain::new(&device, format, vec![copy()], false).unwrap();
+        let mut chain = test_chain(&device, format, vec![copy()], false).unwrap();
         assert!(!chain.frame_kept(), "nothing drawn yet");
         r.draw_fx_for(&frame, &mut chain, &u, &out, 64, 32, false, None).unwrap();
         assert!(chain.frame_kept(), "the window's picture is in the chain");
@@ -4262,9 +4302,10 @@ pub(crate) mod tests {
         assert!(chain.frame_kept(), "drawn again for the window");
         let _ = chain.frame_views(&device, (65, 32));
         assert!(!chain.frame_kept(), "a new size makes new textures");
-        let mut three = crate::render_fx_gpu::Chain::new(&device, format, vec![copy(), copy(), copy()], false).unwrap();
+        let mut three = test_chain(&device, format, vec![copy(), copy(), copy()], false).unwrap();
         r.draw_fx_for(&frame, &mut three, &u, &out, 64, 32, false, None).unwrap();
-        assert!(!three.frame_kept(), "a third pass writes the frame texture");
+        // With view formats the third pass writes the frame texture; the copy-pass chain (GL) never does.
+        assert_eq!(three.frame_kept(), !views_supported(), "a third pass writes the frame texture only on a chain with view formats");
     }
 
     /// Whether the test device has view formats (not on GL). Kinds with `views: true` need them.
@@ -4273,23 +4314,10 @@ pub(crate) mod tests {
         crate::render_fx_gpu::view_formats_supported(&adapter)
     }
 
-    /// GL has one context behind a lock that panics after a second ("most-likely a deadlock"), so
-    /// region tests queued on it abort the run. On GL each region test thread takes this lock
-    /// once, on first use, and keeps it until the test ends: they run one at a time.
+    /// On GL each test thread takes the one GL lock (see `test_gpu::serial_on_gl`).
     fn serial_on_gl() {
-        use std::cell::RefCell;
-        use std::sync::{Mutex, MutexGuard};
-        static ONE: Mutex<()> = Mutex::new(());
-        thread_local!(static HELD: RefCell<Option<MutexGuard<'static, ()>>> = const { RefCell::new(None) });
-        if views_supported() {
-            return;
-        }
-        HELD.with(|h| {
-            let mut h = h.borrow_mut();
-            if h.is_none() {
-                *h = Some(ONE.lock().unwrap_or_else(|e| e.into_inner()));
-            }
-        });
+        let (_, adapter, _, _) = super::test_gpu::shared_all();
+        super::test_gpu::serial_on_gl(&adapter);
     }
 
     /// True when `kind` can run here; otherwise prints why it was skipped, so a skip is never silent.
@@ -4648,7 +4676,7 @@ pub(crate) mod tests {
             let plan = Plan { events: true, hold: 1000, every: 50, ..Default::default() };
             let fonts: [(f32, &[&str]); 3] = [(14.0, &AGENT_SCREENS), (10.0, &["codex", "tmux-split-right"]), (28.0, &["hermes", "tmux-stacked"])];
             for (px, screens) in fonts {
-                let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", px);
+                let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", px);
                 let preset = preset_of(p);
                 for (i, name) in screens.iter().enumerate() {
                     let kind = pick(i + p.id.len());
@@ -4671,7 +4699,7 @@ pub(crate) mod tests {
     #[test]
     fn the_shell_rules_screen_has_no_box_or_mark() {
         let (device, queue) = device();
-        let r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
         let (frame, _, _) = agent_frame(&r, "shell-rules", [255, 0, 0]);
         let fx = frame.fx.unwrap();
         assert!(fx.input_box.is_none() && fx.prompt_mark.is_none(), "{:?} {:?}", fx.input_box, fx.prompt_mark);
@@ -4684,7 +4712,7 @@ pub(crate) mod tests {
     #[test]
     fn the_shaders_restyle_the_shell_rules_screen_outside_the_cursor() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
         let p = region_plugins().into_iter().find(|p| p.id == "neon").expect("neon");
         let preset = preset_of(&p);
         let (frame, size, bg) = agent_frame(&r, "shell-rules", preset);
@@ -4708,7 +4736,7 @@ pub(crate) mod tests {
         let (runs, bad) = per_region_plugin(&|p| {
             let (device, queue) = device();
             let (mut regions, mut bad) = (0, Vec::new());
-            let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+            let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
             let preset = preset_of(p);
             for (i, name) in AGENT_SCREENS.iter().enumerate() {
                 let kind = pick(i + p.id.len());
@@ -4736,7 +4764,7 @@ pub(crate) mod tests {
         let (runs, bad) = per_region_plugin(&|p| {
             let (device, queue) = device();
             let (mut built, mut animated, mut bad) = (0, 0, Vec::new());
-            let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+            let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
             let preset = preset_of(p);
             // Every frame in the first full_after_change window is full: hold 750 ms past it so
             // region frames follow.
@@ -4773,7 +4801,7 @@ pub(crate) mod tests {
     #[test]
     fn a_two_pass_chain_matches_on_built_frames() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
         let find = |id: &str| region_plugins().into_iter().find(|p| p.id == id).expect(id);
         let (mut regions, mut bad) = (0, Vec::new());
         for (a, b) in [("neon", "shockwave"), ("embers", "phosphor")] {
@@ -4799,7 +4827,7 @@ pub(crate) mod tests {
     fn idle_region_frames_match_full_frames() {
         let (runs, bad) = per_region_plugin(&|p| {
             let (device, queue) = device();
-            let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+            let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
             let (mut regions, mut bad) = (0, Vec::new());
             let preset = preset_of(p);
             let plan = Plan { hold: 6000, every: 100, ..Default::default() };
@@ -4824,7 +4852,7 @@ pub(crate) mod tests {
     #[test]
     fn pads_hold_the_looks_of_a_wide_cell() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
         r.cell.0 *= 2.0;
         let p = region_plugins().into_iter().find(|p| p.id == "shockwave").expect("shockwave");
         let preset = preset_of(&p);
@@ -4843,7 +4871,7 @@ pub(crate) mod tests {
     #[test]
     fn pads_hold_the_looks_of_a_wide_underline_cursor() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
         let p = region_plugins().into_iter().find(|p| p.id == "shockwave").expect("shockwave");
         let preset = preset_of(&p);
         let (frame, size, bg) = agent_frame(&r, "hermes", preset);
@@ -4861,7 +4889,7 @@ pub(crate) mod tests {
     #[test]
     fn pads_hold_the_looks_of_a_wide_block_in_tall_rows() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
         r.cell.1 = r.cell.0 * 2.9;
         let p = region_plugins().into_iter().find(|p| p.id == "shockwave").expect("shockwave");
         let preset = preset_of(&p);
@@ -4885,7 +4913,7 @@ pub(crate) mod tests {
     #[test]
     fn a_too_small_region_is_caught() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
         let p = region_plugins().into_iter().find(|p| p.id == "neon").expect("neon");
         let preset = preset_of(&p);
         let (frame, size, bg) = agent_frame(&r, "hermes", preset);
@@ -4914,7 +4942,7 @@ pub(crate) mod tests {
     #[test]
     fn a_cursor_jump_erases_the_old_glow() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
         let ch = r.cell.1;
         let mut bad = Vec::new();
         let plugins = region_plugins();
@@ -4956,7 +4984,7 @@ pub(crate) mod tests {
     fn a_new_size_runs_the_full_pass() {
         use crate::render_fx::{FrameRegion, PxRect, Uniforms};
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
         let p = region_plugins().into_iter().next().expect("a plugin with a region");
         let preset = preset_of(&p);
         let (frame, size, _) = agent_frame(&r, "hermes", preset);
@@ -4997,7 +5025,7 @@ pub(crate) mod tests {
     fn a_full_frame_with_no_region_after_it_keeps_nothing() {
         use crate::render_fx::{FrameRegion, PxRect, Uniforms};
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
         let p = region_plugins().into_iter().next().expect("a plugin with a region");
         let (frame, size, _) = agent_frame(&r, "hermes", preset_of(&p));
         let tiny = FrameRegion { own: None, with_last: Some(vec![PxRect { x: 0, y: 0, w: 1, h: 1 }]) };
@@ -5030,7 +5058,7 @@ pub(crate) mod tests {
     fn a_user_plugin_region_limits_only_animation_frames() {
         use crate::render_fx::{RegionTerm, Uniforms, frame_rects};
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
         let td = TempDir::new("render_user_region_");
         let user = td.to_path_buf();
         let dir = user.join("mine");
@@ -5073,7 +5101,7 @@ pub(crate) mod tests {
     #[test]
     fn an_opaque_window_keeps_alpha_one() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
         let mut bad = Vec::new();
         let plugins = region_plugins();
         assert!(!plugins.is_empty());
@@ -5104,13 +5132,13 @@ pub(crate) mod tests {
     fn render_plugins_run_over_the_frame() {
         let (device, queue) = device();
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
-        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, format, "Cascadia Mono", 16.0);
         let (w, h) = (64u32, 32u32);
         let frame = Frame { clear: rgba(rgb(0, 0, 0), 1.0), fade: 1.0, quads: vec![Quad { rect: Rect { x: 0.0, y: 0.0, w: 32.0, h: 16.0 }, color: rgba(rgb(200, 40, 10), 1.0) }], ..Default::default() };
         let plain = r.draw_offscreen(&frame, w, h).unwrap();
         let copy = crate::render_fx::compile_glsl("void mainImage(out vec4 c, in vec2 p) { c = texture(iChannel0, p / iResolution.xy); }").unwrap();
         let swap = crate::render_fx::compile_glsl("void mainImage(out vec4 c, in vec2 p) { c = texture(iChannel0, p / iResolution.xy).bgra; }").unwrap();
-        let mut chain = crate::render_fx_gpu::Chain::new(&device, format, vec![copy, swap], false).unwrap();
+        let mut chain = test_chain(&device, format, vec![copy, swap], false).unwrap();
         let u = crate::render_fx::Uniforms { resolution: [w as f32, h as f32, 1.0], ..Default::default() };
         let px = r.draw_offscreen_fx(&frame, Some((&mut chain, &u)), w, h).unwrap();
         let at = |b: &[u8], x: usize, y: usize| [b[(y * w as usize + x) * 4], b[(y * w as usize + x) * 4 + 1], b[(y * w as usize + x) * 4 + 2]];
@@ -5121,7 +5149,7 @@ pub(crate) mod tests {
         // A shader's alpha reaches an opaque window's target only when the window keeps alpha.
         let clear_alpha = || crate::render_fx::compile_glsl("void mainImage(out vec4 c, in vec2 p) { c = vec4(texture(iChannel0, p / iResolution.xy).rgb, 0.0); }").unwrap();
         for (keep, want) in [(false, 255u8), (true, 0u8)] {
-            let mut c = crate::render_fx_gpu::Chain::new(&device, format, vec![clear_alpha()], keep).unwrap();
+            let mut c = test_chain(&device, format, vec![clear_alpha()], keep).unwrap();
             let px = r.draw_offscreen_fx(&frame, Some((&mut c, &u)), w, h).unwrap();
             assert_eq!(px[(5 * w as usize + 5) * 4 + 3], want, "keep_alpha {keep}");
         }
@@ -5133,7 +5161,7 @@ pub(crate) mod tests {
         clock.frame(&mut u, std::time::Instant::now(), (w, h), Some(cursor), true);
         let mut bad = Vec::new();
         for p in crate::render_fx::discover(None).0 {
-            let mut c = crate::render_fx_gpu::Chain::new(&device, format, p.compile().unwrap(), false).unwrap_or_else(|e| panic!("{}: {e}", p.id));
+            let mut c = test_chain(&device, format, p.compile().unwrap(), false).unwrap_or_else(|e| panic!("{}: {e}", p.id));
             let out = r.draw_offscreen_fx(&frame, Some((&mut c, &u)), w, h).unwrap_or_else(|e| panic!("{}: {e}", p.id));
             if at(&out, 5, 5) != at(&plain, 5, 5) {
                 bad.push(format!("{}: {:?} where the frame has {:?}", p.id, at(&out, 5, 5), at(&plain, 5, 5)));
@@ -5164,7 +5192,7 @@ pub(crate) mod tests {
 
     /// A Lightning chain for a device with or without view formats.
     fn lightning_chain(device: &wgpu::Device, format: wgpu::TextureFormat, views: bool) -> crate::render_fx_gpu::Chain {
-        let c = crate::render_fx_gpu::Chain::new(device, format, lightning().compile().unwrap(), false).unwrap();
+        let c = test_chain(device, format, lightning().compile().unwrap(), false).unwrap();
         if views { c } else { c.without_view_formats(device) }
     }
 
@@ -5177,10 +5205,10 @@ pub(crate) mod tests {
         serial_on_gl();
         let (device, queue, frame, u) = fx_bench();
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
-        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, format, "Cascadia Mono", 16.0);
         for views in view_legs() {
             r.set_view_formats(views);
-            let mut chain = crate::render_fx_gpu::Chain::new(&device, format, lightning().compile().unwrap(), false).unwrap();
+            let mut chain = test_chain(&device, format, lightning().compile().unwrap(), false).unwrap();
             if !views {
                 chain = chain.without_view_formats(&device);
             }
@@ -5201,7 +5229,7 @@ pub(crate) mod tests {
         serial_on_gl();
         let (device, queue, frame, mut u) = fx_bench();
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
-        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, format, "Cascadia Mono", 16.0);
         let views = views_supported();
         r.set_view_formats(views);
         let shaders = lightning().compile().unwrap();
@@ -5225,7 +5253,7 @@ pub(crate) mod tests {
         serial_on_gl();
         let (device, queue, frame, mut u) = fx_bench();
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
-        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, format, "Cascadia Mono", 16.0);
         let views = views_supported();
         r.set_view_formats(views);
         let twin = [format.remove_srgb_suffix()];
@@ -5265,11 +5293,11 @@ pub(crate) mod tests {
         serial_on_gl();
         let (device, queue, frame, u) = fx_bench();
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
-        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, format, "Cascadia Mono", 16.0);
         for views in view_legs() {
             r.set_view_formats(views);
             let make = || {
-                let c = crate::render_fx_gpu::Chain::new(&device, format, lightning().compile().unwrap(), false).unwrap();
+                let c = test_chain(&device, format, lightning().compile().unwrap(), false).unwrap();
                 if views { c } else { c.without_view_formats(&device) }
             };
             let mut kept = make();
@@ -5297,7 +5325,7 @@ pub(crate) mod tests {
     fn effects_look_the_same_without_view_formats() {
         let (device, queue) = device();
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
-        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, format, "Cascadia Mono", 16.0);
         let (w, h) = (96u32, 48u32);
         let frame = Frame {
             clear: rgba(rgb(20, 22, 30), 1.0),
@@ -5310,23 +5338,30 @@ pub(crate) mod tests {
         let cursor = crate::render_fx::Cursor { rect: [50.0, 24.0, 8.0, 12.0], color: [0.62, 0.82, 0.996, 1.0], style: crate::render_fx::style::BLOCK, visible: true };
         clock.frame(&mut u, std::time::Instant::now(), (w, h), Some(cursor), true);
         let mut bad = Vec::new();
+        let views = views_supported();
+        if !views {
+            eprintln!("this backend has no view formats: running the plain path only, nothing to compare it with");
+        }
         for p in crate::render_fx::discover(None).0 {
             for keep in [false, true] {
+                let mut plain = crate::render_fx_gpu::Chain::new(&device, format, p.compile().unwrap(), keep).unwrap().without_view_formats(&device);
+                assert!(!plain.wants_raw_out());
+                r.set_view_formats(false);
+                let b = r.draw_offscreen_fx(&frame, Some((&mut plain, &u)), w, h).unwrap();
+                if !views {
+                    continue;
+                }
                 r.set_view_formats(true);
                 let mut with = crate::render_fx_gpu::Chain::new(&device, format, p.compile().unwrap(), keep).unwrap();
                 assert!(with.wants_raw_out());
                 let a = r.draw_offscreen_fx(&frame, Some((&mut with, &u)), w, h).unwrap();
-                r.set_view_formats(false);
-                let mut plain = crate::render_fx_gpu::Chain::new(&device, format, p.compile().unwrap(), keep).unwrap().without_view_formats(&device);
-                assert!(!plain.wants_raw_out());
-                let b = r.draw_offscreen_fx(&frame, Some((&mut plain, &u)), w, h).unwrap();
                 let worst = a.iter().zip(&b).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
                 if worst > 1 {
                     bad.push(format!("{} (keep alpha {keep}): a channel differs by {worst}", p.id));
                 }
             }
         }
-        r.set_view_formats(true);
+        r.set_view_formats(views);
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
@@ -5334,7 +5369,7 @@ pub(crate) mod tests {
     fn draws_quads_and_text_offscreen() {
         let (device, queue) = device();
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 24.0);
+        let mut r = test_renderer(&device, &queue, format, "Cascadia Mono", 24.0);
         assert!(r.cell.0 > 5.0 && r.cell.1 > 10.0, "{:?}", r.cell);
         let (w, h) = (64u32, 32u32);
         let tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -5383,7 +5418,7 @@ pub(crate) mod tests {
     #[test]
     fn underlines_break_around_glyph_ink() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 24.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 24.0);
         let (cw, ch) = r.cell;
         // Rows copy out in 256-byte multiples: 64 pixels.
         let (w, h) = (((cw * 3.0).ceil() as u32 + 2).next_multiple_of(64), ch.ceil() as u32 + 2);
@@ -5429,7 +5464,7 @@ pub(crate) mod tests {
     #[test]
     fn underline_gaps_use_the_whole_line_and_never_a_badge() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 24.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 24.0);
         let (cw, ch) = r.cell;
         let (w, h) = (((cw * 3.0).ceil() as u32 + 2).next_multiple_of(64), ch.ceil() as u32 + 2);
         let tex = target(&device, w, h);
@@ -5490,7 +5525,7 @@ pub(crate) mod tests {
     #[test]
     fn antialias_check_on_this_machine() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         if !r.has_family("Consolas") {
             println!("skip: Consolas is not installed");
             return;
@@ -5516,7 +5551,7 @@ pub(crate) mod tests {
     #[test]
     fn aliased_masks_survive_atlas_growth() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         if !r.has_family("Consolas") {
             println!("skip: Consolas is not installed");
             return;
@@ -5605,7 +5640,7 @@ pub(crate) mod tests {
     #[test]
     fn box_glyphs_draw_edge_to_edge_offscreen() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         let (w, h) = (64u32, 24u32);
         let tex = target(&device, w, h);
         let view = tex.create_view(&Default::default());
@@ -5633,7 +5668,7 @@ pub(crate) mod tests {
     #[test]
     fn box_glyph_clip_trims_the_mask() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         let (w, h) = (64u32, 24u32);
         let tex = target(&device, w, h);
         let view = tex.create_view(&Default::default());
@@ -5652,7 +5687,7 @@ pub(crate) mod tests {
     #[test]
     fn box_mask_is_stable_across_atlas_growth() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         let Some(cjk) = ["Microsoft YaHei", "Yu Gothic", "MS Gothic", "SimSun", "Malgun Gothic"].into_iter().find(|f| r.has_family(f)) else {
             println!("skip: no CJK family is installed");
             return;
@@ -5693,7 +5728,7 @@ pub(crate) mod tests {
     #[test]
     fn double_strike_follows_the_anti_alias_setting() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         let Some(family) = family_without_bold(&r) else {
             println!("skip: every installed family has a bold face");
             return;
@@ -5731,7 +5766,7 @@ pub(crate) mod tests {
     #[test]
     fn the_face_cap_never_borrows_another_profiles_switches() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         let a = r.face(&key("Cascadia Mono", 20.0, 1.0, 1.0));
         let table = std::sync::Arc::<str>::from(r#"{"entries":[{"start":57344,"count":16,"fontName":"Consolas"}],"version":2}"#);
         let with_table = r.face(&FaceKey { table: Some(table.clone()), ..key("Cascadia Mono", 30.0, 1.0, 1.0) });
@@ -5751,7 +5786,7 @@ pub(crate) mod tests {
     #[test]
     fn scrolled_rows_are_not_shaped_again() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         let lines: Vec<String> = (0..21).map(|i| format!("row number {i} {}", "ab".repeat(i % 5 + 1))).collect();
         let frame_of = |from: usize| {
             let mut f = Frame::default();
@@ -5764,14 +5799,14 @@ pub(crate) mod tests {
         let before = r.shapes;
         let scrolled = r.draw_offscreen(&frame_of(1), 400, 400).unwrap();
         assert!(r.shapes - before <= 1, "a scroll shapes only the new row, not {}", r.shapes - before);
-        let mut fresh = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut fresh = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         assert!(fresh.draw_offscreen(&frame_of(1), 400, 400).unwrap() == scrolled, "reused rows draw the same pixels as shaped ones");
     }
 
     #[test]
     fn identical_rows_in_one_frame_both_draw() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         let mut f = Frame::default();
         for y in [0.0, 30.0] {
             f.rows.push(TextRow { x: 10.0, y, spans: vec![masked("same", false, 0)].into(), clip: Rect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 }, scale: 1.0, face: DEFAULT_FACE });
@@ -5789,7 +5824,7 @@ pub(crate) mod tests {
     #[test]
     fn split_levels_keeps_every_frame_row_in_its_slot() {
         let (device, queue) = device();
-        let r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         let level = |text: &str, ligatures: u8| Span { ligatures, ..masked(text, false, 0) };
         let row = |y: f32, spans: Vec<Span>| TextRow { x: 10.0, y, spans: spans.into(), clip: Rect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 }, scale: 1.0, face: DEFAULT_FACE };
         let rows = vec![row(0.0, vec![level("ab", 0), level("->", 2)]), row(20.0, vec![level("cd", 0)]), row(40.0, vec![level("e", 0), level("=>", 2), level("f", 0)])];
@@ -5832,7 +5867,7 @@ pub(crate) mod tests {
     #[test]
     fn draws_an_image_offscreen() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         // Readback rows must be a multiple of 256 bytes: 64 px wide.
         let tex = target(&device, 64, 16);
         let view = tex.create_view(&Default::default());
@@ -5847,7 +5882,7 @@ pub(crate) mod tests {
     #[test]
     fn textures_upload_once() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         let tex = target(&device, 32, 16);
         let view = tex.create_view(&Default::default());
         let frame = Frame { images: (0..100).map(picture).collect(), ..Default::default() };
@@ -5859,7 +5894,7 @@ pub(crate) mod tests {
     #[test]
     fn oversized_images_are_skipped() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         let tex = target(&device, 64, 16);
         let view = tex.create_view(&Default::default());
         let wide = crate::scene::ImageQuad { size: (9000, 1), pixels: std::sync::Arc::new(vec![0; 9000 * 4]), ..picture(5) };

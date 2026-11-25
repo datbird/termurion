@@ -10,6 +10,8 @@ struct QuadPipeline {
     pipeline: wgpu::RenderPipeline,
     /// Scales what is already in the target by the blend constant (the fade pass).
     fader: wgpu::RenderPipeline,
+    /// The fade pass for a target with no non-sRGB view: the target's own format.
+    fader_view: wgpu::RenderPipeline,
     uniform: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
 }
@@ -85,8 +87,12 @@ impl QuadPipeline {
         // Run on the target's non-sRGB view: the stored values are what DirectComposition reads as
         // premultiplied, so they are scaled as stored (an sRGB view would scale in linear space and
         // leave the color above the alpha).
-        let fader = make("quad fade", format.remove_srgb_suffix(), wgpu::BlendState { color: scale, alpha: scale });
-        QuadPipeline { pipeline, fader, uniform, bind_group }
+        let fade_blend = wgpu::BlendState { color: scale, alpha: scale };
+        let fader = make("quad fade", format.remove_srgb_suffix(), fade_blend);
+        // Without a non-sRGB view (OpenGL has none) the fade runs on the target's own view: a
+        // pipeline for that format, scaling in linear space.
+        let fader_view = if format.is_srgb() { make("quad fade view", format, fade_blend) } else { fader.clone() };
+        QuadPipeline { pipeline, fader, fader_view, uniform, bind_group }
     }
 }
 
@@ -456,6 +462,7 @@ impl WgpuDraw {
         // on the non-sRGB view.
         if let Some(f) = list.fade {
             let f = f as f64;
+            let fader = if raw.is_some() { &self.quads.fader } else { &self.quads.fader_view };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -469,7 +476,7 @@ impl WgpuDraw {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.quads.fader);
+            pass.set_pipeline(fader);
             pass.set_bind_group(0, &self.quads.bind_group, &[]);
             pass.set_blend_constant(wgpu::Color { r: f, g: f, b: f, a: f });
             pass.set_vertex_buffer(0, quads(QuadBuf::Cover, 6));
