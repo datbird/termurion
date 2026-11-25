@@ -52,6 +52,7 @@ pub mod margins;
 pub mod gpu_pick;
 pub mod gpu_shared;
 pub mod gpu_window;
+#[cfg(any(test, target_os = "macos"))]
 pub mod metal_backend;
 pub mod power;
 pub mod osc;

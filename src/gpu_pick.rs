@@ -66,6 +66,46 @@ pub fn api_order(windows: bool, macos: bool, forced: Option<&str>) -> Vec<(Api, 
     backend_order(windows, forced).into_iter().map(|(b, label)| (Api::Wgpu(b), label)).collect()
 }
 
+/// What the Metal device pick knows about one `MTLDevice` (wgpu-hal 30.0.1 `AdapterShared::expose`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MetalFacts {
+    pub low_power: bool,
+    pub headless: bool,
+    /// `hasUnifiedMemory`, where the system answers it.
+    pub unified: Option<bool>,
+}
+
+impl MetalFacts {
+    /// The kind wgpu-hal reports: integrated with unified memory (or, unanswered, low power).
+    pub fn kind(&self) -> DeviceType {
+        if self.unified.unwrap_or(self.low_power) { DeviceType::IntegratedGpu } else { DeviceType::DiscreteGpu }
+    }
+}
+
+/// The Metal devices in the order wgpu would hand one out for `pref`: wgpu-hal lists them by
+/// (low power, headless), then wgpu-core's `request_adapter` sorts that list by device kind for
+/// the preference (both sorts stable). The first is the pick, so the native device and the
+/// settings windows' wgpu device land on the same GPU.
+pub fn metal_order(list: &[MetalFacts], pref: PowerPreference) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..list.len()).collect();
+    order.sort_by_key(|&i| (list[i].low_power, list[i].headless));
+    let rank = |kind: DeviceType, integrated: bool| match kind {
+        DeviceType::DiscreteGpu if integrated => 2,
+        DeviceType::IntegratedGpu if integrated => 1,
+        DeviceType::DiscreteGpu => 1,
+        DeviceType::IntegratedGpu => 2,
+        DeviceType::Other => 3,
+        DeviceType::VirtualGpu => 4,
+        DeviceType::Cpu => 5,
+    };
+    match pref {
+        PowerPreference::LowPower => order.sort_by_key(|&i| rank(list[i].kind(), true)),
+        PowerPreference::HighPerformance => order.sort_by_key(|&i| rank(list[i].kind(), false)),
+        PowerPreference::None => {}
+    }
+    order
+}
+
 /// Prefer integrated: the low-power GPU. Off: the high-performance one (the system default would
 /// leave the pick to the enumeration order, which is not a decision).
 pub fn preference(prefer_integrated: bool) -> PowerPreference {
@@ -450,6 +490,23 @@ mod tests {
             f(Backend::Dx12, "Intel(R) UHD Graphics 770", DeviceType::IntegratedGpu),
             f(Backend::Dx12, "Microsoft Basic Render Driver", DeviceType::Cpu),
         ]
+    }
+
+    /// wgpu's Metal pick: a dual-GPU Intel Mac (integrated low power, discrete, an eGPU that is
+    /// headless) and an Apple silicon Mac (one unified GPU).
+    #[test]
+    fn metal_devices_are_picked_as_wgpu_picks_them() {
+        let m = |low_power, headless, unified| MetalFacts { low_power, headless, unified: Some(unified) };
+        let intel = [m(true, false, false), m(false, true, false), m(false, false, false)];
+        assert_eq!(intel.map(|f| f.kind()), [DeviceType::DiscreteGpu; 3], "no unified memory on Intel: discrete as wgpu says");
+        let intel_igpu = [m(true, false, true), m(false, true, false), m(false, false, false)];
+        assert_eq!(metal_order(&intel_igpu, PowerPreference::LowPower), [0, 2, 1], "the integrated GPU first, then wgpu-hal's order");
+        assert_eq!(metal_order(&intel_igpu, PowerPreference::HighPerformance), [2, 1, 0], "discrete, displays before headless");
+        assert_eq!(metal_order(&intel_igpu, PowerPreference::None), [2, 1, 0]);
+        let unanswered = MetalFacts { low_power: true, headless: false, unified: None };
+        assert_eq!(unanswered.kind(), DeviceType::IntegratedGpu, "low power stands in for unified memory");
+        assert_eq!(metal_order(&[m(false, false, true)], PowerPreference::HighPerformance), [0]);
+        assert!(metal_order(&[], PowerPreference::LowPower).is_empty());
     }
 
     #[test]

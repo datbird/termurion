@@ -2,6 +2,9 @@
 //! buffer writes first, then one pass with the backdrop, the quads under the pictures, the
 //! pictures, the popup boxes, the text and the strokes and overlay, then the fade pass.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use objc2::rc::Retained;
 use objc2::Message;
 use objc2::runtime::ProtocolObject;
@@ -36,6 +39,54 @@ pub(crate) struct MetalDraw {
     bufs: [Buffer; 6],
     /// The quad and image shaders' screen size the last frame drew with (tests).
     pub(super) last_uniform: [f32; 4],
+    staging: Staging,
+}
+
+/// The smallest staging chunk (wgpu's upload belt uses chunks of this size too).
+const CHUNK_MIN: usize = 256 << 10;
+/// A spare chunk larger than this is let go once free, so one huge frame does not pin its memory.
+const KEEP_BYTES: usize = 8 << 20;
+/// Most spare chunks kept.
+const KEEP_CHUNKS: usize = 4;
+
+/// Shared staging chunks the buffer writes go through. A chunk belongs to one command buffer
+/// until it completes (its handler frees it), so the CPU never writes one the GPU still reads,
+/// and steady frames reuse chunks instead of making buffers.
+#[derive(Default)]
+struct Staging {
+    chunks: Vec<(Buffer, Arc<AtomicBool>)>,
+    made: u64,
+}
+
+impl Staging {
+    /// A free chunk of at least `len` bytes, now held by `cb`.
+    fn take(&mut self, device: &ProtocolObject<dyn MTLDevice>, cb: &ProtocolObject<dyn MTLCommandBuffer>, len: usize) -> Result<Buffer, String> {
+        let free = |f: &AtomicBool| f.load(Ordering::Acquire);
+        // Large spares go, then spares past the count.
+        self.chunks.retain(|(b, f)| !free(f) || b.length() <= KEEP_BYTES);
+        let mut spare = 0;
+        self.chunks.retain(|(_, f)| {
+            spare += usize::from(free(f));
+            !free(f) || spare <= KEEP_CHUNKS
+        });
+        let i = match self.chunks.iter().position(|(b, f)| free(f) && b.length() >= len) {
+            Some(i) => i,
+            None => {
+                let size = len.next_power_of_two().max(CHUNK_MIN);
+                let buf = device.newBufferWithLength_options(size, MTLResourceOptions::StorageModeShared).ok_or("no Metal staging buffer")?;
+                self.made += 1;
+                self.chunks.push((buf, Arc::new(AtomicBool::new(true))));
+                self.chunks.len() - 1
+            }
+        };
+        let (buf, flag) = &self.chunks[i];
+        flag.store(false, Ordering::Release);
+        let flag = flag.clone();
+        let handler = block2::RcBlock::new(move |_cb: std::ptr::NonNull<ProtocolObject<dyn MTLCommandBuffer>>| flag.store(true, Ordering::Release));
+        // SAFETY: Metal copies the block and calls it once the command buffer is done.
+        unsafe { cb.addCompletedHandler(block2::RcBlock::as_ptr(&handler)) };
+        Ok(buf.clone())
+    }
 }
 
 fn private_buffer(device: &ProtocolObject<dyn MTLDevice>, size: u64) -> Result<Buffer, String> {
@@ -50,7 +101,7 @@ const SCREEN_SLOT: usize = 0;
 impl MetalDraw {
     pub fn new(device: &ProtocolObject<dyn MTLDevice>, format: MTLPixelFormat) -> Result<MetalDraw, String> {
         let buf = || private_buffer(device, Shadow::START);
-        Ok(MetalDraw { quads: QuadPipeline::new(device, format)?, images: ImagePipeline::new(device, format)?, bufs: [buf()?, buf()?, buf()?, buf()?, buf()?, buf()?], last_uniform: [0.0; 4] })
+        Ok(MetalDraw { quads: QuadPipeline::new(device, format)?, images: ImagePipeline::new(device, format)?, bufs: [buf()?, buf()?, buf()?, buf()?, buf()?, buf()?], last_uniform: [0.0; 4], staging: Staging::default() })
     }
 
     /// Encodes `list` into `cb`, drawing into `view`; `raw` is a non-sRGB view of the same target
@@ -107,21 +158,30 @@ impl MetalDraw {
     }
 
     /// Applies the frame's buffer writes in order: a grown buffer is made again, and the bytes go
-    /// through one staging buffer and a blit, ahead of the frame's passes (as wgpu's upload belt).
+    /// through a staging chunk and one blit, ahead of the frame's passes (as wgpu's upload belt).
+    /// Every buffer is made before anything is encoded, so a failed one leaves the frame empty.
     fn write_buffers(&mut self, device: &ProtocolObject<dyn MTLDevice>, cb: &ProtocolObject<dyn MTLCommandBuffer>, up: &Uploads) -> Result<(), String> {
         let total: usize = up.buffers.iter().map(|w| if let BufferWrite::Quads { bytes, .. } = w { bytes.len().next_multiple_of(4) } else { 0 }).sum();
-        let staging = if total > 0 { Some(device.newBufferWithLength_options(total, MTLResourceOptions::StorageModeShared).ok_or("no Metal staging buffer")?) } else { None };
+        let mut grown = Vec::new();
+        for w in &up.buffers {
+            if let BufferWrite::Grow { size, .. } = w {
+                grown.push(private_buffer(device, *size)?);
+            }
+        }
+        let staging = if total > 0 { Some(self.staging.take(device, cb, total)?) } else { None };
         let blit = match &staging {
             Some(_) => Some(cb.blitCommandEncoder().ok_or("no Metal blit encoder")?),
             None => None,
         };
+        let mut grown = grown.into_iter();
         let mut at = 0usize;
         for w in &up.buffers {
             match w {
-                BufferWrite::Grow { which, size } => self.bufs[which.index()] = private_buffer(device, *size)?,
+                BufferWrite::Grow { which, .. } => self.bufs[which.index()] = grown.next().expect("made above"),
                 BufferWrite::Quads { which, offset, bytes } => {
                     let (Some(staging), Some(blit)) = (&staging, &blit) else { continue };
-                    // SAFETY: the staging buffer is shared and `total` bytes long; this write fits at `at`.
+                    // SAFETY: the chunk is shared, at least `total` bytes, and no command buffer
+                    // still reads it (`Staging::take`); this write fits at `at`.
                     unsafe {
                         let dst = staging.contents().as_ptr().cast::<u8>().add(at);
                         std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
@@ -135,6 +195,12 @@ impl MetalDraw {
             blit.endEncoding();
         }
         Ok(())
+    }
+
+    /// Staging chunks made so far (tests).
+    #[cfg(test)]
+    pub(super) fn staging_made(&self) -> u64 {
+        self.staging.made
     }
 
     /// Binds a vertex buffer as wgpu-hal does: the buffer at the top slot, the bound length in the

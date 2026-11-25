@@ -125,7 +125,7 @@ fn a_new_scale_resizes_the_drawable() {
     };
     let mut on_layer = MetalWindow::on_detached_layer(test_device(), Renderer::cpu_only(FACE, PX), (400, 200), 2.0);
     assert_eq!(layer_size(&on_layer), ((400, 200), 2.0));
-    assert!(!on_layer.layer().framebufferOnly() && on_layer.layer().maximumDrawableCount() == 2 && on_layer.layer().displaySyncEnabled());
+    assert!(!on_layer.layer().framebufferOnly() && on_layer.layer().maximumDrawableCount() == 3 && on_layer.layer().displaySyncEnabled());
     on_layer.resize(200, 100, 1.0);
     assert_eq!(layer_size(&on_layer), ((200, 100), 1.0));
 
@@ -156,16 +156,26 @@ fn a_lost_device_is_reported() {
     assert_eq!(win.generation(), generation);
     win.render(&Frame { fade: 1.0, ..Default::default() }, None, None).unwrap().kept.unwrap();
     assert!(crate::gpu_pick::take_lost().is_none(), "a good frame is no loss");
-    super::command_failed(generation, objc2_metal::MTLCommandBufferError::Internal.0 as isize, "an internal error");
+    // Through the completed handler's own path: the status, then the error's domain and code.
+    // A Metal command buffer cannot be made to fail on purpose, so the handler's two reads of
+    // the buffer (`status`, `error`) are the only part not run here.
+    use objc2_metal::{MTLCommandBufferError as E, MTLCommandBufferStatus as S};
+    // SAFETY: a constant NSString Metal exports.
+    let domain = unsafe { objc2_metal::MTLCommandBufferErrorDomain };
+    let error = |code: E| objc2_foundation::NSError::new(code.0 as isize, domain);
+    super::completed(generation, S::Completed, None);
+    super::completed(generation, S::Error, Some(&error(E::Internal)));
     assert!(crate::gpu_pick::take_lost().is_none(), "an internal error is logged, not a loss");
-    super::command_failed(generation - 1, objc2_metal::MTLCommandBufferError::DeviceRemoved.0 as isize, "the old device");
+    super::completed(generation, S::Error, Some(&objc2_foundation::NSError::new(E::DeviceRemoved.0 as isize, objc2_foundation::ns_string!("SomeOtherDomain"))));
+    assert!(crate::gpu_pick::take_lost().is_none(), "another domain's code 11 is no loss");
+    super::completed(generation - 1, S::Error, Some(&error(E::DeviceRemoved)));
     assert!(crate::gpu_pick::take_lost().is_none(), "a replaced device's report is ignored");
-    super::command_failed(generation, objc2_metal::MTLCommandBufferError::DeviceRemoved.0 as isize, "the GPU was removed");
+    super::completed(generation, S::Error, Some(&error(E::DeviceRemoved)));
     let why = crate::gpu_pick::take_lost().expect("the removed device is reported lost");
-    assert!(why.contains("device lost") && why.contains("the GPU was removed"), "{why}");
+    assert!(why.contains("device lost") && why.contains("Metal error 11"), "{why}");
     // The window moves onto a new device and draws again.
     crate::gpu_pick::next_generation();
-    let fresh = super::MetalShared::new(false).unwrap();
+    let fresh = super::MetalShared::new(wgpu::PowerPreference::HighPerformance).unwrap();
     win.rebuild(&crate::gpu_shared::GpuShared::Metal(fresh), None).unwrap();
     win.render(&Frame { clear: [0.0, 1.0, 0.0, 1.0], fade: 1.0, ..Default::default() }, None, None).unwrap().kept.unwrap();
     let px = super::readback::read_rgba(&test_device().queue, win.offscreen_texture(), 64, 32).unwrap();
@@ -181,4 +191,35 @@ fn a_frame_with_text_draws_its_quads_and_says_why_not_the_text() {
     assert_eq!(err, super::draw::NO_TEXT_YET);
     let effect = crate::render_fx::discover(None).0.into_iter().next().expect("a shipped effect");
     assert_eq!(win.set_effect(Some(effect.compile().unwrap()), None).unwrap_err(), super::window::NO_EFFECTS_YET);
+}
+
+/// The window's layer follows its root layer's bounds and scale, as wgpu's raw-window-metal layer
+/// does, and takes the drawable size it is given.
+#[test]
+fn the_layer_follows_its_root_layer() {
+    use objc2_foundation::{NSPoint as CGPoint, NSRect as CGRect, NSSize as CGSize};
+    let root = objc2_quartz_core::CALayer::new();
+    root.setContentsScale(2.0);
+    root.setBounds(CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(300.0, 150.0)));
+    let surface = super::surface::Surface::under(&root);
+    assert_eq!((surface.layer.contentsScale(), surface.layer.bounds().size), (2.0, CGSize::new(300.0, 150.0)), "the first values come at once");
+    root.setContentsScale(1.0);
+    root.setBounds(CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(200.5, 90.0)));
+    assert_eq!((surface.layer.contentsScale(), surface.layer.bounds().size), (1.0, CGSize::new(200.5, 90.0)), "fractional bounds are kept");
+    surface.configure(&test_device().device, (201, 90), 1.0);
+    assert_eq!(surface.layer.drawableSize(), CGSize::new(201.0, 90.0));
+    assert_eq!(surface.layer.contentsScale(), 1.0, "the root's scale, not the argument's, wins under a root");
+}
+
+/// Steady frames reuse their staging chunks: no new Metal buffer per frame.
+#[test]
+fn steady_frames_make_no_staging_buffers() {
+    let mut win = metal_window((320, 200));
+    for i in 0..30 {
+        let c = (i % 7) as f32 / 7.0;
+        let frame = Frame { fade: 1.0, quads: (0..40).map(|k| Quad { rect: rect(k as f32 * 7.0, 10.0, 6.0, 6.0 + i as f32), color: [c, 0.5, 1.0 - c, 1.0] }).collect(), ..Default::default() };
+        win.render(&frame, None, None).unwrap().kept.unwrap();
+    }
+    // A chunk is free again once its command buffer completed; a frame or two may still hold one.
+    assert!(win.staging_made() <= 3, "{} staging buffers for 30 frames", win.staging_made());
 }

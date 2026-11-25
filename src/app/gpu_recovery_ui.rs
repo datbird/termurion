@@ -72,10 +72,10 @@ impl App {
     fn recover_gpu(&mut self, api: usize, now: Instant) {
         let forced = std::env::var(gpu_pick::FORCE_ENV).ok();
         let order = gpu_pick::api_order(crate::platform::IS_WINDOWS, cfg!(target_os = "macos"), forced.as_deref());
-        let Some(&(api, label)) = order.get(api) else {
+        let Some(&(chosen, label)) = order.get(api) else {
             return self.gpu_recovery.failed(now);
         };
-        let rebuilt = match api {
+        let rebuilt = match chosen {
             gpu_pick::Api::Wgpu(backends) => self.rebuild_all_gpus(backends),
             gpu_pick::Api::Metal => self.rebuild_all_metal(),
         };
@@ -152,7 +152,7 @@ impl App {
     #[cfg(target_os = "macos")]
     fn rebuild_all_metal(&mut self) -> Result<String, String> {
         gpu_pick::next_generation();
-        let shared = crate::metal_backend::MetalShared::new(power::chosen() == wgpu::PowerPreference::LowPower)?;
+        let shared = crate::metal_backend::MetalShared::new(power::chosen())?;
         let primary = crate::gpu_shared::GpuShared::Metal(shared.clone());
         let mut failure: Option<String> = None;
         let mut each = |slot: &mut Option<Gpu>| {

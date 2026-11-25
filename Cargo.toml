@@ -48,9 +48,6 @@ getrandom = "0.4"
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 uuid = { version = "1", features = ["v4"] }
 wgpu = { version = "30", features = ["glsl", "naga-ir"] }
-# The Metal backend's shaders go to MSL as wgpu's do (src/metal_backend/shaders.rs); the same naga
-# wgpu uses, so one copy. MSL output on every OS keeps the translation test running everywhere.
-naga = { version = "30.0.1", features = ["wgsl-in", "msl-out"] }
 winit = "0.30"
 # Box and block drawing rasterizes its paths with zeno (already in the tree through swash).
 zeno = "0.3"
@@ -89,7 +86,7 @@ core-foundation-sys = "0.8.7"
 # The menu bar, pop-ups and the view's key path (src/platform/macos). objc2 0.6 is muda's; winit's own
 # 0.5 stays inside winit, and nothing here may add a third.
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSArray", "NSBundle", "NSURL", "NSDictionary", "NSDate", "NSError", "NSNotification", "NSDistributedNotificationCenter", "NSOperation", "NSData", "block2"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSArray", "NSBundle", "NSURL", "NSDictionary", "NSDate", "NSError", "NSNotification", "NSDistributedNotificationCenter", "NSOperation", "NSData", "block2", "NSKeyValueObserving", "NSValue", "NSObjCRuntime"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSMenu", "NSResponder", "NSView", "NSWindow", "NSRunningApplication", "NSWorkspace", "NSScreen", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSImage", "objc2-core-foundation", "libc"] }
 # Notifications (src/platform/macos/notify.rs).
 block2 = "0.6"
@@ -99,6 +96,9 @@ security-framework = "3"
 # The CFData an item update takes (the same 0.10 security-framework uses).
 core-foundation = "0.10"
 objc2-local-authentication = { version = "0.3", default-features = false, features = ["std", "block2", "LAContext", "LAError"] }
+# The Metal backend's shaders go to MSL as wgpu's do (src/metal_backend/shaders.rs); the same naga
+# wgpu uses, so one copy. Other systems get it only for the translation test (dev-dependencies).
+naga = { version = "30.0.1", features = ["wgsl-in", "msl-out"] }
 # The native Metal backend (src/metal_backend). Both are already in the tree through wgpu-hal, with
 # these features.
 objc2-metal = { version = "0.3.2", default-features = false, features = ["std", "block2", "MTLAllocation", "MTLBlitCommandEncoder", "MTLBlitPass", "MTLBuffer", "MTLCaptureManager", "MTLCaptureScope", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLComputeCommandEncoder", "MTLComputePass", "MTLComputePipeline", "MTLCounters", "MTLDepthStencil", "MTLDevice", "MTLDrawable", "MTLEvent", "MTLLibrary", "MTLPipeline", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLSampler", "MTLStageInputOutputDescriptor", "MTLTexture", "MTLTypes", "MTLVertexDescriptor", "MTLAccelerationStructure", "MTLAccelerationStructureTypes", "MTLAccelerationStructureCommandEncoder", "MTLResidencySet"] }
@@ -163,6 +163,10 @@ windows-sys = { version = "0.59", features = [
 ] }
 
 # alacritty_terminal with row marks (crates/alacritty_terminal/TERMURION-PATCHES.md).
+# The MSL translation test (src/metal_backend/shaders.rs) runs on every system.
+[dev-dependencies]
+naga = { version = "30.0.1", features = ["wgsl-in", "msl-out"] }
+
 [patch.crates-io]
 alacritty_terminal = { path = "crates/alacritty_terminal" }
 # vte with a readable parser state (crates/vte/TERMURION-PATCHES.md).

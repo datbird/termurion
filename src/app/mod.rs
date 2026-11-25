@@ -9159,9 +9159,14 @@ fn init_gpu_on(window: Arc<Window>, display: &winit::event_loop::OwnedDisplayHan
 fn init_metal(window: Arc<Window>, display: winit::event_loop::OwnedDisplayHandle, power_preference: wgpu::PowerPreference) -> Result<Gpu, String> {
     gpu_pick::next_generation();
     crate::metal_backend::set_display(display);
-    let shared = crate::metal_backend::MetalShared::new(power_preference == wgpu::PowerPreference::LowPower)?;
+    // Listed as the wgpu start lists its adapters: host.log, and "Prefer integrated GPU" is offered
+    // only where both kinds exist.
+    let facts = crate::metal_backend::adapter_facts();
+    log_adapters_once(&facts);
+    let shared = crate::metal_backend::MetalShared::new(power_preference)?;
+    let chosen = gpu_pick::Facts::of(&shared.adapter_info());
     static LOGGED: std::sync::Once = std::sync::Once::new();
-    LOGGED.call_once(|| crate::host_base::log(&format!("renderer: native Metal on {}", shared.name())));
+    LOGGED.call_once(|| crate::host_base::log(&format!("renderer: native Metal on {} ({})", chosen.name, gpu_pick::why(power_preference, &facts, &chosen))));
     let win = crate::metal_backend::MetalWindow::open(window.clone(), &shared, &first_font(), FONT_PX * window.scale_factor() as f32)?;
     Ok(Gpu { win, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), scene: Default::default(), painted_at: 0, display_hz: display_hz_of(&window), window })
 }

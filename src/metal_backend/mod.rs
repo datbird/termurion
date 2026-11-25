@@ -42,12 +42,12 @@ pub struct MetalShared {
 
 #[cfg(target_os = "macos")]
 impl MetalShared {
-    /// The device for the GPU preference: the low-power one when asked and present, else a
-    /// high-performance one, else the system default (as wgpu ranks Metal's adapters).
-    pub fn new(prefer_low_power: bool) -> Result<MetalShared, String> {
-        let all = objc2_metal::MTLCopyAllDevices();
-        let devices: Vec<Retained<ProtocolObject<dyn MTLDevice>>> = all.iter().collect();
-        let pick = devices.iter().find(|d| d.isLowPower() == prefer_low_power).or_else(|| devices.first()).cloned();
+    /// The device wgpu would pick for `pref` (`gpu_pick::metal_order`), falling back to the system
+    /// default when the list is empty.
+    pub fn new(pref: wgpu::PowerPreference) -> Result<MetalShared, String> {
+        let devices = devices();
+        let facts: Vec<crate::gpu_pick::MetalFacts> = devices.iter().map(|d| facts_of(d)).collect();
+        let pick = crate::gpu_pick::metal_order(&facts, pref).first().map(|&i| devices[i].clone());
         let device = pick.or_else(|| objc2_metal::MTLCreateSystemDefaultDevice()).ok_or("no Metal device")?;
         let queue = device.newCommandQueue().ok_or("no Metal command queue")?;
         Ok(MetalShared { device, queue })
@@ -59,12 +59,11 @@ impl MetalShared {
 
     /// The device described as wgpu describes an adapter (About, Copy Performance Stats, the log).
     pub fn adapter_info(&self) -> wgpu::AdapterInfo {
-        let kind = if self.device.isLowPower() { wgpu::DeviceType::IntegratedGpu } else { wgpu::DeviceType::DiscreteGpu };
         wgpu::AdapterInfo {
             name: self.name(),
             vendor: 0,
             device: 0,
-            device_type: kind,
+            device_type: facts_of(&self.device).kind(),
             device_pci_bus_id: String::new(),
             driver: String::new(),
             driver_info: String::new(),
@@ -84,6 +83,25 @@ impl MetalShared {
     }
 }
 
+/// Every Metal device on the system.
+#[cfg(target_os = "macos")]
+fn devices() -> Vec<Retained<ProtocolObject<dyn MTLDevice>>> {
+    objc2_metal::MTLCopyAllDevices().iter().collect()
+}
+
+/// What the pick needs to know about `d`, read as wgpu-hal reads it.
+#[cfg(target_os = "macos")]
+fn facts_of(d: &ProtocolObject<dyn MTLDevice>) -> crate::gpu_pick::MetalFacts {
+    let unified = objc2::available!(macos = 10.15).then(|| d.hasUnifiedMemory());
+    crate::gpu_pick::MetalFacts { low_power: d.isLowPower(), headless: d.isHeadless(), unified }
+}
+
+/// The system's Metal devices as the adapter list host.log and "Prefer integrated GPU" read.
+#[cfg(target_os = "macos")]
+pub fn adapter_facts() -> Vec<crate::gpu_pick::Facts> {
+    devices().iter().map(|d| crate::gpu_pick::Facts { backend: wgpu::Backend::Metal, name: d.name().to_string(), kind: facts_of(d).kind() }).collect()
+}
+
 /// Reports a failed command buffer: a removed device or a revoked one is a loss (the app's
 /// recovery remakes the device); any other error is only logged.
 #[cfg(target_os = "macos")]
@@ -91,14 +109,28 @@ fn watch(cb: &ProtocolObject<dyn MTLCommandBuffer>, generation: u64) {
     let handler = block2::RcBlock::new(move |cb: std::ptr::NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
         // SAFETY: Metal hands the handler the live command buffer it completed.
         let cb = unsafe { cb.as_ref() };
-        if cb.status() != MTLCommandBufferStatus::Error {
-            return;
-        }
-        let (code, text) = cb.error().map_or((0, "unknown error".to_string()), |e| (e.code(), e.localizedDescription().to_string()));
-        command_failed(generation, code, &text);
+        completed(generation, cb.status(), cb.error().as_deref());
     });
     // SAFETY: the block is copied by Metal and lives until the handler ran.
     unsafe { cb.addCompletedHandler(block2::RcBlock::as_ptr(&handler)) };
+}
+
+/// A finished command buffer's outcome: an error in Metal's command buffer domain goes on to
+/// `command_failed`; any other error is only logged.
+#[cfg(target_os = "macos")]
+pub(crate) fn completed(generation: u64, status: MTLCommandBufferStatus, error: Option<&objc2_foundation::NSError>) {
+    if status != MTLCommandBufferStatus::Error {
+        return;
+    }
+    let Some(e) = error else { return command_failed(generation, 0, "unknown error") };
+    let text = e.localizedDescription().to_string();
+    // SAFETY: a constant NSString Metal exports.
+    let metal = *e.domain() == *unsafe { objc2_metal::MTLCommandBufferErrorDomain };
+    if metal {
+        command_failed(generation, e.code(), &text);
+    } else {
+        crate::gpu_pick::log_gpu_error(&format!("Metal command buffer error {} {}: {text}", e.domain(), e.code()));
+    }
 }
 
 /// What a command buffer error with `code` means.
@@ -117,7 +149,7 @@ pub(crate) fn command_failed(generation: u64, code: isize, text: &str) {
 pub fn test_device() -> &'static MetalShared {
     static DEVICE: std::sync::OnceLock<MetalShared> = std::sync::OnceLock::new();
     // High performance, as the shared wgpu test device asks.
-    DEVICE.get_or_init(|| MetalShared::new(false).expect("a Metal device"))
+    DEVICE.get_or_init(|| MetalShared::new(wgpu::PowerPreference::HighPerformance).expect("a Metal device"))
 }
 
 #[cfg(target_os = "macos")]
@@ -133,19 +165,23 @@ pub fn set_display(display: winit::event_loop::OwnedDisplayHandle) {
 /// Metal): one wgpu device on wgpu's Metal backend, made on first use and kept.
 #[cfg(target_os = "macos")]
 pub fn egui_wgpu() -> Result<crate::gpu_shared::GpuShared, String> {
-    static GPU: std::sync::OnceLock<Result<crate::gpu_shared::GpuShared, String>> = std::sync::OnceLock::new();
-    GPU.get_or_init(|| {
-        let mut desc = match DISPLAY.get() {
-            Some(d) => wgpu::InstanceDescriptor::new_with_display_handle(Box::new(d.clone())),
-            None => wgpu::InstanceDescriptor::new_without_display_handle(),
-        };
-        desc.backends = wgpu::Backends::METAL;
-        let instance = wgpu::Instance::new(desc);
-        let pick = wgpu::RequestAdapterOptions { power_preference: crate::power::chosen(), ..Default::default() };
-        let adapter = pollster::block_on(instance.request_adapter(&pick)).map_err(|e| format!("no adapter for the settings windows: {e}"))?;
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).map_err(|e| format!("no device for the settings windows: {e}"))?;
-        crate::gpu_pick::watch(&device, crate::gpu_pick::current_generation());
-        Ok(crate::gpu_shared::GpuShared::Wgpu { instance, adapter, device, queue })
-    })
-    .clone()
+    // Only a made device is kept: a failure is tried again at the next window that opens.
+    static GPU: std::sync::Mutex<Option<crate::gpu_shared::GpuShared>> = std::sync::Mutex::new(None);
+    let mut slot = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(gpu) = slot.as_ref() {
+        return Ok(gpu.clone());
+    }
+    let mut desc = match DISPLAY.get() {
+        Some(d) => wgpu::InstanceDescriptor::new_with_display_handle(Box::new(d.clone())),
+        None => wgpu::InstanceDescriptor::new_without_display_handle(),
+    };
+    desc.backends = wgpu::Backends::METAL;
+    let instance = wgpu::Instance::new(desc);
+    let pick = wgpu::RequestAdapterOptions { power_preference: crate::power::chosen(), ..Default::default() };
+    let adapter = pollster::block_on(instance.request_adapter(&pick)).map_err(|e| format!("no adapter for the settings windows: {e}"))?;
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).map_err(|e| format!("no device for the settings windows: {e}"))?;
+    crate::gpu_pick::watch(&device, crate::gpu_pick::current_generation());
+    let gpu = crate::gpu_shared::GpuShared::Wgpu { instance, adapter, device, queue };
+    *slot = Some(gpu.clone());
+    Ok(gpu)
 }

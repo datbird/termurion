@@ -118,6 +118,12 @@ impl MetalWindow {
         self.draw.last_uniform
     }
 
+    /// Staging chunks the window's draw made so far (tests).
+    #[cfg(test)]
+    pub fn staging_made(&self) -> u64 {
+        self.draw.staging_made()
+    }
+
     /// The device generation the window reports a loss for (tests).
     #[cfg(test)]
     pub fn generation(&self) -> u64 {
@@ -141,6 +147,12 @@ impl MetalWindow {
     }
 
     pub fn render(&mut self, frame: &Frame, _fx: Option<FxFrame<'_>>, _overlay: Option<OverlayDraw<'_>>) -> Result<Drawn, RenderError> {
+        // Each frame's command buffer, encoders and drawable go with the frame, not with AppKit's
+        // event pool (or a test thread's, which never drains).
+        objc2::rc::autoreleasepool(|_| self.render_frame(frame))
+    }
+
+    fn render_frame(&mut self, frame: &Frame) -> Result<Drawn, RenderError> {
         // No chain is ever built yet (`set_effect`), so an effect frame draws as a plain one, as a
         // wgpu window without a chain does; the in-window menu bar is Linux only.
         let wait_start = Instant::now();
@@ -173,7 +185,10 @@ impl MetalWindow {
         let kept = self.encode(&cb, frame, texture, None);
         let draw = draw_start.map(|t| t.elapsed());
         let present_start = self.timing.then(Instant::now);
-        if let Some(d) = &drawable {
+        // A frame that failed before it drew (no buffer, a refused prepare) is not shown: the
+        // window keeps its last picture. It is still committed, so its staging chunk comes back.
+        let drew = kept.as_ref().map_or_else(|e| e == super::draw::NO_TEXT_YET, |_| true);
+        if let Some(d) = drawable.as_ref().filter(|_| drew) {
             cb.presentDrawable(ProtocolObject::<dyn MTLDrawable>::from_ref(&**d));
         }
         cb.commit();
@@ -195,6 +210,10 @@ impl MetalWindow {
 
     /// Draws `frame` into an offscreen texture of `w` by `h` and reads it back as RGBA.
     pub fn capture(&mut self, frame: &Frame, _fx: Option<FxFrame<'_>>, w: u32, h: u32) -> Result<Vec<u8>, String> {
+        objc2::rc::autoreleasepool(|_| self.capture_frame(frame, w, h))
+    }
+
+    fn capture_frame(&mut self, frame: &Frame, w: u32, h: u32) -> Result<Vec<u8>, String> {
         let max = MAX_TEXTURE_SIDE;
         if w == 0 || h == 0 || w > max || h > max {
             return Err(format!("an image of {w} x {h} pixels is larger than the graphics card allows ({max})"));
