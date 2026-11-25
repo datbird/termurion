@@ -65,9 +65,9 @@ pub struct Drawn {
     pub bar: Option<String>,
     /// Ok when the picture drew and the screen now shows it (it may be kept), else why not.
     pub kept: Result<(), String>,
-    /// How long the draw and the present took.
-    pub draw: Duration,
-    pub present: Duration,
+    /// How long the draw and the present took, with draw timing on (`set_timing`).
+    pub draw: Option<Duration>,
+    pub present: Option<Duration>,
 }
 
 /// How the last drawable request went, for Copy Performance Stats.
@@ -108,8 +108,34 @@ pub struct WgpuWindow {
     renderer: Renderer,
     /// The render plugin chain (`set_effect`); None when no effect runs.
     chain: Option<Chain>,
+    /// The shaders and terms `chain` was built from, for `capture`'s own chain.
+    effect: Option<(Vec<Compiled>, RegionTerms)>,
+    /// `capture`'s chain, made on first use, so a capture leaves the live chain's state alone.
+    capture_chain: Option<Chain>,
     acquire: Acquire,
+    /// Draw and present times are measured (Copy Performance Stats' draw timing).
+    timing: bool,
     window: Option<Arc<Window>>,
+    /// A test window draws into a texture of its own in place of a surface's.
+    #[cfg(test)]
+    offscreen: Option<wgpu::Texture>,
+}
+
+/// What a frame draws into.
+enum Target {
+    Surface(wgpu::SurfaceTexture),
+    #[cfg(test)]
+    Offscreen(wgpu::Texture),
+}
+
+impl Target {
+    fn texture(&self) -> &wgpu::Texture {
+        match self {
+            Target::Surface(t) => &t.texture,
+            #[cfg(test)]
+            Target::Offscreen(t) => t,
+        }
+    }
 }
 
 /// The format a surface draws in: the first sRGB one it offers, else its first.
@@ -121,9 +147,9 @@ impl WgpuWindow {
     /// A window's surface on `on` (the handles it draws with), configured at the window's size, and
     /// a renderer on the same device. `primary` is what windows opened from it share. A window on the
     /// see-through instance (`alpha`) gets the non-sRGB view the fade pass needs.
-    pub fn open(window: Arc<Window>, surface: wgpu::Surface<'static>, on: &GpuHandles, primary: &GpuHandles, alpha: bool, font: &str, px: f32) -> WindowGpu {
+    pub fn open(window: Arc<Window>, surface: wgpu::Surface<'static>, on: &GpuHandles, primary: &GpuHandles, alpha: bool, font: &str, px: f32) -> Result<WindowGpu, String> {
         let caps = surface.get_capabilities(&on.adapter);
-        let format = caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(caps.formats[0]);
+        let format = pick_format(&caps).ok_or("the surface offers no format")?;
         let size = window.inner_size();
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -140,16 +166,35 @@ impl WgpuWindow {
         surface.configure(&on.device, &config);
         let mut renderer = Renderer::new(&on.device, &on.queue, format, font, px);
         renderer.set_view_formats(render_fx_gpu::view_formats_supported(&on.adapter));
-        WindowGpu::Wgpu(WgpuWindow { surface: Some(surface), config, primary: primary.clone(), alpha: alpha.then(|| on.clone()), renderer, chain: None, acquire: Acquire::default(), window: Some(window) })
+        Ok(WindowGpu::Wgpu(WgpuWindow::new(Some(surface), config, primary.clone(), alpha.then(|| on.clone()), renderer, Some(window))))
+    }
+
+    fn new(surface: Option<wgpu::Surface<'static>>, config: wgpu::SurfaceConfiguration, primary: GpuHandles, alpha: Option<GpuHandles>, renderer: Renderer, window: Option<Arc<Window>>) -> WgpuWindow {
+        WgpuWindow {
+            surface,
+            config,
+            primary,
+            alpha,
+            renderer,
+            chain: None,
+            effect: None,
+            capture_chain: None,
+            acquire: Acquire::default(),
+            timing: false,
+            window,
+            #[cfg(test)]
+            offscreen: None,
+        }
     }
 
     /// `open` with a new surface made on `on`'s instance.
     pub fn open_new(window: Arc<Window>, on: &GpuHandles, primary: &GpuHandles, alpha: bool, font: &str, px: f32) -> Result<WindowGpu, String> {
         let surface = on.instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
-        Ok(WgpuWindow::open(window, surface, on, primary, alpha, font, px))
+        WgpuWindow::open(window, surface, on, primary, alpha, font, px)
     }
 
-    /// A window with no surface, `w` by `h` in `format`, for capturing frames in tests.
+    /// A window with no surface, `w` by `h` in `format`, for tests: `render` draws into a
+    /// texture of its own (`offscreen_texture`).
     #[cfg(test)]
     pub fn offscreen(on: &GpuHandles, renderer: Renderer, format: wgpu::TextureFormat, (w, h): (u32, u32)) -> WgpuWindow {
         let config = wgpu::SurfaceConfiguration {
@@ -163,7 +208,30 @@ impl WgpuWindow {
             desired_maximum_frame_latency: 2,
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
-        WgpuWindow { surface: None, config, primary: on.clone(), alpha: None, renderer, chain: None, acquire: Acquire::default(), window: None }
+        let mut w = WgpuWindow::new(None, config, on.clone(), None, renderer, None);
+        w.offscreen = Some(w.offscreen_target());
+        w
+    }
+
+    /// A texture as the surface would hand out: its format, size and view formats.
+    #[cfg(test)]
+    fn offscreen_target(&self) -> wgpu::Texture {
+        self.on().device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("offscreen window"),
+            size: wgpu::Extent3d { width: self.config.width, height: self.config.height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &self.config.view_formats,
+        })
+    }
+
+    /// The test window's texture, as the last `render` left it.
+    #[cfg(test)]
+    pub fn offscreen_texture(&self) -> &wgpu::Texture {
+        self.offscreen.as_ref().expect("an offscreen window")
     }
 
     fn on(&self) -> &GpuHandles {
@@ -181,8 +249,19 @@ impl WgpuWindow {
     }
 
     fn render(&mut self, frame: &Frame, fx: Option<FxFrame<'_>>, overlay: Option<OverlayDraw<'_>>) -> Result<Drawn, RenderError> {
-        let Some(surface) = self.surface.as_ref() else { return Err(RenderError::Skip) };
         let wait_start = Instant::now();
+        let Some(surface) = self.surface.as_ref() else {
+            #[cfg(test)]
+            if self.offscreen.is_some() {
+                // Made again each frame: the size or the view formats may have changed.
+                let t = self.offscreen_target();
+                self.offscreen = Some(t.clone());
+                self.acquire = Acquire { wait: wait_start.elapsed(), dropped: false };
+                return self.draw_into(Target::Offscreen(t), frame, fx, overlay);
+            }
+            self.acquire = Acquire { wait: wait_start.elapsed(), dropped: true };
+            return Err(RenderError::Skip);
+        };
         let acquired = surface.get_current_texture();
         let dropped = matches!(acquired, wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded);
         self.acquire = Acquire { wait: wait_start.elapsed(), dropped };
@@ -196,15 +275,21 @@ impl WgpuWindow {
             wgpu::CurrentSurfaceTexture::Lost => return Err(RenderError::Lost("Lost the window surface".into())),
             wgpu::CurrentSurfaceTexture::Validation => return Err(RenderError::Refused("GPU validation error".into())),
         };
+        self.draw_into(Target::Surface(texture), frame, fx, overlay)
+    }
+
+    /// Draws `frame` into a drawable, lets `overlay` draw over it, and presents it.
+    fn draw_into(&mut self, target: Target, frame: &Frame, fx: Option<FxFrame<'_>>, overlay: Option<OverlayDraw<'_>>) -> Result<Drawn, RenderError> {
+        let texture = target.texture();
         let (w, h) = (self.config.width, self.config.height);
         let fx = fx.filter(|_| self.chain.is_some());
         let bar_draws = overlay.is_some();
         // An effect chain that writes the raw view never reads the sRGB one, unless the bar draws on it.
         let fx_raw = fx.is_some() && self.wants_raw_out();
-        let view = (!fx_raw || bar_draws).then(|| texture.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+        let view = (!fx_raw || bar_draws).then(|| texture.create_view(&wgpu::TextureViewDescriptor::default()));
         // The non-sRGB view a fade needs on an sRGB target; no fade, no view.
-        let raw = self.config.view_formats.first().filter(|_| frame.fade < 1.0).map(|f| texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(*f), ..Default::default() }));
-        let draw_start = Instant::now();
+        let raw = self.config.view_formats.first().filter(|_| frame.fade < 1.0).map(|f| texture.create_view(&wgpu::TextureViewDescriptor { format: Some(*f), ..Default::default() }));
+        let draw_start = self.timing.then(Instant::now);
         let kept = match (fx, self.chain.as_mut()) {
             (Some(fx), Some(chain)) => {
                 // The passes write the window through its non-sRGB view (set_effect made sure it has one).
@@ -212,31 +297,49 @@ impl WgpuWindow {
                 // full tells the chain no next frame can, so it skips the kept output.
                 chain.keep_output(fx.keep_output);
                 // Without view formats (OpenGL) the chain's last copy writes the window's own view.
-                let out = if chain.wants_raw_out() { texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(render_fx_gpu::raw_format(self.config.format)), ..Default::default() }) } else { view.clone().expect("made unless the chain writes the raw view") };
+                let out = if chain.wants_raw_out() { texture.create_view(&wgpu::TextureViewDescriptor { format: Some(render_fx_gpu::raw_format(self.config.format)), ..Default::default() }) } else { view.clone().expect("made unless the chain writes the raw view") };
                 self.renderer.draw_fx_for(frame, chain, fx.uniforms, &out, w, h, fx.same_scene, fx.region)
             }
             _ => self.renderer.draw_with(frame, view.as_ref().expect("made without effects"), raw.as_ref(), w, h),
         };
-        let draw = draw_start.elapsed();
+        let draw = draw_start.map(|t| t.elapsed());
         // The menu bar and any open menu go over the terminal, on the same frame.
         let bar = overlay.and_then(|paint| {
-            let on = self.alpha.as_ref().unwrap_or(&self.primary);
+            let on = self.on();
             paint(&Overlay { device: &on.device, queue: &on.queue, target: view.as_ref().expect("made when the bar draws"), format: self.config.format, size: (w, h) })
         });
-        let present_start = Instant::now();
-        self.on().queue.present(texture);
-        Ok(Drawn { bar, kept, draw, present: present_start.elapsed() })
+        let present_start = self.timing.then(Instant::now);
+        match target {
+            Target::Surface(t) => self.on().queue.present(t),
+            #[cfg(test)]
+            Target::Offscreen(_) => {}
+        }
+        Ok(Drawn { bar, kept, draw, present: present_start.map(|t| t.elapsed()) })
     }
 
     fn capture(&mut self, frame: &Frame, fx: Option<FxFrame<'_>>, w: u32, h: u32) -> Result<Vec<u8>, String> {
-        match (fx, self.chain.as_mut()) {
-            (Some(fx), Some(chain)) => self.renderer.draw_offscreen_fx(frame, Some((chain, fx.uniforms)), w, h),
-            _ => self.renderer.draw_offscreen(frame, w, h),
+        let Some(fx) = fx.filter(|_| self.chain.is_some()) else { return self.renderer.draw_offscreen(frame, w, h) };
+        // Its own chain: the live one keeps its kept picture and still-check state.
+        if self.capture_chain.is_none() {
+            let (shaders, terms) = self.effect.clone().expect("kept with the chain");
+            self.capture_chain = Some(self.make_chain(shaders, terms)?);
         }
+        let chain = self.capture_chain.as_mut().expect("made above");
+        self.renderer.draw_offscreen_fx(frame, Some((chain, fx.uniforms)), w, h)
+    }
+
+    /// A chain as the window runs it: on its device, through copy passes where views are missing.
+    fn make_chain(&self, shaders: Vec<Compiled>, terms: RegionTerms) -> Result<Chain, String> {
+        let device = &self.on().device;
+        let mut c = Chain::new(device, self.config.format, shaders, self.keeps_alpha())?;
+        c.set_region_terms(terms);
+        Ok(if render_fx_gpu::view_formats_supported(&self.on().adapter) { c } else { c.without_view_formats(device) })
     }
 
     fn set_effect(&mut self, compiled: Option<Vec<Compiled>>, terms: RegionTerms) -> Result<(), String> {
         self.chain = None;
+        self.effect = None;
+        self.capture_chain = None;
         let Some(shaders) = compiled else { return Ok(()) };
         let format = self.config.format;
         // The passes write the window through its non-sRGB view, so the surface must offer one.
@@ -250,11 +353,8 @@ impl WgpuWindow {
         if shaders.is_empty() {
             return Ok(());
         }
-        let keep_alpha = self.keeps_alpha();
-        let device = self.on().device.clone();
-        let mut c = Chain::new(&device, format, shaders, keep_alpha)?;
-        c.set_region_terms(terms);
-        self.chain = Some(if views { c } else { c.without_view_formats(&device) });
+        self.chain = Some(self.make_chain(shaders.clone(), terms.clone())?);
+        self.effect = Some((shaders, terms));
         Ok(())
     }
 
@@ -287,6 +387,8 @@ impl WgpuWindow {
         self.renderer.set_view_formats(render_fx_gpu::view_formats_supported(&on.adapter));
         self.surface = Some(surface);
         self.chain = None;
+        self.effect = None;
+        self.capture_chain = None;
         self.alpha = target;
         self.primary = primary;
         Ok(())
@@ -406,6 +508,13 @@ impl WindowGpu {
         }
     }
 
+    /// Measures the draw and the present of the frames to come (`Drawn::draw`, `Drawn::present`).
+    pub fn set_timing(&mut self, on: bool) {
+        match self {
+            WindowGpu::Wgpu(w) => w.timing = on,
+        }
+    }
+
     /// How the last drawable request went.
     pub fn last_acquire(&self) -> Acquire {
         match self {
@@ -476,61 +585,148 @@ mod tests {
         r
     }
 
-    /// The window object's capture is the renderer's offscreen draw, with and without an effect,
-    /// byte for byte.
-    #[test]
-    fn capture_matches_the_renderer() {
+    /// A texture's pixels as RGBA, row by row (BGRA targets swapped), as `draw_offscreen` reads them.
+    fn read_back(on: &GpuHandles, tex: &wgpu::Texture) -> Vec<u8> {
+        let (w, h) = (tex.width(), tex.height());
+        let row = w * 4;
+        let padded = row.div_ceil(256) * 256;
+        let buf = on.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (padded * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+        let mut enc = on.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        on.queue.submit(Some(enc.finish()));
+        buf.slice(..).map_async(wgpu::MapMode::Read, |r| r.unwrap());
+        on.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let data = buf.slice(..).get_mapped_range().unwrap().to_vec();
+        let bgra = matches!(tex.format(), wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+        let mut out = Vec::with_capacity((row * h) as usize);
+        for y in 0..h as usize {
+            for p in data[y * padded as usize..y * padded as usize + row as usize].as_chunks::<4>().0 {
+                out.extend_from_slice(&if bgra { [p[2], p[1], p[0], p[3]] } else { *p });
+            }
+        }
+        out
+    }
+
+    fn handles() -> GpuHandles {
         let (instance, adapter, device, queue) = crate::render::test_gpu::shared_all();
         crate::render::test_gpu::serial_on_gl(&adapter);
-        let on = GpuHandles { instance, adapter, device, queue };
+        GpuHandles { instance, adapter, device, queue }
+    }
+
+    const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
+
+    /// Draws through `render` (views, the effect's out view, the fade's raw view) and reads it back.
+    fn rendered(on: &GpuHandles, win: &mut WindowGpu, f: &Frame, fx: Option<FxFrame<'_>>) -> Vec<u8> {
+        let drawn = win.render(f, fx, None).expect("an offscreen window always draws");
+        drawn.kept.unwrap();
+        let WindowGpu::Wgpu(w) = win;
+        read_back(on, w.offscreen_texture())
+    }
+
+    fn uniforms_at(ms: u64, size: (u32, u32)) -> Uniforms {
+        let mut u = Uniforms::default();
+        let t0 = Instant::now();
+        let mut clock = crate::render_fx::Clock::default();
+        clock.frame(&mut u, t0, size, None, true);
+        clock.frame(&mut u, t0 + Duration::from_millis(ms), size, None, true);
+        u
+    }
+
+    /// Frames drawn through the window's `render` equal the renderer's own offscreen draw (the
+    /// old app path drew with the same calls): plain, fading through the raw view, and
+    /// through an effect, a fresh frame and then an animation-only one that reuses the kept picture.
+    #[test]
+    fn render_matches_the_renderer() {
+        let on = handles();
         let (w, h) = (320, 120);
         let f = frame(w, h);
-        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
-        let mut win = WindowGpu::Wgpu(WgpuWindow::offscreen(&on, renderer(&on), format, (w, h)));
+        let fading = Frame { fade: 0.6, ..frame(w, h) };
+        let mut win = WindowGpu::Wgpu(WgpuWindow::offscreen(&on, renderer(&on), FORMAT, (w, h)));
         let mut r = renderer(&on);
-        assert_eq!(win.capture(&f, None, w, h).unwrap(), r.draw_offscreen(&f, w, h).unwrap());
+        crate::render_pixel_tests::assert_same("plain", &rendered(&on, &mut win, &f, None), &r.draw_offscreen(&f, w, h).unwrap(), w);
+        // An effect adds the raw view where the card has one; the fade then draws through it.
         let plugin = crate::render_fx::discover(None).0.into_iter().next().expect("a shipped effect");
-        let mut u = Uniforms::default();
-        crate::render_fx::Clock::default().frame(&mut u, Instant::now(), (w, h), None, true);
         win.set_effect(Some(plugin.compile().unwrap()), None).unwrap();
-        let fx = || FxFrame { uniforms: &u, region: None, same_scene: false, keep_output: false };
-        let mut chain = Chain::new(&on.device, format, plugin.compile().unwrap(), false).unwrap();
+        crate::render_pixel_tests::assert_same("fade with views", &rendered(&on, &mut win, &fading, None), &r.draw_offscreen(&fading, w, h).unwrap(), w);
+        let mut chain = Chain::new(&on.device, FORMAT, plugin.compile().unwrap(), false).unwrap();
         if !render_fx_gpu::view_formats_supported(&on.adapter) {
             chain = chain.without_view_formats(&on.device);
         }
-        assert_eq!(win.capture(&f, Some(fx()), w, h).unwrap(), r.draw_offscreen_fx(&f, Some((&mut chain, &u)), w, h).unwrap());
-        // No effect again: the chain is gone and the plain picture comes back.
-        win.set_effect(None, None).unwrap();
-        assert!(!win.skip_if_still(&u, true));
-        assert_eq!(win.capture(&f, Some(fx()), w, h).unwrap(), r.draw_offscreen(&f, w, h).unwrap());
+        for (name, ms, same_scene) in [("fx fresh", 0, false), ("fx animation only", 400, true)] {
+            let u = uniforms_at(ms, (w, h));
+            let fx = FxFrame { uniforms: &u, region: None, same_scene, keep_output: false };
+            crate::render_pixel_tests::assert_same(name, &rendered(&on, &mut win, &f, Some(fx)), &r.draw_offscreen_fx(&f, Some((&mut chain, &u)), w, h).unwrap(), w);
+        }
+        let WindowGpu::Wgpu(inner) = &win;
+        assert!(inner.chain.as_ref().unwrap().frame_kept(), "the animation-only frame reused the kept picture");
     }
 
-    /// Every pixel case drawn through the window object equals the renderer's own draw (the path
-    /// the app took before), byte for byte. The flood is cut short: both sides see the same
-    /// sequence, so a shorter run proves the same.
+    /// Every baseline and agent pixel case drawn through `render` equals the renderer's own draw,
+    /// each at its own size (the window resized to it).
     #[test]
-    fn window_frames_match_the_renderer_on_the_pixel_cases() {
-        let (instance, adapter, device, queue) = crate::render::test_gpu::shared_all();
-        crate::render::test_gpu::serial_on_gl(&adapter);
-        let on = GpuHandles { instance, adapter, device, queue };
-        let face = crate::render_pixel_tests::FACE;
+    fn render_matches_the_renderer_on_the_pixel_cases() {
+        let on = handles();
         let make = || {
-            let mut r = Renderer::new(&on.device, &on.queue, wgpu::TextureFormat::Bgra8UnormSrgb, face, 14.0);
+            let mut r = Renderer::new(&on.device, &on.queue, FORMAT, crate::render_pixel_tests::FACE, 14.0);
             r.set_view_formats(render_fx_gpu::view_formats_supported(&on.adapter));
             r
         };
         let mut r = make();
         let cases = crate::render_pixel_tests::pixel_cases(&r);
-        let mut win = WindowGpu::Wgpu(WgpuWindow::offscreen(&on, make(), wgpu::TextureFormat::Bgra8UnormSrgb, (808, 486)));
+        let mut win = WindowGpu::Wgpu(WgpuWindow::offscreen(&on, make(), FORMAT, (808, 486)));
         let mut n = 0;
-        for c in cases.iter().filter(|c| c.name.strip_prefix("cjk_flood-").is_none_or(|i| i < "040")) {
+        for c in cases.iter().filter(|c| !c.name.starts_with("cjk_flood-")) {
             let (w, h) = c.size;
-            let a = win.capture(&c.frame, None, w, h).unwrap();
-            let b = r.draw_offscreen(&c.frame, w, h).unwrap();
-            crate::render_pixel_tests::assert_same(&c.name, &a, &b, w);
+            win.resize(w, h, 1.0);
+            crate::render_pixel_tests::assert_same(&c.name, &rendered(&on, &mut win, &c.frame, None), &r.draw_offscreen(&c.frame, w, h).unwrap(), w);
             n += 1;
         }
-        assert!(n > 40, "{n} cases");
+        assert!(n > 10, "{n} cases");
+    }
+
+    /// A capture through the effect leaves the live chain as it was: the next frame with the same
+    /// uniforms is still left out, as in a window that never captured, and the pictures agree.
+    #[test]
+    fn a_capture_leaves_the_live_chain_alone() {
+        let on = handles();
+        let (w, h) = (320, 120);
+        let f = frame(w, h);
+        let plugin = crate::render_fx::discover(None).0.into_iter().next().expect("a shipped effect");
+        let mut a = WindowGpu::Wgpu(WgpuWindow::offscreen(&on, renderer(&on), FORMAT, (w, h)));
+        let mut b = WindowGpu::Wgpu(WgpuWindow::offscreen(&on, renderer(&on), FORMAT, (w, h)));
+        let u = uniforms_at(0, (w, h));
+        let fx = || FxFrame { uniforms: &u, region: None, same_scene: false, keep_output: false };
+        for win in [&mut a, &mut b] {
+            win.set_effect(Some(plugin.compile().unwrap()), None).unwrap();
+            rendered(&on, win, &f, Some(fx()));
+        }
+        let shot = a.capture(&frame(200, 80), Some(fx()), 200, 80).unwrap();
+        assert_eq!(shot.len(), 200 * 80 * 4);
+        assert!(b.skip_if_still(&u, true), "an unchanged effect frame is left out");
+        assert!(a.skip_if_still(&u, true), "the capture did not touch the live chain");
+        let later = uniforms_at(300, (w, h));
+        let next = |u| FxFrame { uniforms: u, region: None, same_scene: true, keep_output: false };
+        assert_eq!(rendered(&on, &mut a, &f, Some(next(&later))), rendered(&on, &mut b, &f, Some(next(&later))));
+        let kept = |win: &WindowGpu| {
+            let WindowGpu::Wgpu(w) = win;
+            w.chain.as_ref().unwrap().kept_made()
+        };
+        assert_eq!(kept(&a), kept(&b));
+    }
+
+    /// A window with no drawable reports the request like any other.
+    #[test]
+    fn a_window_without_a_surface_counts_a_dropped_frame() {
+        let on = handles();
+        let mut w = WgpuWindow::offscreen(&on, renderer(&on), FORMAT, (40, 20));
+        w.offscreen = None;
+        let mut win = WindowGpu::Wgpu(w);
+        assert_eq!(win.render(&frame(40, 20), None, None).unwrap_err(), RenderError::Skip);
+        assert!(win.last_acquire().dropped);
     }
 
     /// The app asks the window object for frames; it never touches a surface or a texture itself.

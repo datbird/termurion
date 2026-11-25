@@ -722,6 +722,7 @@ fn below_re() -> &'static regex::Regex {
 }
 
 /// A shader compiled and validated.
+#[derive(Clone)]
 pub struct Compiled {
     pub module: naga::Module,
     pub info: naga::valid::ModuleInfo,

@@ -7735,6 +7735,7 @@ impl App {
             let mut paint = |o: &crate::gpu_window::Overlay<'_>| bar.draw(&menu_bar_ui::BarFrame { device: o.device, queue: o.queue, target: o.target, format: o.format, size: o.size, scale: bar_scale, dark: bar_dark }, menu);
             #[cfg(debug_assertions)]
             let capturing = gpu.win.wgpu_device().is_some_and(gpu_capture::begin);
+            gpu.win.set_timing(timing);
             let rendered = gpu.win.render(&frame, fx, if bar_draws { Some(&mut paint) } else { None });
             #[cfg(debug_assertions)]
             if capturing && let Some(d) = gpu.win.wgpu_device() {
@@ -7784,9 +7785,9 @@ impl App {
             } else {
                 gpu.scene.invalidate();
             }
-            if timing {
-                self.draw_timers.stats[2].add(drawn.draw.as_secs_f64(), 1);
-                self.draw_timers.stats[3].add(drawn.present.as_secs_f64(), 1);
+            if let (Some(d), Some(p)) = (drawn.draw, drawn.present) {
+                self.draw_timers.stats[2].add(d.as_secs_f64(), 1);
+                self.draw_timers.stats[3].add(p.as_secs_f64(), 1);
             }
             if let Err(e) = drawn.kept {
                 if self.hotkey.as_ref().is_some_and(|h| h.fading()) {
@@ -9135,7 +9136,7 @@ fn init_gpu_on(window: Arc<Window>, display: &winit::event_loop::OwnedDisplayHan
     LOGGED.call_once(|| {
         crate::host_base::log(&format!("renderer: {:?} on {} ({})", info.backend, info.name, gpu_pick::why(power_preference, &facts, &gpu_pick::Facts::of(&info))));
     });
-    let win = WgpuWindow::open(window.clone(), surface, &handles, &handles, false, &first_font(), FONT_PX * window.scale_factor() as f32);
+    let win = WgpuWindow::open(window.clone(), surface, &handles, &handles, false, &first_font(), FONT_PX * window.scale_factor() as f32)?;
     Ok(Gpu { win, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), scene: Default::default(), painted_at: 0, display_hz: display_hz_of(&window), window })
 }
 
