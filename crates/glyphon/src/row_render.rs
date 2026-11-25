@@ -44,9 +44,9 @@ pub const ROW_TABLE_CHUNK: u64 = 16384;
 /// The smallest slot, in instances.
 const MIN_SLOT: u32 = 64;
 /// The instance buffer's first size, in instances.
-const FIRST_CAPACITY: u32 = 4096;
+pub(crate) const FIRST_CAPACITY: u32 = 4096;
 /// Rows in one chunk of the row table, `RowTable` in `row_shader.wgsl`.
-const TABLE_CHUNK_ROWS: u32 = (ROW_TABLE_CHUNK / ROW_UNIFORM_SIZE) as u32;
+pub(crate) const TABLE_CHUNK_ROWS: u32 = (ROW_TABLE_CHUNK / ROW_UNIFORM_SIZE) as u32;
 const INSTANCE_SIZE: usize = mem::size_of::<GlyphToRender>();
 /// Write bytes kept between frames; a bigger burst (a whole screen after growth) is let go.
 const KEEP_BYTES: usize = 8 << 20;

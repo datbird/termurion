@@ -117,6 +117,7 @@ pub struct GlyphToRender {
     pub color: u32,
     /// The `ContentType` (0 color, 1 mask), then 1 when the color converts to linear.
     pub content_type_with_srgb: [u16; 2],
+    /// The quad's depth for a depth test; always 0 here (no caller draws with depth).
     pub depth: f32,
 }
 

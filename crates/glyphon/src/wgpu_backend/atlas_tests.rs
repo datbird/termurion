@@ -1,4 +1,5 @@
-//! Termurion patch 9: the ops a core atlas records rebuild exactly the texels its textures hold.
+//! Termurion patch 9: the ops a core atlas records rebuild exactly the texels its textures hold,
+//! and those texels are each live glyph's own raster.
 
 use super::*;
 use crate::{
@@ -162,16 +163,28 @@ fn atlas_ops_rebuild_the_same_texels() {
         }
     }
 
-    // And what the ops built is right: every cached custom glyph sits where the atlas says.
-    let mut checked = 0;
+    // What the core emitted is right: in the image built from the ops alone, every live glyph's
+    // rectangle holds that glyph rasterized directly (swash for text, the rasterizer for custom).
+    let (mut custom, mut texts) = (0, 0);
     for (inner, cpu) in [(&atlas.mask_atlas, &cpu_mask), (&atlas.color_atlas, &cpu_color)] {
         for (key, details) in inner.glyph_cache.iter() {
-            let (GlyphonCacheKey::Custom(key), GpuCacheStatus::InAtlas { x, y, .. }) = (key, &details.gpu_cache) else { continue };
-            assert_eq!(is_color(key.glyph_id), cpu.bpp == 4, "glyph {} is in the wrong atlas", key.glyph_id);
-            let got = cpu.rect(*x as u32, *y as u32, key.width as u32, key.height as u32);
-            assert!(got == pattern(key.glyph_id, key.width, key.height, cpu.bpp), "glyph {} is not at {x}, {y}", key.glyph_id);
-            checked += 1;
+            let GpuCacheStatus::InAtlas { x, y, .. } = details.gpu_cache else { continue };
+            let (w, h) = (details.width as u32, details.height as u32);
+            let want = match key {
+                GlyphonCacheKey::Custom(key) => {
+                    assert_eq!(is_color(key.glyph_id), cpu.bpp == 4, "glyph {} is in the wrong atlas", key.glyph_id);
+                    custom += 1;
+                    pattern(key.glyph_id, key.width, key.height, cpu.bpp)
+                }
+                GlyphonCacheKey::Text(key) => {
+                    let image = swash.get_image_uncached(&mut font_system, *key).expect("a cached text glyph rasterizes");
+                    assert_eq!((image.placement.width, image.placement.height), (w, h), "text glyph {key:?} changed size");
+                    texts += 1;
+                    image.data
+                }
+            };
+            assert!(cpu.rect(x as u32, y as u32, w, h) == want, "glyph {key:?} at {x}, {y} is not its own raster");
         }
     }
-    assert!(checked > 20, "only {checked} glyphs were checked");
+    assert!(custom > 20 && texts > 10, "only {custom} custom and {texts} text glyphs were checked");
 }

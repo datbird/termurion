@@ -9,9 +9,8 @@ use crate::{
 };
 use wgpu::TextureFormat;
 
-/// Termurion patch 9: `RowRenderer`'s first size and its table's chunk, as the core has them.
-const FIRST_CAPACITY: u32 = 4096;
-const TABLE_CHUNK_ROWS: u32 = (ROW_TABLE_CHUNK / ROW_UNIFORM_SIZE) as u32;
+// Termurion patch 9: the core's own sizes, so these cannot drift from them.
+use crate::row_render::{FIRST_CAPACITY, TABLE_CHUNK_ROWS};
 
 const W: u32 = 320;
 const H: u32 = 240;

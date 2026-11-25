@@ -88,6 +88,8 @@ pub struct GpuAtlas {
 impl GpuAtlas {
     /// The textures of `atlas` as it is now; it must have uploaded nothing yet (a new atlas).
     pub fn new(device: &Device, cache: &Cache, atlas: &TextAtlas) -> Self {
+        // Termurion patch 9: textures made from a used atlas would miss what it already placed.
+        debug_assert!(atlas.ops.is_empty() && atlas.generation() == 0, "GpuAtlas::new over an atlas that already placed glyphs");
         let color_format = match atlas.color_mode() {
             ColorMode::Accurate => TextureFormat::Rgba8UnormSrgb,
             ColorMode::Web => TextureFormat::Rgba8Unorm,

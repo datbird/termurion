@@ -427,8 +427,9 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, family: &str, font_px: f32) -> Renderer {
-        let mut r = Renderer::cpu_only(family, font_px);
-        r.attach(device, queue, format);
+        // The atlas is sized for the device from the start, so nothing is built twice.
+        let mut r = Renderer::with_atlas_side(family, font_px, device.limits().max_texture_dimension_2d);
+        r.set_backend(device, queue, format);
         r
     }
 
@@ -437,6 +438,11 @@ impl Renderer {
     /// exactly what the CPU half thinks they do.
     fn attach(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) {
         self.reset_glyphs(device.limits().max_texture_dimension_2d);
+        self.set_backend(device, queue, format);
+    }
+
+    /// A new backend over the current (empty) glyph atlas and row renderer.
+    fn set_backend(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) {
         let draw = WgpuDraw::new(device, format, &self.glyph_atlas, &self.row_text);
         self.gpu = Some(GpuHalf { device: device.clone(), queue: queue.clone(), draw });
         // The new buffers hold nothing.
@@ -453,13 +459,18 @@ impl Renderer {
 
     /// A renderer with no device: fonts, measuring and `prepare` work, drawing does not.
     pub fn cpu_only(family: &str, font_px: f32) -> Renderer {
+        // With no device the atlas may grow as far as wgpu's default limit allows.
+        Renderer::with_atlas_side(family, font_px, wgpu::Limits::default().max_texture_dimension_2d)
+    }
+
+    /// `cpu_only`, with a glyph atlas that may grow to `max_side` pixels per side.
+    fn with_atlas_side(family: &str, font_px: f32, max_side: u32) -> Renderer {
         // Aliased and thin-stroke glyph masks are filtered in the vendored glyphon (patch 1); the
         // filter is process-wide, so a second window's renderer sets the same function again.
         glyphon::set_mask_filter(|flags, alpha| fonts::filter_mask(fonts::MaskMode::of_flags(flags), alpha));
         let mut font_system = FontSystem::new();
         let blank = Buffer::new(&mut font_system, Metrics::new(12.0, 14.0));
-        // With no device the atlas may grow as far as wgpu's default limit allows.
-        let glyph_atlas = glyphon::TextAtlas::new(wgpu::Limits::default().max_texture_dimension_2d);
+        let glyph_atlas = glyphon::TextAtlas::new(max_side);
         let row_text = glyphon::RowRenderer::new(&glyph_atlas);
         let mut r = Renderer {
             gpu: None,
@@ -1723,6 +1734,8 @@ impl Renderer {
         let prepared = self.prepare_text(&all_rows, &groups, width, height, &mut list);
         self.groups = groups;
         if let Err(e) = prepared {
+            // No trim here: the failed frame's glyphs stay in use until the next frame that
+            // prepares, as when `run` failed before (the next success trims them).
             // The atlas keeps its changes until they are taken; the row writes wait in the list.
             self.spare = Some((list, up));
             self.unsent = true;
