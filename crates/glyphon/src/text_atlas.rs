@@ -1,6 +1,6 @@
 use crate::{
-    text_render::GlyphonCacheKey, Cache, ContentType, FontSystem, GlyphDetails, GpuCacheStatus,
-    RasterizeCustomGlyphRequest, RasterizedCustomGlyph, State, SwashCache,
+    text_render::GlyphonCacheKey, ContentType, FontSystem, GlyphDetails, GpuCacheStatus,
+    RasterizeCustomGlyphRequest, RasterizedCustomGlyph, SwashCache,
 };
 use etagere::{size2, Allocation, BucketedAtlasAllocator};
 use lru::LruCache;
@@ -9,20 +9,24 @@ use std::{
     collections::{HashMap, HashSet},
     hash::BuildHasherDefault,
 };
-use wgpu::{
-    BindGroup, DepthStencilState, Device, Extent3d, MultisampleState, Origin3d, Queue,
-    RenderPipeline, TexelCopyBufferLayout, TexelCopyTextureInfo, Texture, TextureAspect,
-    TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
-    TextureViewDescriptor,
-};
 
 type Hasher = BuildHasherDefault<FxHasher>;
+
+/// Termurion patch 9: one change to an atlas texture. A backend applies them in order, so its
+/// textures hold exactly the texels the atlas placed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AtlasOp {
+    /// The `kind` texture is made again, `size` pixels per side and empty. An `Upload` for every
+    /// glyph it keeps follows.
+    Grow { kind: ContentType, size: u32 },
+    /// `bytes` go to the `w` by `h` rectangle at `x, y`: rows of `w` pixels, packed, of
+    /// `kind.bytes_per_pixel()` bytes each.
+    Upload { kind: ContentType, x: u32, y: u32, w: u32, h: u32, bytes: Vec<u8> },
+}
 
 #[allow(dead_code)]
 pub(crate) struct InnerAtlas {
     pub kind: Kind,
-    pub texture: Texture,
-    pub texture_view: TextureView,
     pub packer: BucketedAtlasAllocator,
     pub size: u32,
     pub glyph_cache: LruCache<GlyphonCacheKey, GlyphDetails, Hasher>,
@@ -37,37 +41,17 @@ pub(crate) struct InnerAtlas {
 impl InnerAtlas {
     const INITIAL_SIZE: u32 = 256;
 
-    fn new(state: &State, kind: Kind) -> Self {
-        let max_texture_dimension_2d = state.device.limits().max_texture_dimension_2d;
+    // Termurion patch 9: the texture is the backend's; the core keeps only its size.
+    fn new(max_texture_dimension_2d: u32, kind: Kind) -> Self {
         let size = Self::INITIAL_SIZE.min(max_texture_dimension_2d);
 
         let packer = BucketedAtlasAllocator::new(size2(size as i32, size as i32));
-
-        // Create a texture to use for our atlas
-        let texture = state.device.create_texture(&TextureDescriptor {
-            label: Some("glyphon atlas"),
-            size: Extent3d {
-                width: size,
-                height: size,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: kind.texture_format(),
-            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-
-        let texture_view = texture.create_view(&TextureViewDescriptor::default());
 
         let glyph_cache = LruCache::unbounded_with_hasher(Hasher::default());
         let glyphs_in_use = HashSet::with_hasher(Hasher::default());
 
         Self {
             kind,
-            texture,
-            texture_view,
             packer,
             size,
             glyph_cache,
@@ -106,19 +90,16 @@ impl InnerAtlas {
         }
     }
 
-    pub fn num_channels(&self) -> usize {
-        self.kind.num_channels()
-    }
-
+    // Termurion patch 9: the new texture and its re-uploads go out as `AtlasOp`s.
     pub(crate) fn grow(
         &mut self,
-        state: &State,
         font_system: &mut FontSystem,
         cache: &mut SwashCache,
         scale_factor: f32,
         mut rasterize_custom_glyph: impl FnMut(
             RasterizeCustomGlyphRequest,
         ) -> Option<RasterizedCustomGlyph>,
+        ops: &mut Vec<AtlasOp>,
     ) -> bool {
         if self.size >= self.max_texture_dimension_2d {
             return false;
@@ -131,21 +112,8 @@ impl InnerAtlas {
 
         self.packer.grow(size2(new_size as i32, new_size as i32));
 
-        // Create a texture to use for our atlas
-        self.texture = state.device.create_texture(&TextureDescriptor {
-            label: Some("glyphon atlas"),
-            size: Extent3d {
-                width: new_size,
-                height: new_size,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: self.kind.texture_format(),
-            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+        let kind = self.kind.as_content_type();
+        ops.push(AtlasOp::Grow { kind, size: new_size });
 
         // Re-upload glyphs
         for (&cache_key, glyph) in &self.glyph_cache {
@@ -195,32 +163,16 @@ impl InnerAtlas {
                 }
             };
 
-            state.queue.write_texture(
-                TexelCopyTextureInfo {
-                    texture: &self.texture,
-                    mip_level: 0,
-                    origin: Origin3d {
-                        x: x as u32,
-                        y: y as u32,
-                        z: 0,
-                    },
-                    aspect: TextureAspect::All,
-                },
-                &image_data,
-                TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(width as u32 * self.kind.num_channels() as u32),
-                    rows_per_image: None,
-                },
-                Extent3d {
-                    width: width as u32,
-                    height: height as u32,
-                    depth_or_array_layers: 1,
-                },
-            );
+            ops.push(AtlasOp::Upload {
+                kind,
+                x: x as u32,
+                y: y as u32,
+                w: width as u32,
+                h: height as u32,
+                bytes: image_data,
+            });
         }
 
-        self.texture_view = self.texture.create_view(&TextureViewDescriptor::default());
         self.size = new_size;
 
         true
@@ -242,26 +194,6 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
-    fn num_channels(self) -> usize {
-        match self {
-            Kind::Mask => 1,
-            Kind::Color { .. } => 4,
-        }
-    }
-
-    fn texture_format(self) -> wgpu::TextureFormat {
-        match self {
-            Kind::Mask => TextureFormat::R8Unorm,
-            Kind::Color { srgb } => {
-                if srgb {
-                    TextureFormat::Rgba8UnormSrgb
-                } else {
-                    TextureFormat::Rgba8Unorm
-                }
-            }
-        }
-    }
-
     fn as_content_type(&self) -> ContentType {
         match self {
             Self::Mask => ContentType::Mask,
@@ -294,34 +226,30 @@ pub enum ColorMode {
 }
 
 /// An atlas containing a cache of rasterized glyphs that can be rendered.
+///
+/// Termurion patch 9: the CPU half only. It packs and rasterizes; what the textures must hold
+/// goes out through [`TextAtlas::take_ops`].
 pub struct TextAtlas {
-    pub(crate) cache: Cache,
-    pub(crate) bind_group: BindGroup,
     pub(crate) color_atlas: InnerAtlas,
     pub(crate) mask_atlas: InnerAtlas,
-    pub(crate) format: TextureFormat,
     pub(crate) color_mode: ColorMode,
     /// Termurion patch 4: raised by every successful grow.
     generation: u64,
+    /// Termurion patch 9: texture changes no backend has taken yet.
+    pub(crate) ops: Vec<AtlasOp>,
 }
 
 impl TextAtlas {
-    /// Creates a new [`TextAtlas`].
-    pub fn new(device: &Device, queue: &Queue, cache: &Cache, format: TextureFormat) -> Self {
-        Self::with_color_mode(device, queue, cache, format, ColorMode::Accurate)
+    /// Creates a new [`TextAtlas`] whose textures may grow to `max_side` pixels per side (the
+    /// device's largest 2D texture).
+    pub fn new(max_side: u32) -> Self {
+        Self::with_color_mode(max_side, ColorMode::Accurate)
     }
 
     /// Creates a new [`TextAtlas`] with the given [`ColorMode`].
-    pub fn with_color_mode(
-        device: &Device,
-        queue: &Queue,
-        cache: &Cache,
-        format: TextureFormat,
-        color_mode: ColorMode,
-    ) -> Self {
-        let state = State { device, queue };
+    pub fn with_color_mode(max_side: u32, color_mode: ColorMode) -> Self {
         let color_atlas = InnerAtlas::new(
-            &state,
+            max_side,
             Kind::Color {
                 srgb: match color_mode {
                     ColorMode::Accurate => true,
@@ -329,23 +257,26 @@ impl TextAtlas {
                 },
             },
         );
-        let mask_atlas = InnerAtlas::new(&state, Kind::Mask);
-
-        let bind_group = cache.create_atlas_bind_group(
-            device,
-            &color_atlas.texture_view,
-            &mask_atlas.texture_view,
-        );
+        let mask_atlas = InnerAtlas::new(max_side, Kind::Mask);
 
         Self {
-            cache: cache.clone(),
-            bind_group,
             color_atlas,
             mask_atlas,
-            format,
             color_mode,
             generation: 0,
+            ops: Vec::new(),
         }
+    }
+
+    /// Termurion patch 9: moves the texture changes made since the last call onto the end of
+    /// `into`, oldest first. Each must reach the textures, in order, before they draw.
+    pub fn take_ops(&mut self, into: &mut Vec<AtlasOp>) {
+        into.append(&mut self.ops);
+    }
+
+    /// The color mode the atlas was made with.
+    pub fn color_mode(&self) -> ColorMode {
+        self.color_mode
     }
 
     /// Termurion patch 4: keeps a glyph in the atlas (a use count per key) until it is released
@@ -398,6 +329,11 @@ impl TextAtlas {
         self.mask_atlas.size
     }
 
+    /// Termurion patch 9: the side of the color atlas texture in pixels.
+    pub fn color_size(&self) -> u32 {
+        self.color_atlas.size
+    }
+
     pub fn trim(&mut self) {
         self.mask_atlas.trim();
         self.color_atlas.trim();
@@ -405,7 +341,6 @@ impl TextAtlas {
 
     pub(crate) fn grow(
         &mut self,
-        state: &State,
         font_system: &mut FontSystem,
         cache: &mut SwashCache,
         content_type: ContentType,
@@ -414,24 +349,23 @@ impl TextAtlas {
     ) -> bool {
         let did_grow = match content_type {
             ContentType::Mask => self.mask_atlas.grow(
-                state,
                 font_system,
                 cache,
                 scale_factor,
                 rasterize_custom_glyph,
+                &mut self.ops,
             ),
             ContentType::Color => self.color_atlas.grow(
-                state,
                 font_system,
                 cache,
                 scale_factor,
                 rasterize_custom_glyph,
+                &mut self.ops,
             ),
         };
 
         if did_grow {
             self.generation += 1;
-            self.rebind(state.device);
         }
 
         did_grow
@@ -443,45 +377,26 @@ impl TextAtlas {
             ContentType::Mask => &mut self.mask_atlas,
         }
     }
-
-    pub(crate) fn get_or_create_pipeline(
-        &self,
-        device: &Device,
-        multisample: MultisampleState,
-        depth_stencil: Option<DepthStencilState>,
-    ) -> RenderPipeline {
-        self.cache
-            .get_or_create_pipeline(device, self.format, multisample, depth_stencil)
-    }
-
-    fn rebind(&mut self, device: &wgpu::Device) {
-        self.bind_group = self.cache.create_atlas_bind_group(
-            device,
-            &self.color_atlas.texture_view,
-            &self.mask_atlas.texture_view,
-        );
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        custom_glyph::CustomGlyphCacheKey, Buffer, Cache, CustomGlyph, Metrics, PrepareError,
-        Resolution, SubpixelBin, TextArea, TextBounds, TextRenderer, Viewport,
+        custom_glyph::CustomGlyphCacheKey, Buffer, CustomGlyph, GlyphDraws, Metrics,
+        PrepareError, Resolution, SubpixelBin, TextArea, TextBounds, TextRenderer,
     };
 
     const SIDE: u16 = 32;
 
+    // Termurion patch 9: the atlas is CPU only, so these run with no device.
     struct Rig {
-        device: wgpu::Device,
-        queue: wgpu::Queue,
         atlas: TextAtlas,
         renderer: TextRenderer,
-        viewport: Viewport,
         font_system: FontSystem,
         swash: SwashCache,
         buffer: Buffer,
+        out: GlyphDraws,
         /// Custom glyphs rasterize as color (into the color atlas) when set.
         color: bool,
     }
@@ -492,30 +407,22 @@ mod tests {
         }
 
         fn with_cap(cap: Option<u32>) -> Self {
-            let (device, queue) = crate::test_gpu::shared();
-            let cache = Cache::new(&device);
-            let mut atlas = TextAtlas::new(&device, &queue, &cache, TextureFormat::Rgba8Unorm);
+            let mut atlas = TextAtlas::new(8192);
             if let Some(px) = cap {
                 atlas.set_max_size(px);
             }
-            let renderer = TextRenderer::new(&mut atlas, &device, MultisampleState::default(), None);
-            let mut viewport = Viewport::new(&device, &cache);
-            viewport.update(&queue, Resolution { width: 1024, height: 1024 });
             let mut font_system = FontSystem::new_with_fonts([]);
             let buffer = Buffer::new(&mut font_system, Metrics::new(10.0, 12.0));
             Self {
-                device,
-                queue,
                 atlas,
-                renderer,
-                viewport,
+                renderer: TextRenderer::new(),
                 font_system,
                 swash: SwashCache::new(),
                 buffer,
+                out: GlyphDraws::default(),
                 color: false,
             }
         }
-
         /// Prepares one 32x32 solid mask glyph per id, after a trim (nothing is in use).
         fn prepare(&mut self, ids: &[u16]) -> Result<(), PrepareError> {
             self.atlas.trim();
@@ -549,12 +456,10 @@ mod tests {
                 true => (4, ContentType::Color),
                 false => (1, ContentType::Mask),
             };
-            self.renderer.prepare_with_custom(
-                &self.device,
-                &self.queue,
+            self.renderer.prepare_cpu(
                 &mut self.font_system,
                 &mut self.atlas,
-                &self.viewport,
+                Resolution { width: 1024, height: 1024 },
                 [area],
                 &mut self.swash,
                 |req| {
@@ -563,6 +468,7 @@ mod tests {
                         content_type,
                     })
                 },
+                &mut self.out,
             )
         }
 

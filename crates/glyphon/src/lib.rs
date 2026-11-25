@@ -1,32 +1,49 @@
-//! Glyphon provides a simple way to render 2D text with [wgpu], [cosmic-text] and [etagere].
+//! Glyphon renders 2D text with [cosmic-text] and [etagere].
 //!
-//! [wpgu]: https://github.com/gfx-rs/wgpu
+//! Termurion patch 9: everything but the backend module is a GPU-free core. The atlas packs and
+//! rasterizes glyphs and records each texture change as an [`AtlasOp`]; the text and row
+//! renderers turn text into [`GlyphToRender`] instances ([`GlyphDraws`], [`RowDraws`]). A backend
+//! applies those and draws; the default feature brings the one this crate has always had.
+//!
 //! [cosmic-text]: https://github.com/pop-os/cosmic-text
 //! [etagere]: https://github.com/nical/etagere
 
-mod cache;
 mod custom_glyph;
 mod error;
 mod row_render;
 mod text_atlas;
-#[cfg(test)]
-mod test_gpu;
 mod text_render;
-mod upload;
-mod viewport;
 
-pub use cache::Cache;
+// Termurion patch 9: checks the core files name no GPU API.
+#[cfg(test)]
+mod core_tests;
+#[cfg(feature = "wgpu")]
+mod cache;
+#[cfg(all(test, feature = "wgpu"))]
+mod test_gpu;
+#[cfg(feature = "wgpu")]
+mod upload;
+#[cfg(feature = "wgpu")]
+mod viewport;
+#[cfg(feature = "wgpu")]
+pub mod wgpu_backend;
+
 pub use custom_glyph::{
     ContentType, CustomGlyph, CustomGlyphId, RasterizeCustomGlyphRequest, RasterizedCustomGlyph,
 };
 pub use error::{PrepareError, RenderError};
 // Termurion patch 4: GlyphKey names a cached glyph for hold and release.
-pub use text_atlas::{ColorMode, GlyphKey, TextAtlas};
-// Termurion patch 6: the row renderer.
-pub use row_render::{RowArea, RowRenderer};
-pub use text_render::TextRenderer;
+// Termurion patch 9: AtlasOp is what a backend applies to its atlas textures.
+pub use text_atlas::{AtlasOp, ColorMode, GlyphKey, TextAtlas};
+// Termurion patch 6: the row renderer. Termurion patch 9: what it hands a backend.
+pub use row_render::{RowArea, RowBatch, RowDraws, RowRenderer, RowWrite, ROW_TABLE_CHUNK, ROW_UNIFORM_SIZE};
+pub use text_render::{GlyphDraws, TextRenderer};
+#[cfg(feature = "wgpu")]
+pub use cache::Cache;
 // Termurion patch 7: one reused upload path for buffer writes.
+#[cfg(feature = "wgpu")]
 pub use upload::UploadBelt;
+#[cfg(feature = "wgpu")]
 pub use viewport::Viewport;
 
 // Re-export all top-level types from `cosmic-text` for convenience.
@@ -66,7 +83,6 @@ pub(crate) fn filter_text_mask(flags: u32, alpha: &mut [u8]) {
 }
 
 use etagere::AllocId;
-use wgpu::{Device, Queue};
 
 pub(crate) enum GpuCacheStatus {
     InAtlas {
@@ -86,15 +102,32 @@ pub(crate) struct GlyphDetails {
     left: i16,
 }
 
+/// One glyph quad, as both shaders read it (`shader.wgsl`, `row_shader.wgsl`). Termurion patch 9:
+/// public, so every backend uploads the same bytes.
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct GlyphToRender {
-    pos: [i32; 2],
-    dim: [u16; 2],
-    uv: [u16; 2],
-    color: u32,
-    content_type_with_srgb: [u16; 2],
-    depth: f32,
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlyphToRender {
+    /// The top left corner in target pixels.
+    pub pos: [i32; 2],
+    /// Width and height in pixels.
+    pub dim: [u16; 2],
+    /// The top left corner in the atlas.
+    pub uv: [u16; 2],
+    /// RGBA, 8 bits each (`cosmic_text::Color`).
+    pub color: u32,
+    /// The `ContentType` (0 color, 1 mask), then 1 when the color converts to linear.
+    pub content_type_with_srgb: [u16; 2],
+    pub depth: f32,
+}
+
+/// Bytes per `GlyphToRender` (no padding: every field is 4-byte sized and aligned).
+pub const GLYPH_SIZE: usize = std::mem::size_of::<GlyphToRender>();
+const _: () = assert!(GLYPH_SIZE == 28);
+
+/// The instances as the bytes a GPU buffer holds.
+pub fn glyph_bytes(instances: &[GlyphToRender]) -> &[u8] {
+    // Sound: `repr(C)`, no padding, and u8 has no alignment.
+    unsafe { std::slice::from_raw_parts(instances.as_ptr() as *const u8, std::mem::size_of_val(instances)) }
 }
 
 /// The screen resolution to use when rendering text.
@@ -105,13 +138,6 @@ pub struct Resolution {
     pub width: u32,
     /// The height of the screen in pixels.
     pub height: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct Params {
-    screen_resolution: Resolution,
-    _pad: [u32; 2],
 }
 
 /// Controls the visible area of the text. Any text outside of the visible area will be clipped.
@@ -159,7 +185,3 @@ pub struct TextArea<'a> {
     pub custom_glyphs: &'a [CustomGlyph],
 }
 
-pub(crate) struct State<'a> {
-    pub(crate) device: &'a Device,
-    pub(crate) queue: &'a Queue,
-}

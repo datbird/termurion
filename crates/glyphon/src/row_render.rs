@@ -2,26 +2,23 @@
 //! so a row that did not change costs no `prepare_glyph` work in the next frame. Clipping to the
 //! row's bounds happens in the vertex shader (`row_shader.wgsl`), with the same integer steps as
 //! `prepare_glyph`, so the pixels match `TextRenderer` byte for byte.
+//!
+//! Termurion patch 9: this is the CPU half. It decides slots, row ids and batches, and hands a
+//! backend the buffer writes and draws as [`RowDraws`].
 
 use crate::{
-    cache::{ROW_TABLE_CHUNK, ROW_UNIFORM_SIZE},
-    text_render::{
-        next_copy_buffer_size, prepare_glyph, text_glyph_image, zero_depth, GlyphBounds,
-        GlyphMetadata, GlyphSystem, GlyphonCacheKey,
-    },
+    text_render::{prepare_glyph, text_glyph_image, GlyphBounds, GlyphMetadata, GlyphSystem, GlyphonCacheKey},
     Buffer, Color, FontSystem, GlyphKey, GlyphToRender, PrepareError, RasterizeCustomGlyphRequest,
-    RasterizedCustomGlyph, RenderError, State, SwashCache, TextAtlas, TextBounds, UploadBelt, Viewport,
+    RasterizedCustomGlyph, Resolution, SwashCache, TextAtlas, TextBounds,
 };
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
-    mem, slice,
-};
-use wgpu::{
-    BindGroup, Buffer as GpuBuffer, BufferDescriptor, BufferUsages, Device, MultisampleState,
-    Queue, RenderPass, RenderPipeline,
+    mem,
+    ops::Range,
+    slice,
 };
 
-/// One row of text for [`RowRenderer::prepare`].
+/// One row of text for [`RowRenderer::prepare_cpu`].
 #[derive(Clone)]
 pub struct RowArea<'a> {
     /// Names the buffer's content: give a new serial whenever the buffer is shaped again.
@@ -38,14 +35,74 @@ pub struct RowArea<'a> {
     pub default_color: Color,
 }
 
+/// Termurion patch 6: the size of `RowUniform` in `row_shader.wgsl`.
+pub const ROW_UNIFORM_SIZE: u64 = 32;
+/// Termurion patch 8: the size of `RowTable` in `row_shader.wgsl`, the most a GLES 3.0 uniform
+/// block holds. A draw binds the chunk its `RowBatch::chunk` names.
+pub const ROW_TABLE_CHUNK: u64 = 16384;
+
 /// The smallest slot, in instances.
 const MIN_SLOT: u32 = 64;
 /// The instance buffer's first size, in instances.
 const FIRST_CAPACITY: u32 = 4096;
 /// Rows in one chunk of the row table, `RowTable` in `row_shader.wgsl`.
 const TABLE_CHUNK_ROWS: u32 = (ROW_TABLE_CHUNK / ROW_UNIFORM_SIZE) as u32;
-const INSTANCE_SIZE: u64 = mem::size_of::<GlyphToRender>() as u64;
-const ROW_ID_SIZE: u64 = mem::size_of::<u32>() as u64;
+const INSTANCE_SIZE: usize = mem::size_of::<GlyphToRender>();
+/// Write bytes kept between frames; a bigger burst (a whole screen after growth) is let go.
+const KEEP_BYTES: usize = 8 << 20;
+
+/// Termurion patch 9: one change to the row renderer's GPU buffers. A backend applies them in
+/// order; byte ranges index [`RowDraws::bytes`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RowWrite {
+    /// The instance buffer and its row id buffer are made again with room for `capacity`
+    /// instances. What they held is gone; every live slot is written again after this.
+    Grow { capacity: u32 },
+    /// The row table is made again with room for `rows` entries (whole chunks).
+    GrowTable { rows: u32 },
+    /// Glyph instances (`GlyphToRender` bytes) from instance `at`.
+    Instances { at: u32, bytes: Range<usize> },
+    /// Row ids (one `u32` per instance, native endian) from instance `at`.
+    Ids { at: u32, bytes: Range<usize> },
+    /// Row table entries (`ROW_UNIFORM_SIZE` bytes each) from row id `first`.
+    Table { first: u32, bytes: Range<usize> },
+}
+
+/// Termurion patch 8: rows in adjacent slots, drawn with one call: instances `start..end`,
+/// with the row table's chunk `chunk` bound (offset `chunk * ROW_TABLE_CHUNK`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RowBatch {
+    pub chunk: u32,
+    pub start: u32,
+    pub end: u32,
+}
+
+/// Termurion patch 9: what [`RowRenderer::prepare_cpu`] hands a backend.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RowDraws {
+    /// Buffer changes, oldest first. `prepare_cpu` adds to them; the caller empties them with
+    /// `clear_writes` once a backend applied them.
+    pub writes: Vec<RowWrite>,
+    pub bytes: Vec<u8>,
+    /// The draws of the last `prepare_cpu`, in order (empty after a failed one).
+    pub batches: Vec<RowBatch>,
+}
+
+impl RowDraws {
+    /// Forgets the applied writes, keeping their storage unless a burst made it large.
+    pub fn clear_writes(&mut self) {
+        self.writes.clear();
+        self.bytes.clear();
+        if self.bytes.capacity() > KEEP_BYTES {
+            self.bytes = Vec::new();
+        }
+    }
+
+    /// The bytes a write's range names.
+    pub fn bytes_of(&self, range: &Range<usize>) -> &[u8] {
+        &self.bytes[range.clone()]
+    }
+}
 
 /// `RowUniform` in `row_shader.wgsl`.
 #[repr(C)]
@@ -133,77 +190,68 @@ struct Draw {
     joins_at: u32,
 }
 
-/// Termurion patch 8: rows in adjacent slots, drawn with one call.
-struct Batch {
-    chunk: u32,
-    start: u32,
-    end: u32,
-    joins_at: u32,
-}
-
 /// Draws rows of text, keeping each row's glyph instances on the GPU between frames.
+///
+/// Termurion patch 9: the CPU half. The buffers it fills are the backend's; their sizes start at
+/// [`RowRenderer::capacity`] instances and [`RowRenderer::table_rows`] table entries.
 pub struct RowRenderer {
-    pipeline: RenderPipeline,
-    instances: GpuBuffer,
     /// In instances.
-    capacity: u32,
+    pub(crate) capacity: u32,
     /// The first instance no slot has used yet.
-    end: u32,
+    pub(crate) end: u32,
     /// Free slot starts, one set per class (lowest first, so a new screen lays out in draw order).
     free: Vec<BTreeSet<u32>>,
-    /// The row id of each instance, a second vertex buffer beside `instances`.
-    ids: GpuBuffer,
     /// Row ids given back by dropped entries, and the first id never given out.
     free_ids: BTreeSet<u32>,
     next_id: u32,
     entries: HashMap<RowKey, Vec<Entry>>,
     draws: Vec<Draw>,
-    batches: Vec<Batch>,
-    table: GpuBuffer,
-    table_rows: u32,
+    pub(crate) table_rows: u32,
     /// What the table holds now, one entry per row id (`None` where unknown).
     table_cpu: Vec<Option<RowUniform>>,
-    rows_bind_group: BindGroup,
-    /// Reused for each slot's bytes.
-    scratch: Vec<u8>,
     generation: u64,
     frame: u64,
     prepared_rows: u64,
-    /// Keys of entries dropped by `clear`, released at the next `prepare`.
+    /// Batches the last `prepare_cpu` made.
+    issued: u64,
+    /// Keys of entries dropped by `clear`, released at the next `prepare_cpu`.
     unreleased: Vec<GlyphKey>,
+    /// Scratch kept between frames: the rows wanted, the changed table entries.
+    wanted: HashSet<RowKey>,
+    changed: Vec<(u32, RowUniform)>,
 }
 
 impl RowRenderer {
-    /// Creates a new `RowRenderer`.
-    pub fn new(atlas: &mut TextAtlas, device: &Device, multisample: MultisampleState) -> Self {
-        let pipeline = atlas
-            .cache
-            .get_or_create_row_pipeline(device, atlas.format, multisample);
-        let (instances, ids) = instance_buffers(device, FIRST_CAPACITY);
-        let table = table_buffer(device, TABLE_CHUNK_ROWS);
-        let rows_bind_group = atlas.cache.create_rows_bind_group(device, &table);
+    /// Creates a new `RowRenderer` for rows drawn from `atlas`.
+    pub fn new(atlas: &TextAtlas) -> Self {
         Self {
-            pipeline,
-            instances,
             capacity: FIRST_CAPACITY,
             end: 0,
             free: Vec::new(),
-            ids,
             free_ids: BTreeSet::new(),
             next_id: 0,
             entries: HashMap::new(),
             draws: Vec::new(),
-            batches: Vec::new(),
-            table,
             table_rows: TABLE_CHUNK_ROWS,
             table_cpu: vec![None; TABLE_CHUNK_ROWS as usize],
-            rows_bind_group,
-            scratch: Vec::new(),
             generation: atlas.generation(),
             frame: 0,
             prepared_rows: 0,
+            issued: 0,
             unreleased: Vec::new(),
+            wanted: HashSet::new(),
+            changed: Vec::new(),
         }
+    }
+
+    /// The instance buffers' size in instances (a backend makes them this big at first).
+    pub fn capacity(&self) -> u32 {
+        self.capacity
+    }
+
+    /// The row table's size in entries (a backend makes it this big at first).
+    pub fn table_rows(&self) -> u32 {
+        self.table_rows
     }
 
     /// Rows that ran `prepare_glyph` since this renderer was made (for tests).
@@ -211,9 +259,9 @@ impl RowRenderer {
         self.prepared_rows
     }
 
-    /// Draw calls `render` records for the last `prepare` (for tests).
+    /// Draw calls the last `prepare_cpu` made (for tests).
     pub fn draws_issued(&self) -> u64 {
-        self.batches.len() as u64
+        self.issued
     }
 
     /// Forgets every prepared row; the next frame prepares all of them again.
@@ -228,33 +276,47 @@ impl RowRenderer {
         self.next_id = 0;
         self.end = 0;
         self.draws.clear();
-        self.batches.clear();
+        self.issued = 0;
     }
 
-    /// Prepares the rows to draw, in the order they draw. Rows not given are dropped. Buffer
-    /// writes go through `uploads`, whose `submit` must send them before the rows draw.
+    /// Termurion patch 9: `clear`, releasing the glyphs now (the row path turned off).
+    pub fn release(&mut self, atlas: &mut TextAtlas) {
+        self.clear();
+        for key in self.unreleased.drain(..) {
+            atlas.release(key);
+        }
+    }
+
+    /// Prepares the rows to draw, in the order they draw. Rows not given are dropped. The buffer
+    /// writes are added to `out.writes` (they must reach the GPU even when this fails) and
+    /// `out.batches` is replaced. `rows` is walked more than once.
     #[allow(clippy::too_many_arguments)]
-    pub fn prepare<'a>(
+    pub fn prepare_cpu<'a, I>(
         &mut self,
-        device: &Device,
-        queue: &Queue,
-        uploads: &mut UploadBelt,
         font_system: &mut FontSystem,
         atlas: &mut TextAtlas,
-        viewport: &Viewport,
-        rows: impl IntoIterator<Item = RowArea<'a>>,
+        resolution: Resolution,
+        rows: I,
         cache: &mut SwashCache,
         mut rasterize_custom_glyph: impl FnMut(RasterizeCustomGlyphRequest) -> Option<RasterizedCustomGlyph>,
-    ) -> Result<(), PrepareError> {
-        let rows: Vec<RowArea<'a>> = rows.into_iter().collect();
+        out: &mut RowDraws,
+    ) -> Result<(), PrepareError>
+    where
+        I: IntoIterator<Item = RowArea<'a>> + Clone,
+    {
+        out.batches.clear();
+        self.issued = 0;
         for key in self.unreleased.drain(..) {
             atlas.release(key);
         }
 
         // Rows not in this frame let go of their glyphs first, so they never take atlas space the
         // new rows need (the atlas never has to hold two screens at once).
-        let wanted: HashSet<RowKey> = rows.iter().map(row_key).collect();
+        let mut wanted = mem::take(&mut self.wanted);
+        wanted.clear();
+        wanted.extend(rows.clone().into_iter().map(|r| row_key(&r)));
         self.drop_entries(atlas, |key, _| !wanted.contains(key));
+        self.wanted = wanted;
 
         let mut retried = false;
         loop {
@@ -266,19 +328,16 @@ impl RowRenderer {
             self.frame += 1;
             self.draws.clear();
             let prepared = self.prepare_rows(
-                device,
-                queue,
-                uploads,
                 font_system,
                 atlas,
-                viewport,
-                &rows,
+                resolution,
+                rows.clone(),
                 cache,
                 &mut rasterize_custom_glyph,
+                out,
             );
             if let Err(e) = prepared {
                 self.draws.clear();
-                self.batches.clear();
                 // A full atlas: let go of every kept row this pass did not reach and try once more.
                 if !retried {
                     retried = true;
@@ -295,28 +354,24 @@ impl RowRenderer {
 
         let frame = self.frame;
         self.drop_entries(atlas, |_, e| e.frame != frame);
-        self.write_table(device, uploads, atlas);
-        self.batch();
+        self.write_table(out);
+        self.batch(out);
         Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn prepare_rows(
+    fn prepare_rows<'a>(
         &mut self,
-        device: &Device,
-        queue: &Queue,
-        uploads: &mut UploadBelt,
         font_system: &mut FontSystem,
         atlas: &mut TextAtlas,
-        viewport: &Viewport,
-        rows: &[RowArea],
+        resolution: Resolution,
+        rows: impl IntoIterator<Item = RowArea<'a>>,
         cache: &mut SwashCache,
         rasterize_custom_glyph: &mut impl FnMut(RasterizeCustomGlyphRequest) -> Option<RasterizedCustomGlyph>,
+        out: &mut RowDraws,
     ) -> Result<(), PrepareError> {
-        let state = State { device, queue };
-        let resolution = viewport.resolution();
-
         for row in rows {
+            let row = &row;
             // The layout runs TextRenderer would draw: it skips runs whose line box misses the
             // unclamped bounds, then draws while they meet them.
             let visible = |run: &cosmic_text::LayoutRun| {
@@ -366,7 +421,7 @@ impl RowRenderer {
                         cache: &mut *cache,
                         font_system: &mut *font_system,
                     };
-                    let mut entry = prepare_row(&state, &mut system, row, &mut *rasterize_custom_glyph)?;
+                    let mut entry = prepare_row(&mut system, row, &mut *rasterize_custom_glyph)?;
                     entry.frame = frame;
                     entry.id = self.free_ids.pop_first().unwrap_or_else(|| {
                         self.next_id += 1;
@@ -377,9 +432,9 @@ impl RowRenderer {
                         atlas.hold(k);
                     }
                     if !entry.instances.is_empty() {
-                        let slot = self.alloc(device, uploads, entry.instances.len() as u32);
+                        let slot = self.alloc(entry.instances.len() as u32, out);
                         entry.slot = Some(slot);
-                        write_slot(device, uploads, &mut self.scratch, &self.instances, &self.ids, &entry);
+                        write_slot(out, &entry);
                     }
                     let drawn = entry.slot.map(|s| entry.drawn(s, runs.clone()));
                     let list = self.entries.entry(key).or_default();
@@ -405,7 +460,7 @@ impl RowRenderer {
     }
 
     /// Takes a slot for `len` instances, doubling the buffer when none is free.
-    fn alloc(&mut self, device: &Device, uploads: &mut UploadBelt, len: u32) -> Slot {
+    fn alloc(&mut self, len: u32, out: &mut RowDraws) -> Slot {
         let class = (len.max(MIN_SLOT).next_power_of_two() / MIN_SLOT).trailing_zeros();
         if let Some(start) = self.free.get_mut(class as usize).and_then(BTreeSet::pop_first) {
             return Slot { start, class };
@@ -416,12 +471,11 @@ impl RowRenderer {
             while self.end + size > capacity {
                 capacity *= 2;
             }
-            // Dropped, not destroyed: copies recorded this frame may still target them.
-            (self.instances, self.ids) = instance_buffers(device, capacity);
+            out.writes.push(RowWrite::Grow { capacity });
             self.capacity = capacity;
             // The new buffers start empty: write every live row from its CPU copy.
             for entry in self.entries.values().flatten().filter(|e| e.slot.is_some()) {
-                write_slot(device, uploads, &mut self.scratch, &self.instances, &self.ids, entry);
+                write_slot(out, entry);
             }
         }
         let start = self.end;
@@ -456,16 +510,16 @@ impl RowRenderer {
 
     /// Writes the table entries of the drawn rows that changed, growing the table when an id
     /// is past its end.
-    fn write_table(&mut self, device: &Device, uploads: &mut UploadBelt, atlas: &TextAtlas) {
+    fn write_table(&mut self, out: &mut RowDraws) {
         if self.next_id > self.table_rows {
             let rows = self.next_id.div_ceil(TABLE_CHUNK_ROWS) * TABLE_CHUNK_ROWS;
-            self.table = table_buffer(device, rows);
+            out.writes.push(RowWrite::GrowTable { rows });
             self.table_rows = rows;
-            self.rows_bind_group = atlas.cache.create_rows_bind_group(device, &self.table);
             self.table_cpu = vec![None; rows as usize];
         }
 
-        let mut changed: Vec<(u32, RowUniform)> = Vec::new();
+        let changed = &mut self.changed;
+        changed.clear();
         for draw in &self.draws {
             if self.table_cpu[draw.id as usize] != Some(draw.uniform) {
                 self.table_cpu[draw.id as usize] = Some(draw.uniform);
@@ -482,74 +536,37 @@ impl RowRenderer {
                 i += 1;
             }
             i += 1;
-            let mut bytes = Vec::with_capacity((i - first) * ROW_UNIFORM_SIZE as usize);
+            let from = out.bytes.len();
             for (_, u) in &changed[first..i] {
-                bytes.extend_from_slice(unsafe {
+                out.bytes.extend_from_slice(unsafe {
                     slice::from_raw_parts(u as *const RowUniform as *const u8, ROW_UNIFORM_SIZE as usize)
                 });
             }
-            uploads.write(device, &self.table, changed[first].0 as u64 * ROW_UNIFORM_SIZE, &bytes);
+            out.writes.push(RowWrite::Table { first: changed[first].0, bytes: from..out.bytes.len() });
         }
     }
 
     /// Termurion patch 8: joins the draws into batches. A draw joins the batch before it only
     /// when its slot starts where that batch's last slot ends and its id is in the same table
     /// chunk, so the rows draw in exactly the order they were given.
-    fn batch(&mut self) {
-        self.batches.clear();
+    fn batch(&mut self, out: &mut RowDraws) {
+        out.batches.clear();
+        // Where a draw must start to join the last batch.
+        let mut joins_at = 0;
         for draw in &self.draws {
             let chunk = draw.id / TABLE_CHUNK_ROWS;
-            match self.batches.last_mut() {
-                Some(b) if b.joins_at == draw.start && b.chunk == chunk => {
-                    b.end = draw.start + draw.len;
-                    b.joins_at = draw.joins_at;
-                }
-                _ => self.batches.push(Batch {
-                    chunk,
-                    start: draw.start,
-                    end: draw.start + draw.len,
-                    joins_at: draw.joins_at,
-                }),
+            match out.batches.last_mut() {
+                Some(b) if joins_at == draw.start && b.chunk == chunk => b.end = draw.start + draw.len,
+                _ => out.batches.push(RowBatch { chunk, start: draw.start, end: draw.start + draw.len }),
             }
+            joins_at = draw.joins_at;
         }
-    }
-
-    /// Draws the rows given to the last `prepare`, in that order.
-    pub fn render(
-        &self,
-        atlas: &TextAtlas,
-        viewport: &Viewport,
-        pass: &mut RenderPass<'_>,
-    ) -> Result<(), RenderError> {
-        if self.batches.is_empty() {
-            return Ok(());
-        }
-        debug_assert_eq!(
-            atlas.generation(),
-            self.generation,
-            "the atlas grew after the rows were prepared"
-        );
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &atlas.bind_group, &[]);
-        pass.set_bind_group(1, &viewport.bind_group, &[]);
-        let mut bound = None;
-        for batch in &self.batches {
-            if bound != Some(batch.chunk) {
-                bound = Some(batch.chunk);
-                pass.set_bind_group(2, &self.rows_bind_group, &[(batch.chunk as u64 * ROW_TABLE_CHUNK) as u32]);
-            }
-            let (from, to) = (batch.start as u64, batch.end as u64);
-            pass.set_vertex_buffer(0, self.instances.slice(from * INSTANCE_SIZE..to * INSTANCE_SIZE));
-            pass.set_vertex_buffer(1, self.ids.slice(from * ROW_ID_SIZE..to * ROW_ID_SIZE));
-            pass.draw(0..4, 0..batch.end - batch.start);
-        }
-        Ok(())
+        self.issued = out.batches.len() as u64;
     }
 }
 
 /// Makes a row's instances as `TextRenderer` does, at scale 1, with no clipping and no run culling.
 fn prepare_row(
-    state: &State,
     system: &mut GlyphSystem,
     row: &RowArea,
     rasterize_custom_glyph: &mut impl FnMut(RasterizeCustomGlyphRequest) -> Option<RasterizedCustomGlyph>,
@@ -576,20 +593,17 @@ fn prepare_row(
             let cache_key = GlyphonCacheKey::Text(physical.cache_key);
 
             if let Some(instance) = prepare_glyph(
-                state,
                 system,
                 GlyphMetadata {
                     x: physical.x,
                     y: physical.y,
                     line_y: run.line_y,
                     color,
-                    metadata: glyph.metadata,
                     cache_key,
                     scale_factor: 1.0,
                 },
                 GlyphBounds::UNBOUNDED,
                 |system, _| text_glyph_image(system, physical.cache_key),
-                zero_depth,
                 &mut *rasterize_custom_glyph,
             )? {
                 instances.push(instance);
@@ -613,720 +627,18 @@ fn prepare_row(
     })
 }
 
-fn instance_bytes(instances: &[GlyphToRender]) -> &[u8] {
-    unsafe { slice::from_raw_parts(instances.as_ptr() as *const u8, mem::size_of_val(instances)) }
-}
-
 /// Termurion patch 8: writes the entry's whole slot, its instances then zero ones (`dim` 0,
 /// which `vs_row` culls) up to the slot's capacity, and its id for every one.
-fn write_slot(
-    device: &Device,
-    uploads: &mut UploadBelt,
-    scratch: &mut Vec<u8>,
-    instances: &GpuBuffer,
-    ids: &GpuBuffer,
-    entry: &Entry,
-) {
+fn write_slot(out: &mut RowDraws, entry: &Entry) {
     let slot = entry.slot.expect("a written entry has a slot");
     let capacity = (MIN_SLOT << slot.class) as usize;
-    let real = instance_bytes(&entry.instances);
-    scratch.clear();
-    scratch.extend_from_slice(real);
-    scratch.resize(capacity * INSTANCE_SIZE as usize, 0);
-    uploads.write(device, instances, slot.start as u64 * INSTANCE_SIZE, scratch);
-    scratch.clear();
+    let from = out.bytes.len();
+    out.bytes.extend_from_slice(crate::glyph_bytes(&entry.instances));
+    out.bytes.resize(from + capacity * INSTANCE_SIZE, 0);
+    out.writes.push(RowWrite::Instances { at: slot.start, bytes: from..out.bytes.len() });
+    let from = out.bytes.len();
     for _ in 0..capacity {
-        scratch.extend_from_slice(&entry.id.to_ne_bytes());
+        out.bytes.extend_from_slice(&entry.id.to_ne_bytes());
     }
-    uploads.write(device, ids, slot.start as u64 * ROW_ID_SIZE, scratch);
-}
-
-/// The instance buffer and its row id buffer, for `capacity` instances.
-fn instance_buffers(device: &Device, capacity: u32) -> (GpuBuffer, GpuBuffer) {
-    let buffer = |label, size| {
-        device.create_buffer(&BufferDescriptor {
-            label: Some(label),
-            size: next_copy_buffer_size(capacity as u64 * size),
-            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        })
-    };
-    (buffer("glyphon row instances", INSTANCE_SIZE), buffer("glyphon row ids", ROW_ID_SIZE))
-}
-
-fn table_buffer(device: &Device, rows: u32) -> GpuBuffer {
-    device.create_buffer(&BufferDescriptor {
-        label: Some("glyphon row table"),
-        size: rows as u64 * ROW_UNIFORM_SIZE,
-        usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{Attrs, Cache, ContentType, CustomGlyph, Family, Metrics, Resolution, Shaping, TextArea, TextRenderer};
-    use wgpu::TextureFormat;
-
-    const W: u32 = 320;
-    const H: u32 = 240;
-    const FORMAT: TextureFormat = TextureFormat::Rgba8UnormSrgb;
-    const MONO: &str = "Termurion Wide Bold Test";
-    const RTL: &str = "Termurion RTL Test";
-
-    fn no_custom_glyph(_: RasterizeCustomGlyphRequest) -> Option<RasterizedCustomGlyph> {
-        None
-    }
-
-    struct Rig {
-        device: Device,
-        queue: Queue,
-        cache: Cache,
-        viewport: Viewport,
-        font_system: FontSystem,
-        swash: SwashCache,
-        atlas: TextAtlas,
-        rows: RowRenderer,
-        uploads: UploadBelt,
-    }
-
-    impl Rig {
-        fn new() -> Self {
-            let (device, queue) = crate::test_gpu::shared();
-            let cache = Cache::new(&device);
-            let mut viewport = Viewport::new(&device, &cache);
-            viewport.update(&queue, Resolution { width: W, height: H });
-            let mut font_system = FontSystem::new_with_fonts([]);
-            for data in [
-                &include_bytes!("../../../tests/fixtures/fonts/TermurionWideBoldTest-Regular.ttf")[..],
-                &include_bytes!("../../../tests/fixtures/fonts/TermurionRtlTest-Regular.ttf")[..],
-            ] {
-                font_system.db_mut().load_font_data(data.to_vec());
-            }
-            let mut atlas = TextAtlas::new(&device, &queue, &cache, FORMAT);
-            let rows = RowRenderer::new(&mut atlas, &device, MultisampleState::default());
-            Self {
-                device,
-                queue,
-                cache,
-                viewport,
-                font_system,
-                swash: SwashCache::new(),
-                atlas,
-                rows,
-                uploads: UploadBelt::new(),
-            }
-        }
-
-        fn shape(&mut self, text: &str, family: &str) -> Buffer {
-            let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(16.0, 20.0));
-            buffer.set_text(text, &Attrs::new().family(Family::Name(family)), Shaping::Advanced, None);
-            buffer.shape_until_scroll(&mut self.font_system, false);
-            buffer
-        }
-
-        fn prepare_rows<'a>(&mut self, rows: impl IntoIterator<Item = RowArea<'a>>) {
-            self.prepare_rows_with(rows, no_custom_glyph);
-        }
-
-        fn prepare_rows_with<'a>(
-            &mut self,
-            rows: impl IntoIterator<Item = RowArea<'a>>,
-            rasterize: impl FnMut(RasterizeCustomGlyphRequest) -> Option<RasterizedCustomGlyph>,
-        ) {
-            self.rows
-                .prepare(
-                    &self.device,
-                    &self.queue,
-                    &mut self.uploads,
-                    &mut self.font_system,
-                    &mut self.atlas,
-                    &self.viewport,
-                    rows,
-                    &mut self.swash,
-                    rasterize,
-                )
-                .unwrap();
-            self.uploads.submit(&self.queue, []);
-        }
-
-        /// Prepares and draws the rows with this rig's `RowRenderer`.
-        fn draw_rows<'a>(&mut self, rows: impl IntoIterator<Item = RowArea<'a>>) -> Vec<u8> {
-            self.prepare_rows(rows);
-            let (rows, atlas, viewport) = (&self.rows, &self.atlas, &self.viewport);
-            draw(&self.device, &self.queue, |pass| rows.render(atlas, viewport, pass).unwrap())
-        }
-
-        /// Draws the same rows with a fresh `TextRenderer` and atlas, the path rows must match.
-        fn draw_text<'a>(&mut self, rows: impl IntoIterator<Item = RowArea<'a>>) -> Vec<u8> {
-            let mut atlas = TextAtlas::new(&self.device, &self.queue, &self.cache, FORMAT);
-            let mut text = TextRenderer::new(&mut atlas, &self.device, MultisampleState::default(), None);
-            let areas = rows.into_iter().map(|r| TextArea {
-                buffer: r.buffer,
-                left: r.left,
-                top: r.top,
-                scale: 1.0,
-                bounds: r.bounds,
-                default_color: r.default_color,
-                custom_glyphs: &[],
-            });
-            text.prepare(
-                &self.device,
-                &self.queue,
-                &mut self.font_system,
-                &mut atlas,
-                &self.viewport,
-                areas,
-                &mut self.swash,
-            )
-            .unwrap();
-            let viewport = &self.viewport;
-            draw(&self.device, &self.queue, |pass| text.render(&atlas, viewport, pass).unwrap())
-        }
-    }
-
-    /// Renders into a cleared offscreen target and reads it back.
-    fn draw(device: &Device, queue: &Queue, record: impl FnOnce(&mut RenderPass<'_>)) -> Vec<u8> {
-        let target = device.create_texture(&wgpu::TextureDescriptor {
-            label: None,
-            size: wgpu::Extent3d { width: W, height: H, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = target.create_view(&Default::default());
-        let mut enc = device.create_command_encoder(&Default::default());
-        {
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.05, g: 0.05, b: 0.1, a: 1.0 }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-            record(&mut pass);
-        }
-        let out = device.create_buffer(&BufferDescriptor {
-            label: None,
-            size: (W * H * 4) as u64,
-            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        enc.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &target,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &out,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(W * 4),
-                    rows_per_image: Some(H),
-                },
-            },
-            wgpu::Extent3d { width: W, height: H, depth_or_array_layers: 1 },
-        );
-        queue.submit(Some(enc.finish()));
-        out.slice(..).map_async(wgpu::MapMode::Read, |r| r.unwrap());
-        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-        let bytes = out.slice(..).get_mapped_range().unwrap().to_vec();
-        bytes
-    }
-
-    fn row(serial: u64, buffer: &Buffer, left: f32, top: f32, bounds: TextBounds) -> RowArea<'_> {
-        RowArea {
-            serial,
-            buffer,
-            left,
-            top,
-            bounds,
-            default_color: Color::rgb(230, 200 - serial as u8 * 10, 120 + serial as u8 * 9),
-        }
-    }
-
-    fn whole() -> TextBounds {
-        TextBounds { left: 0, top: 0, right: W as i32, bottom: H as i32 }
-    }
-
-    fn b(left: i32, top: i32, right: i32, bottom: i32) -> TextBounds {
-        TextBounds { left, top, right, bottom }
-    }
-
-    fn assert_same(rows: &[u8], text: &[u8], what: &str) {
-        let blank = draw(&crate::test_gpu::shared().0, &crate::test_gpu::shared().1, |_| {});
-        assert_ne!(text, &blank[..], "{what}: the text path drew nothing");
-        if let Some(i) = rows.iter().zip(text).position(|(a, b)| a != b) {
-            let px = i / 4;
-            panic!("{what}: first difference at x {} y {}", px as u32 % W, px as u32 / W);
-        }
-    }
-
-    /// Ten rows with mixed bounds: clipped on each side, past the viewport, fractional tops.
-    fn mixed_rows(rig: &mut Rig) -> (Vec<Buffer>, [(f32, f32, TextBounds); 10]) {
-        let texts = [
-            ("Clipped on the left side here", MONO),
-            ("Clipped on the right side here", MONO),
-            ("Top cut through the glyphs", MONO),
-            ("Bottom cut through gyphs jq", MONO),
-            ("Bounds past every viewport edge", MONO),
-            ("Starts left of the viewport edge", MONO),
-            ("Hangs below the viewport bottom", MONO),
-            ("\u{628}\u{64e}\u{628}\u{650} fractional tops", RTL),
-            ("Box cut on all four sides gjy", MONO),
-            ("Zero-size bounds draw nothing", MONO),
-        ];
-        let buffers: Vec<Buffer> = texts.iter().map(|(t, f)| rig.shape(t, f)).collect();
-        let placed = [
-            (4.0, 2.0, b(37, -5, 400, 400)),
-            (4.0, 22.0, b(0, 0, 151, 400)),
-            (4.0, 47.0, b(0, 53, 400, 400)),
-            (9.25, 64.0, b(0, 0, 400, 77)),
-            (2.0, 85.0, b(-100, -100, 1000, 1000)),
-            (-31.5, 106.0, whole()),
-            (6.0, 228.0, whole()),
-            (40.0, 140.5, whole()),
-            (12.0, 170.0, b(30, 175, 140, 184)),
-            (12.0, 195.0, b(50, 200, 50, 200)),
-        ];
-        (buffers, placed)
-    }
-
-    #[test]
-    fn rows_draw_like_the_text_renderer() {
-        let mut rig = Rig::new();
-        let (buffers, placed) = mixed_rows(&mut rig);
-        let areas = || {
-            buffers
-                .iter()
-                .zip(placed)
-                .enumerate()
-                .map(|(i, (buf, (left, top, bounds)))| row(i as u64, buf, left, top, bounds))
-        };
-        let rows = rig.draw_rows(areas());
-        let text = rig.draw_text(areas());
-        assert_same(&rows, &text, "first frame");
-        // The second frame draws every row from its kept instances.
-        let rows = rig.draw_rows(areas());
-        assert_eq!(rig.rows.prepared_rows(), 10);
-        assert_same(&rows, &text, "kept rows");
-    }
-
-    #[test]
-    fn a_moved_whole_row_is_not_prepared_again() {
-        for top in [10.0, 10.25] {
-            let mut rig = Rig::new();
-            let buf = rig.shape("Moves down by whole pixels", MONO);
-            rig.draw_rows([row(1, &buf, 3.0, top, whole())]);
-            assert_eq!(rig.rows.prepared_rows(), 1);
-            let moved = rig.draw_rows([row(1, &buf, 3.0, top + 20.0, whole())]);
-            assert_eq!(rig.rows.prepared_rows(), 1, "top {top}: the row was prepared again");
-            let fresh = rig.draw_text([row(1, &buf, 3.0, top + 20.0, whole())]);
-            assert_same(&moved, &fresh, "moved row");
-        }
-    }
-
-    #[test]
-    fn a_row_moved_by_half_a_pixel_is_prepared_again() {
-        let mut rig = Rig::new();
-        // Arabic marks sit at a fractional y, so the truncation can move them apart.
-        let buf = rig.shape("\u{628}\u{64e}\u{628}\u{650}\u{628}\u{64e}", RTL);
-        rig.draw_rows([row(1, &buf, 3.0, 10.0, whole())]);
-        let moved = rig.draw_rows([row(1, &buf, 3.0, 10.5, whole())]);
-        assert_eq!(rig.rows.prepared_rows(), 2);
-        let fresh = rig.draw_text([row(1, &buf, 3.0, 10.5, whole())]);
-        assert_same(&moved, &fresh, "half-pixel move");
-    }
-
-    #[test]
-    fn rows_not_drawn_release_their_glyphs() {
-        let mut rig = Rig::new();
-        let a = rig.shape("Held while drawn", MONO);
-        let c = rig.shape("\u{628}\u{64e}\u{628}\u{650}", RTL);
-        rig.prepare_rows([row(1, &a, 0.0, 0.0, whole()), row(2, &c, 0.0, 20.0, whole())]);
-        assert!(rig.atlas.held() > 0);
-        rig.prepare_rows([]);
-        assert_eq!(rig.atlas.held(), 0);
-        // Keys dropped by clear are released at the next prepare.
-        rig.prepare_rows([row(1, &a, 0.0, 0.0, whole())]);
-        assert!(rig.atlas.held() > 0);
-        rig.rows.clear();
-        rig.prepare_rows([]);
-        assert_eq!(rig.atlas.held(), 0);
-    }
-
-    #[test]
-    fn growth_prepares_every_row_again() {
-        let mut rig = Rig::new();
-        let first = rig.shape("The first row stays the same", MONO);
-        rig.draw_rows([row(1, &first, 0.0, 0.0, whole())]);
-        assert_eq!(rig.rows.prepared_rows(), 1);
-        let size = rig.atlas.mask_size();
-        // Large glyphs fill the 256 px atlas; every row holds them, so it must grow.
-        let mut big = Buffer::new(&mut rig.font_system, Metrics::new(90.0, 100.0));
-        big.set_text(
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
-            &Attrs::new().family(Family::Name(MONO)),
-            Shaping::Advanced,
-            None,
-        );
-        big.shape_until_scroll(&mut rig.font_system, false);
-        let generation = rig.atlas.generation();
-        let areas = || [row(1, &first, 0.0, 0.0, whole()), row(2, &big, 0.0, 20.0, whole())];
-        let rows = rig.draw_rows(areas());
-        assert!(rig.atlas.generation() > generation, "the atlas did not grow");
-        assert!(rig.atlas.mask_size() > size);
-        // The kept first row is reused in the pass that grew, then both rows are prepared again.
-        assert_eq!(rig.rows.prepared_rows(), 1 + 1 + 2);
-        let text = rig.draw_text(areas());
-        assert_same(&rows, &text, "after growth");
-    }
-
-    #[test]
-    fn many_rows_grow_the_buffers_and_scroll_from_kept_instances() {
-        let mut rig = Rig::new();
-        let buffers: Vec<Buffer> = (0..100)
-            .map(|n| rig.shape(&format!("{n:03} the row text that fills forty-four cells"), MONO))
-            .collect();
-        let areas = |up: usize| {
-            buffers.iter().enumerate().skip(up).map(move |(n, buf)| {
-                row(n as u64 % 10, buf, 1.0, (n - up) as f32 * 2.4 + 0.25, whole())
-            })
-        };
-        // Distinct serials, but the same colors as `row` makes them.
-        let areas = |up: usize| {
-            areas(up).enumerate().map(move |(i, mut r)| {
-                r.serial = (i + up) as u64 + 100;
-                r
-            })
-        };
-        let rows = rig.draw_rows(areas(0));
-        assert!(rig.rows.capacity > FIRST_CAPACITY, "the instance buffer did not double");
-        let text = rig.draw_text(areas(0));
-        assert_same(&rows, &text, "100 rows");
-        let rows = rig.draw_rows(areas(3));
-        assert_eq!(rig.rows.prepared_rows(), 100, "scrolled rows were prepared again");
-        let text = rig.draw_text(areas(3));
-        assert_same(&rows, &text, "scrolled 3 up");
-    }
-
-    /// A new row every frame, the others moving up: after a warm-up the belt reuses its chunks
-    /// and the rows still match the text path.
-    #[test]
-    fn streaming_rows_reuse_the_upload_chunks() {
-        let mut rig = Rig::new();
-        let buffers: Vec<Buffer> = (0..80).map(|n| rig.shape(&format!("{n:03} a streamed line"), MONO)).collect();
-        let areas = |first: usize| (first..first + 8).map(|n| RowArea { serial: n as u64 + 1000, ..row(1, &buffers[n], 1.0, (n - first) as f32 * 20.0, whole()) }).collect::<Vec<_>>();
-        for first in 0..20 {
-            rig.draw_rows(areas(first));
-        }
-        let warm = rig.uploads.buffers_made();
-        assert!(warm > 0, "nothing went through the belt");
-        for first in 20..70 {
-            rig.draw_rows(areas(first));
-        }
-        assert_eq!(rig.uploads.buffers_made(), warm, "streaming rows made new staging buffers");
-        let rows = rig.draw_rows(areas(70));
-        let text = rig.draw_text(areas(70));
-        assert_same(&rows, &text, "streamed rows");
-    }
-
-    #[test]
-    fn a_released_slot_is_used_again() {
-        let mut rig = Rig::new();
-        let a = rig.shape("First row of text", MONO);
-        let c = rig.shape("Second row of text", MONO);
-        let d = rig.shape("Third row of text", MONO);
-        rig.prepare_rows([row(1, &a, 0.0, 0.0, whole()), row(2, &c, 0.0, 20.0, whole())]);
-        let end = rig.rows.end;
-        rig.prepare_rows([row(2, &c, 0.0, 20.0, whole())]);
-        rig.prepare_rows([row(2, &c, 0.0, 20.0, whole()), row(3, &d, 0.0, 40.0, whole())]);
-        assert_eq!(rig.rows.end, end, "the new row took a fresh slot instead of the freed one");
-        let rows = rig.draw_rows([row(2, &c, 0.0, 20.0, whole()), row(3, &d, 0.0, 40.0, whole())]);
-        let text = rig.draw_text([row(2, &c, 0.0, 20.0, whole()), row(3, &d, 0.0, 40.0, whole())]);
-        assert_same(&rows, &text, "reused slot");
-    }
-
-    /// The last frame's rows must not pin a full atlas: TextRenderer draws each of these frames,
-    /// so the row renderer must too.
-    #[test]
-    fn rows_from_last_frame_never_pin_a_full_atlas() {
-        let mut rig = Rig::new();
-        rig.atlas.set_max_size(256);
-        let big = |rig: &mut Rig, text: &str| {
-            let mut buf = Buffer::new(&mut rig.font_system, Metrics::new(100.0, 110.0));
-            buf.set_text(text, &Attrs::new().family(Family::Name(MONO)), Shaping::Advanced, None);
-            buf.shape_until_scroll(&mut rig.font_system, false);
-            buf
-        };
-        let first = big(&mut rig, "abcdefghi");
-        let second = big(&mut rig, "nopqrsuvx");
-        rig.draw_rows([row(1, &first, 0.0, 0.0, whole())]);
-        rig.atlas.trim();
-        let held = rig.atlas.held();
-        for frame in 1..4 {
-            let rows = rig.draw_rows([row(2, &second, 0.0, 0.0, whole())]);
-            rig.atlas.trim();
-            assert_eq!(rig.atlas.held(), held, "frame {frame}: holds piled up");
-            let text = rig.draw_text([row(2, &second, 0.0, 0.0, whole())]);
-            assert_same(&rows, &text, "after the swap");
-        }
-        assert_eq!(rig.atlas.generation(), 0, "the atlas grew past its cap");
-    }
-
-    /// A row whose line box misses its bounds is skipped, like TextRenderer skips the run, even
-    /// where its glyphs reach into the bounds.
-    #[test]
-    fn a_line_outside_its_bounds_is_culled() {
-        let mut rig = Rig::new();
-        // Glyphs twice the line height overhang the line box above and below.
-        let mut tall = Buffer::new(&mut rig.font_system, Metrics::new(32.0, 10.0));
-        tall.set_text("Tall gjy glyphs", &Attrs::new().family(Family::Name(MONO)), Shaping::Advanced, None);
-        tall.shape_until_scroll(&mut rig.font_system, false);
-        let shown = rig.shape("A row inside its bounds", MONO);
-        let pane = b(0, 60, W as i32, 120);
-        let areas = |bounds| [row(1, &shown, 4.0, 80.0, whole()), row(2, &tall, 4.0, 48.5, bounds), row(3, &tall, 4.0, 121.5, bounds)];
-        // The overhang reaches into the pane when nothing clips it.
-        let unclipped = rig.draw_text(areas(whole()));
-        let control = rig.draw_text([row(1, &shown, 4.0, 80.0, whole())]);
-        let px = |y: i32| (y * W as i32 * 4) as usize..((y + 1) * W as i32 * 4) as usize;
-        assert!((60..120).any(|y| unclipped[px(y)] != control[px(y)]), "no overhang reaches the pane");
-        let rows = rig.draw_rows(areas(pane));
-        let text = rig.draw_text(areas(pane));
-        assert_same(&rows, &text, "culled lines");
-        assert_eq!(rig.rows.prepared_rows(), 1, "a culled row was prepared");
-    }
-
-    fn solid(req: RasterizeCustomGlyphRequest) -> Option<RasterizedCustomGlyph> {
-        Some(RasterizedCustomGlyph {
-            data: vec![255; req.width as usize * req.height as usize],
-            content_type: ContentType::Mask,
-        })
-    }
-
-    /// Growth from the rows re-uploads every cached glyph, custom ones too, so it needs the
-    /// caller's rasterizer (a box glyph cached by TextRenderer used to panic here).
-    #[test]
-    fn growth_from_the_rows_keeps_custom_glyphs() {
-        let mut rig = Rig::new();
-        let blank = rig.shape("", MONO);
-        let glyphs = [CustomGlyph {
-            id: 7,
-            width: 12.0,
-            height: 12.0,
-            snap_to_physical_pixel: true,
-            ..Default::default()
-        }];
-        let mut text = TextRenderer::new(&mut rig.atlas, &rig.device, MultisampleState::default(), None);
-        let area = TextArea {
-            buffer: &blank,
-            left: 0.0,
-            top: 0.0,
-            scale: 1.0,
-            bounds: whole(),
-            default_color: Color::rgb(255, 255, 255),
-            custom_glyphs: &glyphs,
-        };
-        text.prepare_with_custom(&rig.device, &rig.queue, &mut rig.font_system, &mut rig.atlas, &rig.viewport, [area], &mut rig.swash, solid)
-            .unwrap();
-        let mut big = Buffer::new(&mut rig.font_system, Metrics::new(90.0, 100.0));
-        big.set_text(
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
-            &Attrs::new().family(Family::Name(MONO)),
-            Shaping::Advanced,
-            None,
-        );
-        big.shape_until_scroll(&mut rig.font_system, false);
-        let generation = rig.atlas.generation();
-        rig.prepare_rows_with([row(1, &big, 0.0, 0.0, whole())], solid);
-        assert!(rig.atlas.generation() > generation, "the atlas did not grow");
-    }
-
-    /// A kept row that is wanted but culled still holds its glyphs; a full atlas must let them go
-    /// and try again rather than fail.
-    #[test]
-    fn a_full_atlas_is_retried_after_dropping_unreached_rows() {
-        let mut rig = Rig::new();
-        rig.atlas.set_max_size(256);
-        let big = |rig: &mut Rig, text: &str| {
-            let mut buf = Buffer::new(&mut rig.font_system, Metrics::new(100.0, 110.0));
-            buf.set_text(text, &Attrs::new().family(Family::Name(MONO)), Shaping::Advanced, None);
-            buf.shape_until_scroll(&mut rig.font_system, false);
-            buf
-        };
-        let first = big(&mut rig, "abcdefghi");
-        let second = big(&mut rig, "nopqrsuvx");
-        rig.draw_rows([row(1, &first, 0.0, 0.0, whole())]);
-        rig.atlas.trim();
-        let off = b(0, 500, W as i32, 600);
-        let areas = || [row(1, &first, 0.0, 0.0, off), row(2, &second, 0.0, 0.0, whole())];
-        let rows = rig.draw_rows(areas());
-        let text = rig.draw_text(areas());
-        assert_same(&rows, &text, "after the retry");
-        assert_eq!(rig.atlas.generation(), 0, "the atlas grew past its cap");
-    }
-
-    /// A 56-row screen of mixed lengths (a few blank), rows overlapping so the draw order shows.
-    fn screen_rows(rig: &mut Rig) -> Vec<Buffer> {
-        (0..57)
-            .map(|n| {
-                let text = match n % 7 {
-                    3 => String::new(),
-                    5 => format!("{n:02} a longer row that runs well past the edge of the window, past sixty-four glyphs"),
-                    _ => format!("{n:02} row {}", "x".repeat(n % 11)),
-                };
-                rig.shape(&text, MONO)
-            })
-            .collect()
-    }
-
-    /// Rows `first..first + 56` of `buffers`, one serial per buffer, 4 px apart.
-    fn screen_areas(buffers: &[Buffer], first: usize) -> Vec<RowArea<'_>> {
-        (first..first + 56)
-            .map(|n| RowArea {
-                serial: n as u64 + 2000,
-                ..row(1, &buffers[n], 2.0, (n - first) as f32 * 4.0, whole())
-            })
-            .collect()
-    }
-
-    #[test]
-    fn batched_rows_draw_like_one_draw_per_row() {
-        let mut rig = Rig::new();
-        let (buffers, placed) = mixed_rows(&mut rig);
-        let areas = || {
-            buffers
-                .iter()
-                .zip(placed)
-                .enumerate()
-                .map(|(i, (buf, (left, top, bounds)))| row(i as u64, buf, left, top, bounds))
-                .collect::<Vec<_>>()
-        };
-        let rows = rig.draw_rows(areas());
-        assert!(rig.rows.draws_issued() < 10, "the mixed rows drew one by one");
-        let text = rig.draw_text(areas());
-        assert_same(&rows, &text, "mixed bounds");
-
-        let mut rig = Rig::new();
-        let buffers = screen_rows(&mut rig);
-        let rows = rig.draw_rows(screen_areas(&buffers, 0));
-        assert_eq!(rig.rows.draws_issued(), 1, "a fresh screen is not one batch");
-        let text = rig.draw_text(screen_areas(&buffers, 0));
-        assert_same(&rows, &text, "56 rows");
-    }
-
-    #[test]
-    fn a_scrolled_screen_draws_in_few_batches() {
-        let mut rig = Rig::new();
-        let buffers = screen_rows(&mut rig);
-        rig.draw_rows(screen_areas(&buffers, 0));
-        let prepared = rig.rows.prepared_rows();
-        let rows = rig.draw_rows(screen_areas(&buffers, 1));
-        assert_eq!(rig.rows.prepared_rows(), prepared + 1, "kept rows were prepared again");
-        assert!(rig.rows.draws_issued() <= 3, "the scroll drew {} batches", rig.rows.draws_issued());
-        let text = rig.draw_text(screen_areas(&buffers, 1));
-        assert_same(&rows, &text, "scrolled one up");
-    }
-
-    /// A short row in a slot a long row left: the stale instances past its end draw nothing,
-    /// even inside one batch with its neighbors.
-    #[test]
-    fn padding_draws_nothing() {
-        let mut rig = Rig::new();
-        let above = rig.shape("The row above", MONO);
-        let long = rig.shape(&"Wgjy".repeat(15), MONO);
-        let short = rig.shape("abc", MONO);
-        let below = rig.shape("The row below", MONO);
-        rig.draw_rows([row(1, &above, 0.0, 20.0, whole()), row(2, &long, 0.0, 40.0, whole()), row(3, &below, 0.0, 60.0, whole())]);
-        let end = rig.rows.end;
-        let areas = || [row(1, &above, 0.0, 20.0, whole()), row(4, &short, 0.0, 40.0, whole()), row(3, &below, 0.0, 60.0, whole())];
-        let rows = rig.draw_rows(areas());
-        assert_eq!(rig.rows.end, end, "the short row did not take the long row's slot");
-        assert_eq!(rig.rows.draws_issued(), 1, "the three rows did not draw as one batch");
-        let text = rig.draw_text(areas());
-        assert_same(&rows, &text, "short row in a long row's slot");
-    }
-
-    #[test]
-    fn rows_past_one_table_chunk_draw_right() {
-        let mut rig = Rig::new();
-        let letters: Vec<Buffer> = (0..26).map(|n| rig.shape(&char::from(b'a' + n).to_string(), MONO)).collect();
-        let areas = || {
-            (0..600)
-                .map(|n| RowArea {
-                    serial: n as u64 + 5000,
-                    ..row(1, &letters[n % 26], (n % 30) as f32 * 10.0, (n / 30) as f32 * 12.0, whole())
-                })
-                .collect::<Vec<_>>()
-        };
-        let rows = rig.draw_rows(areas());
-        let draws = rig.rows.draws_issued();
-        assert!((2..=3).contains(&draws), "600 rows drew in {draws} batches");
-        let text = rig.draw_text(areas());
-        assert_same(&rows, &text, "600 rows");
-        // Kept rows past the first chunk draw right from the table too.
-        let rows = rig.draw_rows(areas());
-        assert_same(&rows, &text, "600 kept rows");
-    }
-
-    #[test]
-    fn the_table_grows_under_kept_rows() {
-        let mut rig = Rig::new();
-        let letters: Vec<Buffer> = (0..26).map(|n| rig.shape(&char::from(b'a' + n).to_string(), MONO)).collect();
-        let areas = |count: usize| {
-            (0..count)
-                .map(|n| RowArea {
-                    serial: n as u64 + 7000,
-                    ..row(1, &letters[n % 26], (n % 30) as f32 * 10.0, (n / 30) as f32 * 12.0, whole())
-                })
-                .collect::<Vec<_>>()
-        };
-        rig.draw_rows(areas(100));
-        assert_eq!(rig.rows.table_rows, TABLE_CHUNK_ROWS);
-        // The 100 kept rows keep their ids and must be written into the grown table.
-        let rows = rig.draw_rows(areas(600));
-        assert_eq!(rig.rows.prepared_rows(), 600, "kept rows were prepared again");
-        assert!(rig.rows.table_rows > TABLE_CHUNK_ROWS, "the row table did not grow");
-        let text = rig.draw_text(areas(600));
-        assert_same(&rows, &text, "100 kept rows in a grown table");
-    }
-
-    #[test]
-    fn a_failed_prepare_draws_nothing() {
-        let mut rig = Rig::new();
-        rig.atlas.set_max_size(256);
-        let small = rig.shape("A row that drew", MONO);
-        rig.draw_rows([row(1, &small, 0.0, 0.0, whole())]);
-        assert_eq!(rig.rows.draws_issued(), 1);
-        // A glyph bigger than the capped atlas never fits.
-        let mut huge = Buffer::new(&mut rig.font_system, Metrics::new(400.0, 420.0));
-        huge.set_text("W", &Attrs::new().family(Family::Name(MONO)), Shaping::Advanced, None);
-        huge.shape_until_scroll(&mut rig.font_system, false);
-        let failed = rig.rows.prepare(
-            &rig.device,
-            &rig.queue,
-            &mut rig.uploads,
-            &mut rig.font_system,
-            &mut rig.atlas,
-            &rig.viewport,
-            [row(1, &small, 0.0, 0.0, whole()), row(2, &huge, 0.0, 20.0, whole())],
-            &mut rig.swash,
-            no_custom_glyph,
-        );
-        rig.uploads.submit(&rig.queue, []);
-        assert!(failed.is_err(), "the huge glyph fit");
-        assert_eq!(rig.rows.draws_issued(), 0, "render would replay the last frame");
-    }
+    out.writes.push(RowWrite::Ids { at: slot.start, bytes: from..out.bytes.len() });
 }

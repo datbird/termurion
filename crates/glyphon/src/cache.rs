@@ -1,4 +1,4 @@
-use crate::{GlyphToRender, Params};
+use crate::{viewport::Params, GlyphToRender, ROW_TABLE_CHUNK};
 use std::{
     borrow::Cow,
     mem,
@@ -16,12 +16,6 @@ use wgpu::{
     ShaderStages, TextureFormat, TextureSampleType, TextureView, TextureViewDimension,
     VertexFormat, VertexState,
 };
-
-/// Termurion patch 6: the size of `RowUniform` in `row_shader.wgsl`.
-pub(crate) const ROW_UNIFORM_SIZE: u64 = 32;
-/// Termurion patch 8: the size of `RowTable` in `row_shader.wgsl`, the most a GLES 3.0 uniform
-/// block holds.
-pub(crate) const ROW_TABLE_CHUNK: u64 = 16384;
 
 /// Termurion patch 8: the row pipeline's second vertex buffer, one row id per instance.
 const ROW_ID_ATTRIBUTES: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {

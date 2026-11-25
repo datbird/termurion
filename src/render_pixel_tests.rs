@@ -555,18 +555,22 @@ fn streaming_frames_make_no_upload_buffers() {
     assert_eq!(r.upload_buffers_made(), warm, "streaming frames made new upload buffers");
 }
 
-/// The CPU half needs no device: a renderer made without one prepares every baseline frame.
+/// The CPU half needs no device: a renderer made without one prepares every baseline frame,
+/// glyphs included (the atlas changes and the rows' instances).
 #[test]
 fn prepare_is_pure_cpu() {
     let mut r = Renderer::cpu_only(FACE, PX);
+    let (mut uploads, mut batches) = (0, 0);
     for (name, frame, _) in crate::scene::agent_box_tests::baseline_cases() {
-        let (list, up) = r.prepare(&frame, 808, 486);
+        let (list, up) = r.prepare(&frame, 808, 486).unwrap();
         assert_eq!(list.size, (808, 486), "{name}");
         assert_eq!(list.under.len(), frame.quads.len() * 6, "{name}");
         assert_eq!(list.picture.len(), frame.images.len(), "{name}");
-        assert!(list.rows.rows.len() >= frame.rows.len(), "{name}");
-        assert!(up.atlas.is_empty(), "{name}");
+        uploads += up.atlas.iter().filter(|op| matches!(op, glyphon::AtlasOp::Upload { .. })).count();
+        batches += list.rows.batches.len();
+        r.recycle(list, up);
     }
+    assert!(uploads > 0 && batches > 0, "no glyph went to the atlas ({uploads}) or no row drew ({batches})");
     assert!(r.draw_offscreen(&Frame::default(), 8, 8).is_err(), "a renderer with no device drew");
 }
 
@@ -596,24 +600,24 @@ fn prepare_writes_exactly_the_changed_bytes() {
     let mut frame = quad_frame(2, [1.0, 0.0, 0.0, 1.0]);
     frame.popups = vec![quad(40.0, [0.0, 0.0, 1.0, 1.0])];
     let both: Vec<u8> = frame.quads.iter().flat_map(quad_bytes).collect();
-    let (list, up) = r.prepare(&frame, 64, 16);
+    let (list, up) = r.prepare(&frame, 64, 16).unwrap();
     assert_eq!(quad_writes(&up), vec![(QuadBuf::Under, 0, both), (QuadBuf::Pops, 0, quad_bytes(&frame.popups[0]))]);
     assert_eq!((list.under.clone(), list.pops.clone(), list.over.clone(), list.fade), (0..12, 0..6, 0..0, None));
     r.recycle(list, up);
-    let (list, up) = r.prepare(&frame, 64, 16);
+    let (list, up) = r.prepare(&frame, 64, 16).unwrap();
     assert!(up.buffers.is_empty(), "the same frame wrote {:?}", up.buffers);
     r.recycle(list, up);
     // The first quad's color: the one 4 KB chunk holding the list goes up again, whole.
     frame.quads[0].color = [0.0, 1.0, 0.0, 1.0];
     frame.fade = 0.5;
-    let (list, up) = r.prepare(&frame, 64, 16);
+    let (list, up) = r.prepare(&frame, 64, 16).unwrap();
     let cover = crate::scene::Quad { rect: crate::layout::Rect { x: 0.0, y: 0.0, w: 64.0, h: 16.0 }, color: [0.0; 4] };
     assert_eq!(quad_writes(&up), vec![(QuadBuf::Under, 0, frame.quads.iter().flat_map(quad_bytes).collect()), (QuadBuf::Cover, 0, quad_bytes(&cover))]);
     assert_eq!(list.fade, Some(0.5));
 }
 
-/// A steady frame reuses the last frame's lists: the rows, glyph groups, pictures and writes
-/// keep their storage.
+/// A steady frame reuses the last frame's lists: the row batches and writes, the glyph
+/// instances, pictures, buffer writes and atlas ops keep their storage.
 #[test]
 fn a_steady_frame_reuses_the_list_storage() {
     let mut r = Renderer::cpu_only(FACE, PX);
@@ -623,16 +627,37 @@ fn a_steady_frame_reuses_the_list_storage() {
     let mut c = screen_case("boxes", &r, &s, size, true);
     c.frame.images = vec![crate::scene::ImageQuad { rect: crate::layout::Rect { x: 0.0, y: 0.0, w: 4.0, h: 4.0 }, uv: [0.0, 0.0, 1.0, 1.0], key: (1, 0), pixels: std::sync::Arc::new(vec![0; 16]), size: (2, 2), repeat: false }];
     let ptrs = |list: &crate::draw_list::DrawList, up: &crate::draw_list::Uploads| {
-        (list.rows.rows.as_ptr(), list.glyphs.groups.as_ptr(), list.glyphs.groups[0].1.as_ptr(), list.picture.as_ptr(), up.buffers.as_ptr())
+        (list.rows.batches.as_ptr(), list.rows.writes.as_ptr(), list.rows.bytes.as_ptr(), list.glyphs.instances.as_ptr(), list.picture.as_ptr(), up.buffers.as_ptr(), up.atlas.as_ptr())
     };
-    let (list, up) = r.prepare(&c.frame, size.0, size.1);
-    assert!(!list.rows.rows.is_empty() && !list.glyphs.groups.is_empty() && !up.buffers.is_empty());
+    let (list, up) = r.prepare(&c.frame, size.0, size.1).unwrap();
+    assert!(!list.rows.batches.is_empty() && !list.rows.writes.is_empty() && !list.glyphs.instances.is_empty() && !up.buffers.is_empty() && !up.atlas.is_empty());
     let first = ptrs(&list, &up);
     r.recycle(list, up);
     // A changed quad list so the writes list is used again too.
     c.frame.quads.push(quad(2.0, [1.0, 1.0, 1.0, 1.0]));
-    let (list, up) = r.prepare(&c.frame, size.0, size.1);
+    let (list, up) = r.prepare(&c.frame, size.0, size.1).unwrap();
     assert!(!up.buffers.is_empty());
     assert_eq!(ptrs(&list, &up), first, "a steady frame made new lists");
 }
 
+
+/// A frame whose text cannot fit fails, but what it prepared before failing (a row's slot, its
+/// glyphs in the atlas) still reaches the GPU: the next frame reuses that row and must draw it.
+#[test]
+fn a_failed_prepare_loses_no_write() {
+    use crate::layout::Rect;
+    let size = (320, 120);
+    let window = Rect { x: 0.0, y: 0.0, w: size.0 as f32, h: size.1 as f32 };
+    let kept = row("a row prepared before the failure", 4.0, 4.0, window, 1.0);
+    // One glyph bigger than the whole capped atlas.
+    let huge = row("W", 4.0, 30.0, window, 24.0);
+    let mut r = rows(false, true);
+    r.atlas().set_max_size(256);
+    let failed = r.draw_offscreen(&text_frame(vec![kept.clone(), huge]), size.0, size.1);
+    assert!(failed.is_err(), "the huge glyph fit");
+    let after = PixelCase { name: "after a failed frame".into(), frame: text_frame(vec![kept]), size };
+    let prepared = r.row_prepares();
+    let got = pixels(&mut r, &after);
+    assert_eq!(r.row_prepares(), prepared, "the row was prepared again, so this proves nothing");
+    assert_same(&after.name, &got, &pixels(&mut rows(false, true), &after), size.0);
+}

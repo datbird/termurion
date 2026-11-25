@@ -1,9 +1,11 @@
-//! The wgpu backend: runs a `DrawList` with the quad and image pipelines and glyphon.
+//! The wgpu backend: runs a `DrawList` with the quad and image pipelines and glyphon's wgpu
+//! backend.
 
-use glyphon::{Buffer, Color, ContentType, FontSystem, RasterizeCustomGlyphRequest, RasterizedCustomGlyph, Resolution, RowArea, RowRenderer, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport};
+use glyphon::wgpu_backend::{GpuAtlas, GpuRows, GpuText};
+use glyphon::{Resolution, RowRenderer, TextAtlas, Viewport};
 use wgpu::util::DeviceExt;
 
-use crate::draw_list::{Bounds, BufferWrite, DrawList, ImageDraw, QuadBuf, Shadow, Uploads, IMAGE_STRIDE, QUAD_STRIDE};
+use crate::draw_list::{BufferWrite, DrawList, ImageDraw, QuadBuf, Shadow, Uploads, IMAGE_STRIDE, QUAD_STRIDE};
 
 /// Rectangles: two triangles each, position and color per vertex.
 struct QuadPipeline {
@@ -285,26 +287,16 @@ impl GpuVec {
     }
 }
 
-/// What glyphon's prepare reads from the CPU side: the shaped rows (by `RowDraw::slot`), the font
-/// system and swash cache, the empty buffer box glyph areas carry, and the box glyph ids.
-pub struct TextInputs<'a> {
-    pub font_system: &'a mut FontSystem,
-    pub swash: &'a mut SwashCache,
-    pub buffers: &'a [crate::render::Shaped],
-    pub blank: &'a Buffer,
-    pub custom: &'a crate::render::CustomIds,
-}
-
-/// The GPU half of the renderer: pipelines, the glyph atlas and text renderers, the persistent
-/// vertex buffers and the upload belt every buffer write goes through.
+/// The GPU half of the renderer: pipelines, the glyph atlas textures and text buffers, the
+/// persistent vertex buffers and the upload belt every buffer write goes through.
 pub struct WgpuDraw {
     quads: QuadPipeline,
     images: ImagePipeline,
-    pub(crate) atlas: TextAtlas,
+    atlas: GpuAtlas,
     viewport: Viewport,
-    text: TextRenderer,
-    /// Draws the text rows, keeping each row's prepared glyphs on the GPU between frames.
-    rows: RowRenderer,
+    text: GpuText,
+    /// The text rows' instances, kept on the GPU between frames.
+    rows: GpuRows,
     /// Every buffer write of a frame goes up through this, ahead of the frame's commands.
     pub(crate) uploads: glyphon::UploadBelt,
     /// What the quad uniform holds, so it is written only when it changes.
@@ -314,12 +306,13 @@ pub struct WgpuDraw {
 }
 
 impl WgpuDraw {
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> WgpuDraw {
+    /// The GPU half for a new (empty) glyph atlas and row renderer.
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, atlas: &TextAtlas, rows: &RowRenderer) -> WgpuDraw {
         let cache = glyphon::Cache::new(device);
         let viewport = Viewport::new(device, &cache);
-        let mut atlas = TextAtlas::new(device, queue, &cache, format);
-        let text = TextRenderer::new(&mut atlas, device, wgpu::MultisampleState::default(), None);
-        let rows = RowRenderer::new(&mut atlas, device, wgpu::MultisampleState::default());
+        let text = GpuText::new(device, &cache, format, wgpu::MultisampleState::default(), None);
+        let rows = GpuRows::new(device, &cache, format, wgpu::MultisampleState::default(), rows);
+        let atlas = GpuAtlas::new(device, &cache, atlas);
         let quads = QuadPipeline::new(device, format);
         let images = ImagePipeline::new(device, format, &quads.uniform);
         WgpuDraw {
@@ -341,11 +334,6 @@ impl WgpuDraw {
         self.format
     }
 
-    /// How many rows the row renderer prepared since it was made.
-    pub fn row_prepares(&self) -> u64 {
-        self.rows.prepared_rows()
-    }
-
     /// How many image textures were uploaded.
     pub fn image_uploads(&self) -> usize {
         self.images.uploads
@@ -356,20 +344,9 @@ impl WgpuDraw {
         self.uploads.buffers_made()
     }
 
-    /// Lets go of every glyph the kept rows hold (the row path turned off). With no rows nothing
-    /// is allocated, so this cannot fail.
-    pub fn release_rows(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, font_system: &mut FontSystem, swash: &mut SwashCache) {
-        self.rows.clear();
-        let released = self.rows.prepare(device, queue, &mut self.uploads, font_system, &mut self.atlas, &self.viewport, [], swash, |_| None);
-        debug_assert!(released.is_ok(), "releasing the kept rows failed: {released:?}");
-    }
-
     /// Draws `list` into `view`. `raw` is a non-sRGB view of the same target for the fade pass
     /// (see `Renderer::draw_with`).
-    #[allow(clippy::too_many_arguments)]
-    pub fn run(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, list: &DrawList, up: &Uploads, text: TextInputs<'_>, view: &wgpu::TextureView, raw: Option<&wgpu::TextureView>) -> Result<(), String> {
-        // The buffer writes go first: a text prepare that fails must not leave the CPU's copy of a
-        // buffer ahead of the GPU's (the belt sends them with the next frame).
+    pub fn run(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, list: &DrawList, up: &Uploads, view: &wgpu::TextureView, raw: Option<&wgpu::TextureView>) -> Result<(), String> {
         if self.quad_uniform != Some(list.quad_uniform) {
             self.uploads.write(device, &self.quads.uniform, 0, bytemuck::cast_slice(&list.quad_uniform));
             self.quad_uniform = Some(list.quad_uniform);
@@ -380,40 +357,12 @@ impl WgpuDraw {
                 BufferWrite::Quads { which, offset, bytes } => self.uploads.write(device, &self.bufs[which.index()].buf, *offset, bytes),
             }
         }
-        for op in &up.atlas {
-            match *op {}
-        }
-
+        // The glyphs the CPU placed, the rows' slots and table, then this frame's glyph instances.
+        self.atlas.apply(device, queue, &up.atlas);
+        self.rows.apply(device, &mut self.uploads, &list.rows);
+        self.text.prepare(device, queue, Some(&mut self.uploads), &list.glyphs);
         let (width, height) = list.size;
         self.viewport.update(queue, Resolution { width, height });
-        let TextInputs { font_system, swash, buffers, blank, custom } = text;
-        let bounds = |b: &Bounds| TextBounds { left: b[0], top: b[1], right: b[2], bottom: b[3] };
-        let white = Color::rgb(255, 255, 255);
-        // A row's scale is already in its buffer's metrics, so every area draws at scale 1.
-        let areas = list.rows.rows.iter().map(|r| TextArea { buffer: &buffers[r.slot].0, left: r.left, top: r.top, scale: 1.0, bounds: bounds(&r.bounds), default_color: white, custom_glyphs: &[] });
-        let row_areas = || list.rows.rows.iter().map(|r| RowArea { serial: r.serial, buffer: &buffers[r.slot].0, left: r.left, top: r.top, bounds: bounds(&r.bounds), default_color: white });
-        // Box and block glyphs: one more `TextArea` per clip rectangle, an empty buffer carrying the
-        // glyphs as custom glyphs (rasterized by `boxdraw` on request, cached by id and size).
-        let glyph_areas = list.glyphs.groups.iter().map(|(b, glyphs)| TextArea { buffer: blank, left: 0.0, top: 0.0, scale: 1.0, bounds: bounds(b), default_color: white, custom_glyphs: glyphs });
-        let rasterize = |request: RasterizeCustomGlyphRequest| {
-            // Total for every interned id: the same mask each time, never `None` once it was `Some`.
-            let (c, scale) = custom.get(request.id)?;
-            Some(RasterizedCustomGlyph { data: crate::boxdraw::rasterize(c, request.width, request.height, scale), content_type: ContentType::Mask })
-        };
-        if list.rows.kept {
-            // The rows, then the box and block glyphs, both on one atlas: when either grows it, the
-            // rows prepare again, until neither moves it.
-            loop {
-                self.rows.prepare(device, queue, &mut self.uploads, font_system, &mut self.atlas, &self.viewport, row_areas(), swash, &rasterize).map_err(|e| format!("text prepare: {e:?}"))?;
-                let seen = self.atlas.generation();
-                self.text.prepare_with_custom_uploads(device, queue, &mut self.uploads, font_system, &mut self.atlas, &self.viewport, glyph_areas.clone(), swash, &rasterize).map_err(|e| format!("text prepare: {e:?}"))?;
-                if self.atlas.generation() == seen {
-                    break;
-                }
-            }
-        } else {
-            self.text.prepare_with_custom_uploads(device, queue, &mut self.uploads, font_system, &mut self.atlas, &self.viewport, areas.chain(glyph_areas), swash, rasterize).map_err(|e| format!("text prepare: {e:?}"))?;
-        }
 
         // Background images and inline images share one texture cache.
         self.images.prepare(device, queue, list.backdrop.iter().chain(&list.picture));
@@ -459,9 +408,7 @@ impl WgpuDraw {
                 pass.set_vertex_buffer(0, quads(QuadBuf::Pops, list.pops.end));
                 pass.draw(list.pops.clone(), 0..1);
             }
-            if list.rows.kept {
-                self.rows.render(&self.atlas, &self.viewport, &mut pass).map_err(|e| format!("text render: {e:?}"))?;
-            }
+            self.rows.render(&self.atlas, &self.viewport, &mut pass, &list.rows).map_err(|e| format!("text render: {e:?}"))?;
             self.text.render(&self.atlas, &self.viewport, &mut pass).map_err(|e| format!("text render: {e:?}"))?;
             if !list.over.is_empty() {
                 pass.set_pipeline(&self.quads.pipeline);
@@ -501,7 +448,6 @@ impl WgpuDraw {
             pass.draw(0..6, 0..1);
         }
         self.uploads.submit(queue, Some(encoder.finish()));
-        self.atlas.trim();
         Ok(())
     }
 }

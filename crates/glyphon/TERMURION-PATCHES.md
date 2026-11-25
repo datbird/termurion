@@ -3,7 +3,7 @@
 This is glyphon 0.12.0 from crates.io (MIT OR Apache-2.0 OR Zlib, see the LICENSE files), used
 through `[patch.crates-io]` in Termurion's Cargo.toml. The `examples/`, `benches/`, `samples/` and
 `.github/` directories and the dev-dependencies are left out. Each changed site carries a
-`// Termurion patch:` comment. Changes:
+`// Termurion patch N:` comment. Changes:
 
 1. Mask filter for aliased and thin-stroke text. `lib.rs` has `set_mask_filter(fn(u32, &mut [u8]))`
    (a process-wide `OnceLock`; a second call is ignored) and `filter_text_mask`, which runs the
@@ -70,5 +70,31 @@ through `[patch.crates-io]` in Termurion's Cargo.toml. The `examples/`, `benches
    new screen lays out in draw order. An entry drawn twice in one frame with another offset or clip
    is prepared again as its own entry (one table entry per id). `draws_issued()` counts the draws
    of the last `prepare`. Tests: `row_render::tests`.
+
+9. A GPU-free core and a wgpu backend (`lib.rs`, `text_atlas.rs`, `text_render.rs`,
+   `row_render.rs`, `cache.rs`, `viewport.rs`, `wgpu_backend.rs`, `core_tests.rs`, `Cargo.toml`).
+   The crate root, `custom_glyph.rs`, `error.rs`, `text_atlas.rs`, `text_render.rs` and
+   `row_render.rs` name no GPU type; `cache.rs`, `upload.rs`, `viewport.rs` and `wgpu_backend.rs`
+   build only with the `wgpu` feature (on by default; `--no-default-features` builds the core
+   alone). `TextAtlas::new(max_side)` keeps the packer, the LRU, the use counts, the mask filter
+   and the re-rasterization on growth, and records each texture change as an `AtlasOp` (`Grow`
+   remakes a texture at a new size, `Upload` writes a glyph's texels) that `take_ops` hands out
+   in order. `TextRenderer::prepare_cpu` fills a `GlyphDraws` (the `GlyphToRender` instances,
+   now public, with `glyph_bytes`); `RowRenderer::prepare_cpu` adds its slot, row id and table
+   writes to a `RowDraws` (`RowWrite`s into one byte list, `clear_writes` empties it once applied,
+   even after a failed prepare) and replaces its `RowBatch` list. It takes the rows as a
+   `Clone` iterator and keeps its scratch sets, so a steady frame allocates nothing there;
+   `release` lets go of every kept row's glyphs at once. The target size comes in as a
+   `Resolution`. `wgpu_backend` has `GpuAtlas` (the two textures and their bind group; `apply`
+   runs the ops with `write_texture` as before), `GpuText` (the vertex buffer and pipeline) and
+   `GpuRows` (the instance, id and table buffers and the row pipeline), which upload and draw
+   with the code of patches 6 to 8. The upstream wgpu entry points (`TextRenderer::prepare*`
+   and `render`, `TextAtlas::new(device, ..)`) and the depth callback are gone (every caller drew
+   at depth 0). `Params` moved to `viewport.rs`, `ROW_UNIFORM_SIZE` and `ROW_TABLE_CHUNK` to
+   `row_render.rs`. The atlas tests (`text_atlas::tests`) now run on the CPU; the GPU tests are
+   `wgpu_backend::row_tests` (the row tests of patches 6 to 8) and `wgpu_backend::atlas_tests`
+   (`atlas_ops_rebuild_the_same_texels`: the ops replayed on a CPU image equal the textures read
+   back, through growth and eviction; the atlas textures get `COPY_SRC` in glyphon's own tests
+   only). `core_tests` scans the core files for the GPU API's name.
 
 To update glyphon, copy the new version here and apply these changes again.

@@ -1,13 +1,13 @@
 //! Draws a scene Frame: fonts, shaping and `prepare` (the CPU half, building a `DrawList`) here,
 //! the GPU half in `render_wgpu`.
 
-use glyphon::{Attrs, Buffer, Color, CustomGlyph, Family, FontSystem, Metrics, Shaping, Style, SwashCache, Weight, Wrap};
+use glyphon::{Attrs, Buffer, Color, ContentType, CustomGlyph, Family, FontSystem, Metrics, RasterizeCustomGlyphRequest, RasterizedCustomGlyph, RowArea, Shaping, Style, SwashCache, TextArea, TextBounds, Weight, Wrap};
 
 use glyphon::cosmic_text::CacheKeyFlags;
 
-use crate::draw_list::{Bounds, DrawList, ImageDraw, QuadBuf, RowDraw, Shadow, Uploads};
+use crate::draw_list::{Bounds, DrawList, ImageDraw, QuadBuf, Shadow, Uploads};
 use crate::fonts;
-use crate::render_wgpu::{TextInputs, WgpuDraw};
+use crate::render_wgpu::WgpuDraw;
 use crate::scene::{Frame, Quad, Span, Spans, TextRow};
 
 /// Two triangles per rectangle: position and color per vertex.
@@ -328,8 +328,19 @@ pub struct Renderer {
     verts: [Vec<f32>; 6],
     /// The last drawn list and uploads, reused by the next `prepare`.
     spare: Option<(DrawList, Uploads)>,
+    /// The spare list holds row writes a failed `prepare` made: owed to the GPU, so the next
+    /// `prepare` keeps them and adds its own.
+    unsent: bool,
     /// The box glyph groups' clips (`glyph_groups`).
     clips: Vec<crate::layout::Rect>,
+    /// The box and block glyphs, one group per clip rectangle (`glyph_groups`), kept so a frame
+    /// does not allocate them.
+    groups: Vec<(Bounds, Vec<CustomGlyph>)>,
+    /// The glyph atlas, the row renderer and the text renderer: glyphon's CPU half. Each frame's
+    /// atlas changes and glyph instances go to the backend in the `DrawList` and `Uploads`.
+    glyph_atlas: glyphon::TextAtlas,
+    row_text: glyphon::RowRenderer,
+    text: glyphon::TextRenderer,
     font_system: FontSystem,
     swash: SwashCache,
     /// Each glyph's ink placement (left, top, width, height) from the swash image, keyed by the
@@ -417,8 +428,27 @@ pub struct Renderer {
 impl Renderer {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, family: &str, font_px: f32) -> Renderer {
         let mut r = Renderer::cpu_only(family, font_px);
-        r.gpu = Some(GpuHalf { device: device.clone(), queue: queue.clone(), draw: WgpuDraw::new(device, queue, format) });
+        r.attach(device, queue, format);
         r
+    }
+
+    /// Draws on `device` from now on. The glyph atlas and rows start over with it (the atlas may
+    /// grow to the device's largest texture), so the backend's new textures and buffers hold
+    /// exactly what the CPU half thinks they do.
+    fn attach(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) {
+        self.reset_glyphs(device.limits().max_texture_dimension_2d);
+        let draw = WgpuDraw::new(device, format, &self.glyph_atlas, &self.row_text);
+        self.gpu = Some(GpuHalf { device: device.clone(), queue: queue.clone(), draw });
+        // The new buffers hold nothing.
+        self.shadows = QuadBuf::ALL.map(Shadow::new);
+    }
+
+    /// A new, empty glyph atlas and row renderer. Writes owed to the old device are dropped.
+    fn reset_glyphs(&mut self, max_side: u32) {
+        self.glyph_atlas = glyphon::TextAtlas::new(max_side);
+        self.row_text = glyphon::RowRenderer::new(&self.glyph_atlas);
+        self.spare = None;
+        self.unsent = false;
     }
 
     /// A renderer with no device: fonts, measuring and `prepare` work, drawing does not.
@@ -428,12 +458,20 @@ impl Renderer {
         glyphon::set_mask_filter(|flags, alpha| fonts::filter_mask(fonts::MaskMode::of_flags(flags), alpha));
         let mut font_system = FontSystem::new();
         let blank = Buffer::new(&mut font_system, Metrics::new(12.0, 14.0));
+        // With no device the atlas may grow as far as wgpu's default limit allows.
+        let glyph_atlas = glyphon::TextAtlas::new(wgpu::Limits::default().max_texture_dimension_2d);
+        let row_text = glyphon::RowRenderer::new(&glyph_atlas);
         let mut r = Renderer {
             gpu: None,
             shadows: QuadBuf::ALL.map(Shadow::new),
             verts: Default::default(),
             spare: None,
+            unsent: false,
             clips: Vec::new(),
+            groups: Vec::new(),
+            glyph_atlas,
+            row_text,
+            text: glyphon::TextRenderer::new(),
             font_system,
             swash: SwashCache::new(),
             ink_cache: std::collections::HashMap::new(),
@@ -497,9 +535,7 @@ impl Renderer {
     /// atlas, the viewport and the image textures (re-uploaded when next drawn). Fonts, faces and
     /// settings are kept.
     pub fn rebuild_gpu(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) {
-        self.gpu = Some(GpuHalf { device: device.clone(), queue: queue.clone(), draw: WgpuDraw::new(device, queue, format) });
-        // The new buffers hold nothing.
-        self.shadows = QuadBuf::ALL.map(Shadow::new);
+        self.attach(device, queue, format);
     }
 
     /// Bytes the persistent vertex buffers uploaded so far (tests).
@@ -525,7 +561,7 @@ impl Renderer {
     /// The glyph atlas (tests).
     #[cfg(test)]
     pub(crate) fn atlas(&mut self) -> &mut glyphon::TextAtlas {
-        &mut self.gpu.as_mut().expect("a renderer with a device").draw.atlas
+        &mut self.glyph_atlas
     }
 
     /// Sets the font size and measures the cell: the advance of "W" by the font's own line
@@ -1242,14 +1278,15 @@ impl Renderer {
             return;
         }
         self.row_instances = on;
-        if !on && let Some(g) = &mut self.gpu {
-            g.draw.release_rows(&g.device, &g.queue, &mut self.font_system, &mut self.swash);
+        if !on {
+            // Lets go of every glyph the kept rows hold.
+            self.row_text.release(&mut self.glyph_atlas);
         }
     }
 
     /// How many rows the row renderer prepared since it was made (it is made again on a new device).
     pub fn row_prepares(&self) -> u64 {
-        self.gpu.as_ref().map_or(0, |g| g.draw.row_prepares())
+        self.row_text.prepared_rows()
     }
 
     /// The device and queue this renderer draws with (not for a `cpu_only` one).
@@ -1500,10 +1537,9 @@ impl Renderer {
         if self.gpu.is_none() {
             return Err(NO_DEVICE.into());
         }
-        let (list, up) = self.prepare(frame, width, height);
+        let (list, up) = self.prepare(frame, width, height)?;
         let g = self.gpu.as_mut().expect("checked above");
-        let text = TextInputs { font_system: &mut self.font_system, swash: &mut self.swash, buffers: &self.buffers, blank: &self.blank, custom: &self.custom };
-        let drawn = g.draw.run(&g.device, &g.queue, &list, &up, text, view, raw);
+        let drawn = g.draw.run(&g.device, &g.queue, &list, &up, view, raw);
         self.recycle(list, up);
         drawn
     }
@@ -1513,11 +1549,13 @@ impl Renderer {
         self.spare = Some((list, up));
     }
 
-    /// The CPU half of a draw: shapes the rows, builds the vertex lists and works out which bytes
-    /// of the persistent buffers change. No GPU is touched. It already counts the returned
+    /// The CPU half of a draw: shapes the rows, prepares their glyphs (atlas changes and glyph
+    /// instances), builds the vertex lists and works out which bytes of the persistent buffers
+    /// change. No GPU is touched. It already counts the returned list's row writes and the
     /// `Uploads` as on the GPU: they must reach the backend before the next `prepare`, or the
-    /// persistent buffers fall behind for good.
-    pub(crate) fn prepare(&mut self, frame: &Frame, width: u32, height: u32) -> (DrawList, Uploads) {
+    /// GPU falls behind for good. A failed glyph prepare (a full atlas) keeps what it wrote for
+    /// the next frame.
+    pub(crate) fn prepare(&mut self, frame: &Frame, width: u32, height: u32) -> Result<(DrawList, Uploads), String> {
         let (_, ch) = self.cell;
         let metrics = Metrics::new(self.font_px, ch);
         let mixed = frame.rows.iter().any(|r| r.spans.windows(2).any(|w| w[0].ligatures != w[1].ligatures));
@@ -1677,11 +1715,20 @@ impl Renderer {
 
         let (mut list, mut up) = self.spare.take().unwrap_or_default();
         up.reset();
-        let bounds = |row: &TextRow| [row.clip.x as i32, row.clip.y as i32, (row.clip.x + row.clip.w) as i32, (row.clip.y + row.clip.h) as i32];
-        list.rows.kept = self.row_instances;
-        list.rows.rows.clear();
-        list.rows.rows.extend(self.buffers.iter().zip(all_rows.iter().copied()).enumerate().map(|(slot, ((.., serial), row))| RowDraw { slot, serial: *serial, left: row.x, top: row.y, bounds: bounds(row) }));
-        self.glyph_groups(&frame.glyphs, &mut list.glyphs.groups);
+        if !std::mem::take(&mut self.unsent) {
+            list.rows.clear_writes();
+        }
+        let mut groups = std::mem::take(&mut self.groups);
+        self.glyph_groups(&frame.glyphs, &mut groups);
+        let prepared = self.prepare_text(&all_rows, &groups, width, height, &mut list);
+        self.groups = groups;
+        if let Err(e) = prepared {
+            // The atlas keeps its changes until they are taken; the row writes wait in the list.
+            self.spare = Some((list, up));
+            self.unsent = true;
+            return Err(e);
+        }
+        self.glyph_atlas.take_ops(&mut up.atlas);
 
         // Underline strokes lie under the overlay (the dimming, the cursor extras); with gaps on they
         // break around the ink of the glyphs in their row, strikethrough stays whole.
@@ -1714,7 +1761,48 @@ impl Renderer {
         list.pops = verts(&self.verts[QuadBuf::Pops.index()]);
         list.over = verts(&self.verts[QuadBuf::Over.index()]);
         list.fade = fade;
-        (list, up)
+        Ok((list, up))
+    }
+
+    /// The text of a frame on the CPU: the rows (through the row renderer when it is on), then the
+    /// box and block glyphs, into `list.rows` and `list.glyphs`. `rows` pairs with `self.buffers`.
+    fn prepare_text(&mut self, rows: &[&TextRow], groups: &[(Bounds, Vec<CustomGlyph>)], width: u32, height: u32, list: &mut DrawList) -> Result<(), String> {
+        let resolution = glyphon::Resolution { width, height };
+        let clip = |r: &TextRow| TextBounds { left: r.clip.x as i32, top: r.clip.y as i32, right: (r.clip.x + r.clip.w) as i32, bottom: (r.clip.y + r.clip.h) as i32 };
+        let white = Color::rgb(255, 255, 255);
+        let shaped = self.buffers.iter().zip(rows.iter().copied());
+        // A row's scale is already in its buffer's metrics, so every area draws at scale 1.
+        let areas = shaped.clone().map(|((buffer, ..), r)| TextArea { buffer, left: r.x, top: r.y, scale: 1.0, bounds: clip(r), default_color: white, custom_glyphs: &[] });
+        let row_areas = shaped.map(|((buffer, .., serial), r)| RowArea { serial: *serial, buffer, left: r.x, top: r.y, bounds: clip(r), default_color: white });
+        // Box and block glyphs: one more `TextArea` per clip rectangle, an empty buffer carrying the
+        // glyphs as custom glyphs (rasterized by `boxdraw` on request, cached by id and size).
+        let blank = &self.blank;
+        let glyph_areas = groups.iter().map(|(b, glyphs)| TextArea { buffer: blank, left: 0.0, top: 0.0, scale: 1.0, bounds: TextBounds { left: b[0], top: b[1], right: b[2], bottom: b[3] }, default_color: white, custom_glyphs: glyphs });
+        let custom = &self.custom;
+        let rasterize = |request: RasterizeCustomGlyphRequest| {
+            // Total for every interned id: the same mask each time, never `None` once it was `Some`.
+            let (c, scale) = custom.get(request.id)?;
+            Some(RasterizedCustomGlyph { data: crate::boxdraw::rasterize(c, request.width, request.height, scale), content_type: ContentType::Mask })
+        };
+        let failed = |e: glyphon::PrepareError| format!("text prepare: {e:?}");
+        list.rows.batches.clear();
+        if self.row_instances {
+            // The rows, then the box and block glyphs, both on one atlas: when either grows it, the
+            // rows prepare again, until neither moves it.
+            loop {
+                self.row_text.prepare_cpu(&mut self.font_system, &mut self.glyph_atlas, resolution, row_areas.clone(), &mut self.swash, &rasterize, &mut list.rows).map_err(failed)?;
+                let seen = self.glyph_atlas.generation();
+                self.text.prepare_cpu(&mut self.font_system, &mut self.glyph_atlas, resolution, glyph_areas.clone(), &mut self.swash, &rasterize, &mut list.glyphs).map_err(failed)?;
+                if self.glyph_atlas.generation() == seen {
+                    break;
+                }
+            }
+        } else {
+            self.text.prepare_cpu(&mut self.font_system, &mut self.glyph_atlas, resolution, areas.chain(glyph_areas), &mut self.swash, &rasterize, &mut list.glyphs).map_err(failed)?;
+        }
+        // The frame is prepared: nothing it used is in use any more.
+        self.glyph_atlas.trim();
+        Ok(())
     }
 }
 

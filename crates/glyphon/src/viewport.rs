@@ -1,6 +1,15 @@
-use crate::{Cache, Params, Resolution};
+use crate::{Cache, Resolution};
 use std::{mem, slice};
 use wgpu::{BindGroup, Buffer, BufferDescriptor, BufferUsages, Device, Queue};
+
+/// The viewport uniform (`Params` in both shaders). Termurion patch 9: moved here from the crate
+/// root, which no longer names a GPU type.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Params {
+    pub(crate) screen_resolution: Resolution,
+    pub(crate) _pad: [u32; 2],
+}
 
 /// Controls the visible area of all text for a given renderer. Any text outside of the visible
 /// area will be clipped.

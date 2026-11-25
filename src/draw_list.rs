@@ -3,6 +3,10 @@
 
 use std::ops::Range;
 
+/// glyphon's CPU half makes these (atlas texture changes, row buffer writes and draws, glyph
+/// instances); every backend applies the same ones.
+pub use glyphon::{AtlasOp, GlyphDraws, RowDraws};
+
 /// The persistent vertex buffers a frame draws from. Each keeps its bytes between frames.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum QuadBuf {
@@ -34,10 +38,6 @@ pub enum BufferWrite {
     Grow { which: QuadBuf, size: u64 },
     Quads { which: QuadBuf, offset: u64, bytes: Vec<u8> },
 }
-
-/// A glyph atlas change (filled in by the glyph work; empty while glyph prepare runs in the backend).
-#[derive(Clone, Debug, PartialEq)]
-pub enum AtlasOp {}
 
 /// Everything a frame sends to the GPU besides the draw calls.
 #[derive(Debug, Default)]
@@ -90,32 +90,6 @@ pub struct ImageDraw {
 /// A clip rectangle in whole pixels: left, top, right, bottom.
 pub type Bounds = [i32; 4];
 
-/// One shaped text row: its slot in the renderer's row buffers, the serial it was shaped under
-/// (the row renderer keeps a row's glyphs by it) and where it draws.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RowDraw {
-    pub slot: usize,
-    pub serial: u64,
-    pub left: f32,
-    pub top: f32,
-    pub bounds: Bounds,
-}
-
-/// The frame's text rows, in draw order.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct RowDraws {
-    /// Rows keep their prepared glyphs between frames (`RedrawOnlyChangedRows`); off, every row
-    /// is prepared again each frame.
-    pub kept: bool,
-    pub rows: Vec<RowDraw>,
-}
-
-/// The box and block glyphs, one group per clip rectangle.
-#[derive(Clone, Debug, Default)]
-pub struct GlyphDraws {
-    pub groups: Vec<(Bounds, Vec<glyphon::CustomGlyph>)>,
-}
-
 impl Default for DrawList {
     fn default() -> DrawList {
         DrawList {
@@ -135,7 +109,8 @@ impl Default for DrawList {
 }
 
 /// One frame, in draw order: clear, backdrop images, quads under the pictures, pictures, popup
-/// boxes, text rows and box glyphs, the strokes and overlay, then the fade pass.
+/// boxes, text rows and box glyphs, the strokes and overlay, then the fade pass. `rows` also
+/// carries the row buffer writes, applied before anything draws.
 #[derive(Clone, Debug)]
 pub struct DrawList {
     pub clear: [f32; 4],
