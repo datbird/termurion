@@ -1,6 +1,7 @@
 //! Runs a `DrawList` on Metal in the wgpu backend's order (`render_wgpu::WgpuDraw::run`): the
-//! buffer writes first, then one pass with the backdrop, the quads under the pictures, the
-//! pictures, the popup boxes, the text and the strokes and overlay, then the fade pass.
+//! buffer writes and atlas changes first, then one pass with the backdrop, the quads under the
+//! pictures, the pictures, the popup boxes, the text and the strokes and overlay, then the fade
+//! pass.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -16,10 +17,8 @@ use objc2_metal::{
 use super::images::ImagePipeline;
 use super::quads::QuadPipeline;
 use super::shaders;
+use super::text::{Made, MetalText, TextStart};
 use crate::draw_list::{BufferWrite, DrawList, ImageDraw, QuadBuf, Shadow, Uploads, IMAGE_STRIDE, QUAD_STRIDE};
-
-/// What a frame with text says until the Metal backend draws text (its quads and images draw).
-pub const NO_TEXT_YET: &str = "the Metal renderer does not draw text yet";
 
 /// The format a pass writes when it scales stored values: the target's without the sRGB suffix.
 pub fn raw_format(format: MTLPixelFormat) -> MTLPixelFormat {
@@ -32,10 +31,11 @@ pub fn raw_format(format: MTLPixelFormat) -> MTLPixelFormat {
 
 type Buffer = Retained<ProtocolObject<dyn MTLBuffer>>;
 
-/// The GPU half on Metal: pipelines and the persistent vertex buffers.
+/// The GPU half on Metal: pipelines, the persistent vertex buffers and the text state.
 pub(crate) struct MetalDraw {
     quads: QuadPipeline,
     pub(super) images: ImagePipeline,
+    pub(super) text: MetalText,
     bufs: [Buffer; 6],
     /// The quad and image shaders' screen size the last frame drew with (tests).
     pub(super) last_uniform: [f32; 4],
@@ -99,16 +99,23 @@ const SIZES_SLOT: usize = 1;
 const SCREEN_SLOT: usize = 0;
 
 impl MetalDraw {
-    pub fn new(device: &ProtocolObject<dyn MTLDevice>, format: MTLPixelFormat) -> Result<MetalDraw, String> {
+    /// The draw for a renderer whose glyph atlas and rows are as `text` says (new ones).
+    pub fn new(device: &ProtocolObject<dyn MTLDevice>, format: MTLPixelFormat, text: &TextStart) -> Result<MetalDraw, String> {
         let buf = || private_buffer(device, Shadow::START);
-        Ok(MetalDraw { quads: QuadPipeline::new(device, format)?, images: ImagePipeline::new(device, format)?, bufs: [buf()?, buf()?, buf()?, buf()?, buf()?, buf()?], last_uniform: [0.0; 4], staging: Staging::default() })
+        Ok(MetalDraw {
+            quads: QuadPipeline::new(device, format)?,
+            images: ImagePipeline::new(device, format)?,
+            text: MetalText::new(device, format, text)?,
+            bufs: [buf()?, buf()?, buf()?, buf()?, buf()?, buf()?],
+            last_uniform: [0.0; 4],
+            staging: Staging::default(),
+        })
     }
 
     /// Encodes `list` into `cb`, drawing into `view`; `raw` is a non-sRGB view of the same target
-    /// for the fade pass. A frame with text draws everything else and says so.
+    /// for the fade pass.
     pub fn run(&mut self, device: &ProtocolObject<dyn MTLDevice>, cb: &ProtocolObject<dyn MTLCommandBuffer>, list: &DrawList, up: &Uploads, view: &ProtocolObject<dyn MTLTexture>, raw: Option<&ProtocolObject<dyn MTLTexture>>) -> Result<(), String> {
-        let has_text = !list.rows.batches.is_empty() || !list.rows.writes.is_empty() || !list.glyphs.instances.is_empty() || !up.atlas.is_empty();
-        self.write_buffers(device, cb, up)?;
+        self.write_buffers(device, cb, list, up)?;
         self.images.prepare(device, list.backdrop.iter().chain(&list.picture));
         self.last_uniform = list.quad_uniform;
 
@@ -134,6 +141,8 @@ impl MetalDraw {
         if !list.pops.is_empty() {
             self.draw_quads(&enc, &self.quads.pipeline, QuadBuf::Pops, list.pops.clone(), list.quad_uniform);
         }
+        self.text.draw_rows(&enc, &list.rows, list.size);
+        self.text.draw_glyphs(&enc, list.size);
         if !list.over.is_empty() {
             self.draw_quads(&enc, &self.quads.pipeline, QuadBuf::Over, list.over.clone(), list.quad_uniform);
         }
@@ -154,21 +163,26 @@ impl MetalDraw {
             self.draw_quads(&enc, &fader, QuadBuf::Cover, 0..6, list.quad_uniform);
             enc.endEncoding();
         }
-        if has_text { Err(NO_TEXT_YET.to_string()) } else { Ok(()) }
+        Ok(())
     }
 
-    /// Applies the frame's buffer writes in order: a grown buffer is made again, and the bytes go
-    /// through a staging chunk and one blit, ahead of the frame's passes (as wgpu's upload belt).
-    /// Every buffer is made before anything is encoded, so a failed one leaves the frame empty.
-    fn write_buffers(&mut self, device: &ProtocolObject<dyn MTLDevice>, cb: &ProtocolObject<dyn MTLCommandBuffer>, up: &Uploads) -> Result<(), String> {
-        let total: usize = up.buffers.iter().map(|w| if let BufferWrite::Quads { bytes, .. } = w { bytes.len().next_multiple_of(4) } else { 0 }).sum();
+    /// Applies the frame's buffer writes, atlas ops and row writes in order: a grown buffer or
+    /// texture is made again, and the bytes go through a staging chunk and one blit, ahead of the
+    /// frame's passes (as wgpu's upload belt and queue writes). Everything is made before anything
+    /// is encoded, so a failed one leaves the frame empty.
+    fn write_buffers(&mut self, device: &ProtocolObject<dyn MTLDevice>, cb: &ProtocolObject<dyn MTLCommandBuffer>, list: &DrawList, up: &Uploads) -> Result<(), String> {
+        let quads: usize = up.buffers.iter().map(|w| if let BufferWrite::Quads { bytes, .. } = w { bytes.len().next_multiple_of(4) } else { 0 }).sum();
         let mut grown = Vec::new();
         for w in &up.buffers {
             if let BufferWrite::Grow { size, .. } = w {
                 grown.push(private_buffer(device, *size)?);
             }
         }
+        let mut made = Made::default();
+        let total = quads + self.text.make(device, &up.atlas, &list.rows, &list.glyphs, &mut made)?;
         let staging = if total > 0 { Some(self.staging.take(device, cb, total)?) } else { None };
+        // New atlas textures start cleared, before the copies into them.
+        self.text.clear_new(cb, &made)?;
         let blit = match &staging {
             Some(_) => Some(cb.blitCommandEncoder().ok_or("no Metal blit encoder")?),
             None => None,
@@ -191,6 +205,8 @@ impl MetalDraw {
                 }
             }
         }
+        let copies = staging.as_deref().zip(blit.as_deref());
+        self.text.write(copies, &mut at, &up.atlas, &list.rows, &list.glyphs, made);
         if let Some(blit) = blit {
             blit.endEncoding();
         }

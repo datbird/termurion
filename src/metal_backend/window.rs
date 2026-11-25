@@ -10,6 +10,7 @@ use objc2_metal::{MTLCommandBuffer, MTLDevice, MTLDrawable, MTLStorageMode, MTLT
 use winit::window::Window;
 
 use super::draw::{raw_format, MetalDraw};
+use super::text::TextStart;
 use super::surface::{Next, Surface, FORMAT};
 use super::{MetalShared, MAX_TEXTURE_SIDE};
 use crate::gpu_shared::GpuShared;
@@ -67,14 +68,18 @@ impl MetalWindow {
         Ok(crate::gpu_window::WindowGpu::Metal(w))
     }
 
-    fn new(shared: &MetalShared, surface: Option<Surface>, size: (u32, u32), scale: f64, renderer: Renderer, window: Option<Arc<Window>>) -> Result<MetalWindow, String> {
+    fn new(shared: &MetalShared, surface: Option<Surface>, size: (u32, u32), scale: f64, mut renderer: Renderer, window: Option<Arc<Window>>) -> Result<MetalWindow, String> {
+        let draw = MetalDraw::new(&shared.device, FORMAT, &TextStart::fresh(MAX_TEXTURE_SIDE))?;
+        // The draw's atlas textures and row buffers are new: so are the CPU atlas and rows, so
+        // every glyph and row write from the first frame on reaches them.
+        renderer.restart_for_backend(MAX_TEXTURE_SIDE);
         Ok(MetalWindow {
             shared: shared.clone(),
             surface,
             size,
             scale,
             renderer,
-            draw: MetalDraw::new(&shared.device, FORMAT)?,
+            draw,
             generation: crate::gpu_pick::current_generation(),
             acquire: Acquire::default(),
             timing: false,
@@ -122,6 +127,12 @@ impl MetalWindow {
     #[cfg(test)]
     pub fn staging_made(&self) -> u64 {
         self.draw.staging_made()
+    }
+
+    /// Text buffers and atlas textures the window's draw made so far (tests).
+    #[cfg(test)]
+    pub fn text_objects_made(&self) -> u64 {
+        self.draw.text.made
     }
 
     /// The device generation the window reports a loss for (tests).
@@ -187,8 +198,7 @@ impl MetalWindow {
         let present_start = self.timing.then(Instant::now);
         // A frame that failed before it drew (no buffer, a refused prepare) is not shown: the
         // window keeps its last picture. It is still committed, so its staging chunk comes back.
-        let drew = kept.as_ref().map_or_else(|e| e == super::draw::NO_TEXT_YET, |_| true);
-        if let Some(d) = drawable.as_ref().filter(|_| drew) {
+        if let Some(d) = drawable.as_ref().filter(|_| kept.is_ok()) {
             cb.presentDrawable(ProtocolObject::<dyn MTLDrawable>::from_ref(&**d));
         }
         cb.commit();
@@ -240,12 +250,12 @@ impl MetalWindow {
         false
     }
 
-    /// Moves the window onto a new Metal device after a loss: new pipelines and buffers, the
-    /// layer set to the new device, the glyph atlas and rows started over. On an error the window
-    /// is left as it was.
+    /// Moves the window onto a new Metal device after a loss: new pipelines, buffers and atlas
+    /// textures, the layer set to the new device, the glyph atlas, rows and spare lists started
+    /// over with them. On an error the window is left as it was.
     pub fn rebuild(&mut self, shared: &GpuShared, _alpha: Option<&GpuShared>) -> Result<(), String> {
         let GpuShared::Metal(m) = shared else { return Err("a Metal window needs a Metal device".to_string()) };
-        let draw = MetalDraw::new(&m.device, FORMAT)?;
+        let draw = MetalDraw::new(&m.device, FORMAT, &TextStart::fresh(MAX_TEXTURE_SIDE))?;
         self.shared = m.clone();
         self.draw = draw;
         self.generation = crate::gpu_pick::current_generation();

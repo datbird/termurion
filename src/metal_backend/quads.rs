@@ -12,20 +12,41 @@ use objc2_metal::{
 use super::shaders::{self, Entry, Kind};
 use crate::draw_list::QUAD_STRIDE;
 
-/// One vertex attribute: shader location, byte offset, and whether it is two floats or four.
+/// One vertex attribute: shader location, byte offset and format.
 pub(super) struct Attr {
     pub location: u32,
     pub offset: u32,
-    pub floats: u32,
+    pub format: wgpu::VertexFormat,
 }
 
-/// A WGSL file's `vs` and `fs` as Metal functions, translated with wgpu's options over a pipeline
-/// layout of `groups` and one vertex buffer of `stride` bytes.
+/// One vertex buffer: its stride, whether it steps per instance, and its attributes. Buffer `i`
+/// of a pipeline sits at `shaders::vertex_buffer_slot(i)`.
+pub(super) struct Layout {
+    pub stride: u32,
+    pub instance: bool,
+    pub attrs: &'static [Attr],
+}
+
+/// A WGSL file's vertex and fragment entry points as Metal functions, translated with wgpu's
+/// options over a pipeline layout of `groups` and the vertex buffers `buffers`.
 pub(super) struct Shader {
     pub vs: Retained<ProtocolObject<dyn MTLFunction>>,
     pub fs: Retained<ProtocolObject<dyn MTLFunction>>,
-    stride: u32,
-    attrs: &'static [Attr],
+    buffers: &'static [Layout],
+}
+
+/// The Metal vertex format wgpu-hal maps `format` to (`conv::map_vertex_format`), for the ones
+/// these pipelines use.
+fn vertex_format(format: wgpu::VertexFormat) -> MTLVertexFormat {
+    use wgpu::VertexFormat as F;
+    match format {
+        F::Float32 => MTLVertexFormat::Float,
+        F::Float32x2 => MTLVertexFormat::Float2,
+        F::Float32x4 => MTLVertexFormat::Float4,
+        F::Uint32 => MTLVertexFormat::UInt,
+        F::Sint32x2 => MTLVertexFormat::Int2,
+        other => unreachable!("no pipeline here uses {other:?}"),
+    }
 }
 
 /// The Metal library for `src` (MSL), compiled with the options wgpu-hal gives `load_shader`.
@@ -39,22 +60,29 @@ fn library(device: &ProtocolObject<dyn MTLDevice>, src: &str) -> Result<Retained
     device.newLibraryWithSource_options_error(&NSString::from_str(src), Some(&options)).map_err(|e| format!("Metal: {}", e.localizedDescription()))
 }
 
-fn function(device: &ProtocolObject<dyn MTLDevice>, src: &str, name: &str) -> Result<Retained<ProtocolObject<dyn MTLFunction>>, String> {
+pub(super) fn function(device: &ProtocolObject<dyn MTLDevice>, src: &str, name: &str) -> Result<Retained<ProtocolObject<dyn MTLFunction>>, String> {
     library(device, src)?.newFunctionWithName(&NSString::from_str(name)).ok_or_else(|| format!("Metal: no function {name}"))
 }
 
 impl Shader {
-    pub fn new(device: &ProtocolObject<dyn MTLDevice>, wgsl: &str, groups: &[&[Entry]], stride: u32, attrs: &'static [Attr]) -> Result<Shader, String> {
+    /// `wgsl`'s entry points `vs` and `fs`.
+    pub fn new(device: &ProtocolObject<dyn MTLDevice>, wgsl: &str, (vs, fs): (&str, &str), groups: &[&[Entry]], buffers: &'static [Layout]) -> Result<Shader, String> {
+        use naga::back::msl::{AttributeMapping, VertexBufferMapping, VertexBufferStepMode};
         use naga::ShaderStage;
         let (module, info) = shaders::parse_wgsl(wgsl)?;
-        let attributes = attrs
+        let mappings = buffers
             .iter()
-            .map(|a| naga::back::msl::AttributeMapping { shader_location: a.location, offset: a.offset, format: if a.floats == 2 { wgpu::VertexFormat::Float32x2 } else { wgpu::VertexFormat::Float32x4 } })
+            .enumerate()
+            .map(|(i, b)| VertexBufferMapping {
+                id: shaders::vertex_buffer_slot(i as u32),
+                stride: b.stride,
+                step_mode: if b.instance { VertexBufferStepMode::ByInstance } else { VertexBufferStepMode::ByVertex },
+                attributes: b.attrs.iter().map(|a| AttributeMapping { shader_location: a.location, offset: a.offset, format: a.format }).collect(),
+            })
             .collect();
-        let mapping = naga::back::msl::VertexBufferMapping { id: shaders::vertex_buffer_slot(0), stride, step_mode: naga::back::msl::VertexBufferStepMode::ByVertex, attributes };
-        let (vs_src, vs_name) = shaders::to_msl_with(&module, &info, ShaderStage::Vertex, "vs", shaders::stage_resources(groups, ShaderStage::Vertex), vec![mapping])?;
-        let (fs_src, fs_name) = shaders::to_msl_with(&module, &info, ShaderStage::Fragment, "fs", shaders::stage_resources(groups, ShaderStage::Fragment), Vec::new())?;
-        Ok(Shader { vs: function(device, &vs_src, &vs_name)?, fs: function(device, &fs_src, &fs_name)?, stride, attrs })
+        let (vs_src, vs_name) = shaders::to_msl_with(&module, &info, ShaderStage::Vertex, vs, shaders::stage_resources(groups, ShaderStage::Vertex), mappings)?;
+        let (fs_src, fs_name) = shaders::to_msl_with(&module, &info, ShaderStage::Fragment, fs, shaders::stage_resources(groups, ShaderStage::Fragment), Vec::new())?;
+        Ok(Shader { vs: function(device, &vs_src, &vs_name)?, fs: function(device, &fs_src, &fs_name)?, buffers })
     }
 
     /// A pipeline writing `format`, blending as `blend` says (source and destination factors for
@@ -65,18 +93,21 @@ impl Shader {
         d.setFragmentFunction(Some(&self.fs));
         // The vertex layout too, as wgpu-hal sets it beside the pulled vertices.
         let vd = MTLVertexDescriptor::new();
-        let slot = shaders::vertex_buffer_slot(0) as usize;
-        // SAFETY: the slot and locations are inside Metal's tables (31 buffers, 31 attributes).
+        // SAFETY: the slots and locations are inside Metal's tables (31 buffers, 31 attributes).
         unsafe {
-            let layout = vd.layouts().objectAtIndexedSubscript(slot);
-            layout.setStride(self.stride as usize);
-            layout.setStepFunction(MTLVertexStepFunction::PerVertex);
-            for a in self.attrs {
-                let at = vd.attributes().objectAtIndexedSubscript(a.location as usize);
-                at.setFormat(if a.floats == 2 { MTLVertexFormat::Float2 } else { MTLVertexFormat::Float4 });
-                at.setBufferIndex(slot);
-                at.setOffset(a.offset as usize);
+            for (i, b) in self.buffers.iter().enumerate() {
+                let slot = shaders::vertex_buffer_slot(i as u32) as usize;
+                let layout = vd.layouts().objectAtIndexedSubscript(slot);
+                layout.setStride(b.stride as usize);
+                layout.setStepFunction(if b.instance { MTLVertexStepFunction::PerInstance } else { MTLVertexStepFunction::PerVertex });
+                for a in b.attrs {
+                    let at = vd.attributes().objectAtIndexedSubscript(a.location as usize);
+                    at.setFormat(vertex_format(a.format));
+                    at.setBufferIndex(slot);
+                    at.setOffset(a.offset as usize);
+                }
             }
+            // Triangle lists and strips are both of the triangle class.
             d.setInputPrimitiveTopology(MTLPrimitiveTopologyClass::Triangle);
         }
         d.setVertexDescriptor(Some(&vd));
@@ -112,7 +143,8 @@ impl Blend {
 /// The quad and image shaders' screen uniform, at group 0 binding 0, seen by the vertex stage.
 pub(super) const SCREEN: [Entry; 1] = [Entry::new(0, Kind::Buffer, true, false)];
 
-const QUAD_ATTRS: [Attr; 2] = [Attr { location: 0, offset: 0, floats: 2 }, Attr { location: 1, offset: 8, floats: 4 }];
+const QUAD_ATTRS: [Attr; 2] = [Attr { location: 0, offset: 0, format: wgpu::VertexFormat::Float32x2 }, Attr { location: 1, offset: 8, format: wgpu::VertexFormat::Float32x4 }];
+const QUAD_BUFFERS: [Layout; 1] = [Layout { stride: QUAD_STRIDE as u32, instance: false, attrs: &QUAD_ATTRS }];
 
 /// Rectangles: two triangles each, position and color per vertex.
 pub(super) struct QuadPipeline {
@@ -127,7 +159,7 @@ pub(super) struct QuadPipeline {
 
 impl QuadPipeline {
     pub fn new(device: &ProtocolObject<dyn MTLDevice>, format: MTLPixelFormat) -> Result<QuadPipeline, String> {
-        let shader = Shader::new(device, include_str!("../quad.wgsl"), &[&SCREEN], QUAD_STRIDE as u32, &QUAD_ATTRS)?;
+        let shader = Shader::new(device, include_str!("../quad.wgsl"), ("vs", "fs"), &[&SCREEN], &QUAD_BUFFERS)?;
         let pipeline = shader.pipeline(device, format, Blend::ALPHA)?;
         Ok(QuadPipeline { shader, pipeline, fader: None, fader_view: None, format })
     }

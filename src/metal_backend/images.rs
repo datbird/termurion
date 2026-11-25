@@ -9,14 +9,15 @@ use objc2_metal::{
     MTLDevice, MTLOrigin, MTLPixelFormat, MTLRegion, MTLRenderPipelineState, MTLSamplerAddressMode, MTLSamplerDescriptor, MTLSamplerMinMagFilter, MTLSamplerMipFilter, MTLSamplerState, MTLSize, MTLStorageMode, MTLTexture, MTLTextureDescriptor, MTLTextureUsage,
 };
 
-use super::quads::{Attr, Blend, Shader, SCREEN};
+use super::quads::{Attr, Blend, Layout, Shader, SCREEN};
 use super::shaders::{Entry, Kind};
 use crate::draw_list::{ImageDraw, IMAGE_STRIDE};
 
 /// A texture no frame drew for this many frames is dropped.
 const TEXTURE_KEEP: u64 = 120;
 
-const IMAGE_ATTRS: [Attr; 2] = [Attr { location: 0, offset: 0, floats: 2 }, Attr { location: 1, offset: 8, floats: 2 }];
+const IMAGE_ATTRS: [Attr; 2] = [Attr { location: 0, offset: 0, format: wgpu::VertexFormat::Float32x2 }, Attr { location: 1, offset: 8, format: wgpu::VertexFormat::Float32x2 }];
+const IMAGE_BUFFERS: [Layout; 1] = [Layout { stride: IMAGE_STRIDE as u32, instance: false, attrs: &IMAGE_ATTRS }];
 
 /// The picture's texture and sampler, group 1, seen by the fragment stage.
 const PICTURE: [Entry; 2] = [Entry::new(0, Kind::Texture, false, true), Entry::new(1, Kind::Sampler, false, true)];
@@ -51,7 +52,7 @@ fn sampler(device: &ProtocolObject<dyn MTLDevice>, repeat: bool) -> Result<Retai
 
 impl ImagePipeline {
     pub fn new(device: &ProtocolObject<dyn MTLDevice>, format: MTLPixelFormat) -> Result<ImagePipeline, String> {
-        let shader = Shader::new(device, include_str!("../image.wgsl"), &[&SCREEN, &PICTURE], IMAGE_STRIDE as u32, &IMAGE_ATTRS)?;
+        let shader = Shader::new(device, include_str!("../image.wgsl"), ("vs", "fs"), &[&SCREEN, &PICTURE], &IMAGE_BUFFERS)?;
         Ok(ImagePipeline { pipeline: shader.pipeline(device, format, Blend::ALPHA)?, sampler: sampler(device, false)?, repeat_sampler: sampler(device, true)?, cache: HashMap::new(), uploads: 0, frames: 0 })
     }
 

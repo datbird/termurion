@@ -16,6 +16,8 @@ mod surface;
 #[cfg(all(test, target_os = "macos"))]
 mod tests;
 #[cfg(target_os = "macos")]
+mod text;
+#[cfg(target_os = "macos")]
 mod window;
 
 #[cfg(target_os = "macos")]

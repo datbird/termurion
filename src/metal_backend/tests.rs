@@ -57,7 +57,7 @@ fn image_cases() -> Vec<(String, Frame)> {
     vec![("pictures".into(), pictures), ("pictures-fading".into(), fading), ("background-only".into(), only_background)]
 }
 
-/// Every baseline frame without its text (Metal draws text from Task 10 on), then the picture cases.
+/// Every baseline frame without its text (the text cases follow below), then the picture cases.
 fn cases() -> Vec<(String, Frame)> {
     let mut out: Vec<(String, Frame)> = crate::scene::agent_box_tests::baseline_cases()
         .into_iter()
@@ -182,15 +182,194 @@ fn a_lost_device_is_reported() {
     assert_eq!(&px[0..4], &[0, 255, 0, 255]);
 }
 
-/// Text waits for Task 10: a frame with text says so, and its quads still draw.
+/// Effects wait for Task 11: a window asked for one says so.
 #[test]
-fn a_frame_with_text_draws_its_quads_and_says_why_not_the_text() {
-    let (_, frame, _) = crate::scene::agent_box_tests::baseline_cases().into_iter().find(|(_, f, _)| !f.rows.is_empty() && !f.quads.is_empty()).expect("a case with text and quads");
+fn an_effect_says_the_metal_renderer_has_none_yet() {
     let mut win = metal_window(SIZE);
-    let err = win.render(&frame, None, None).unwrap().kept.unwrap_err();
-    assert_eq!(err, super::draw::NO_TEXT_YET);
     let effect = crate::render_fx::discover(None).0.into_iter().next().expect("a shipped effect");
     assert_eq!(win.set_effect(Some(effect.compile().unwrap()), None).unwrap_err(), super::window::NO_EFFECTS_YET);
+}
+
+/// A wgpu window and a Metal window whose renderers draw rows through the row renderer (`rows`)
+/// or prepare every row each frame.
+fn text_pair(rows: bool) -> (crate::gpu_window::GpuHandles, WindowGpu, MetalWindow) {
+    let (on, mut wgpu) = wgpu_window(SIZE);
+    let mut metal = metal_window(SIZE);
+    wgpu.renderer_mut().set_row_instances(rows);
+    metal.renderer_mut().set_row_instances(rows);
+    (on, wgpu, metal)
+}
+
+/// Draws `cases` in order on both windows, the state carried from case to case, and compares
+/// every screenshot. Cases of the windows' own size are also drawn through `render`.
+fn match_in_order(on: &crate::gpu_window::GpuHandles, wgpu: &mut WindowGpu, metal: &mut MetalWindow, cases: &[crate::render_pixel_tests::PixelCase], tag: &str, near: &mut Vec<String>) {
+    for c in cases {
+        let (w, h) = c.size;
+        let name = format!("{} ({tag})", c.name);
+        let a = wgpu.capture(&c.frame, None, w, h).unwrap_or_else(|e| panic!("{name}: wgpu: {e}"));
+        let b = metal.capture(&c.frame, None, w, h).unwrap_or_else(|e| panic!("{name}: Metal: {e}"));
+        compare(&format!("{name} capture"), &a, &b, w, near);
+        if c.size != SIZE {
+            continue;
+        }
+        wgpu.render(&c.frame, None, None).unwrap().kept.unwrap_or_else(|e| panic!("{name}: wgpu render: {e}"));
+        let a = match &*wgpu {
+            WindowGpu::Wgpu(win) => read_back(on, win.offscreen_texture()),
+            WindowGpu::Metal(_) => unreachable!(),
+        };
+        metal.render(&c.frame, None, None).unwrap().kept.unwrap_or_else(|e| panic!("{name}: Metal render: {e}"));
+        // The window's own queue: after a rebuild it is not the test device's.
+        let crate::gpu_shared::GpuShared::Metal(m) = metal.shared() else { unreachable!() };
+        let b = super::readback::read_rgba(&m.queue, metal.offscreen_texture(), w, h).unwrap();
+        compare(&format!("{name} render"), &a, &b, w, near);
+    }
+}
+
+fn report_near(near: &[String]) {
+    // Allowed only for float rounding in the MSL compile; each is listed in the task report.
+    if !near.is_empty() {
+        eprintln!("cases one step apart: {near:?}");
+    }
+}
+
+/// Every pixel case (baseline frames, agent screens, the 300 `cjk_flood` frames), on the row path
+/// and on the full path, drawn in order on one window each.
+#[test]
+fn metal_matches_wgpu_on_every_pixel_case() {
+    let mut near = Vec::new();
+    for rows in [true, false] {
+        let (on, mut wgpu, mut metal) = text_pair(rows);
+        let cases = crate::render_pixel_tests::pixel_cases(wgpu.renderer());
+        assert!(cases.len() > 300, "{} cases", cases.len());
+        // Equal pictures prove nothing if neither drew the text.
+        let c = cases.iter().find(|c| !c.frame.rows.is_empty()).expect("a case with text");
+        let bare = Frame { rows: Vec::new(), ..c.frame.clone() };
+        let mut probe = metal_window(c.size);
+        probe.renderer_mut().set_row_instances(rows);
+        assert_ne!(probe.capture(&c.frame, None, c.size.0, c.size.1).unwrap(), probe.capture(&bare, None, c.size.0, c.size.1).unwrap(), "{}: Metal drew no text", c.name);
+        match_in_order(&on, &mut wgpu, &mut metal, &cases, if rows { "rows" } else { "full" }, &mut near);
+        if rows {
+            assert!(metal.renderer().row_prepares() > 0, "the row path drew no rows");
+        }
+    }
+    report_near(&near);
+}
+
+/// The flood with the atlas capped at 512: it grows from 256 once mid run, then evicts, and the
+/// Metal textures follow every grow and upload.
+#[test]
+fn metal_matches_wgpu_through_atlas_growth() {
+    let mut near = Vec::new();
+    for rows in [true, false] {
+        let (on, mut wgpu, mut metal) = text_pair(rows);
+        wgpu.renderer_mut().atlas().set_max_size(512);
+        metal.renderer_mut().atlas().set_max_size(512);
+        let cases: Vec<_> = crate::render_pixel_tests::pixel_cases(wgpu.renderer()).into_iter().filter(|c| c.name.starts_with("cjk_flood")).collect();
+        let (grown, evicted) = (metal.renderer_mut().atlas().generation(), metal.renderer_mut().atlas().evictions());
+        match_in_order(&on, &mut wgpu, &mut metal, &cases, if rows { "rows, capped" } else { "full, capped" }, &mut near);
+        assert!(metal.renderer_mut().atlas().generation() != grown, "the capped flood never grew the atlas");
+        assert!(metal.renderer_mut().atlas().evictions() > evicted, "the capped flood never evicted");
+    }
+    report_near(&near);
+}
+
+/// A pane of `s` filling `size`, drawn with `r`'s cell.
+fn screen_case(name: String, r: &Renderer, s: &crate::screen::Screen, size: (u32, u32)) -> crate::render_pixel_tests::PixelCase {
+    let rect = rect(0.0, 0.0, size.0 as f32, size.1 as f32);
+    let mut frame = Frame { clear: crate::scene::rgba(s.palette.bg, 1.0), fade: 1.0, ..Default::default() };
+    let look = crate::cursor_look::CursorLook::shown(true);
+    crate::scene::pane_with(&mut frame, s, rect, r.cell, true, &look, &Default::default(), None, crate::render::DEFAULT_FACE, None);
+    crate::render_pixel_tests::PixelCase { name, frame, size }
+}
+
+/// A screen scrolling one line at a time: the rows that only moved keep their instances (only
+/// the new line is prepared), and Metal draws them where wgpu does.
+#[test]
+fn metal_matches_wgpu_on_scrolled_rows() {
+    let (on, mut wgpu, mut metal) = text_pair(true);
+    let cell = metal.renderer().cell;
+    let size = ((80.0 * cell.0).ceil() as u32, (20.0 * cell.1).ceil() as u32);
+    let mut s = crate::screen::Screen::new(80, 20);
+    for n in 0..20 {
+        let end = if n < 19 { "\r\n" } else { "" };
+        s.feed(format!("line {n:02} of the scroll test{end}").as_bytes());
+    }
+    let mut near = Vec::new();
+    let first = screen_case("twenty rows".into(), metal.renderer(), &s, size);
+    match_in_order(&on, &mut wgpu, &mut metal, &[first], "scroll", &mut near);
+    for n in 20..32 {
+        let before = metal.renderer().row_prepares();
+        s.feed(format!("\r\nline {n:02} of the scroll test").as_bytes());
+        let c = screen_case(format!("scrolled to line {n}"), metal.renderer(), &s, size);
+        match_in_order(&on, &mut wgpu, &mut metal, &[c], "scroll", &mut near);
+        let prepared = metal.renderer().row_prepares() - before;
+        assert!(prepared <= 2, "scrolling one line prepared {prepared} rows");
+    }
+    report_near(&near);
+}
+
+/// A frame whose text cannot fit fails, but what it prepared first (a row's slot, its glyphs)
+/// still reaches the Metal buffers with the next frame, which reuses the row.
+#[test]
+fn a_failed_prepare_loses_no_write_on_metal() {
+    let size = (320, 120);
+    let window = rect(0.0, 0.0, size.0 as f32, size.1 as f32);
+    let row = |text: &str, y: f32, scale: f32| {
+        let span = crate::scene::Span { text: text.into(), color: crate::palette::rgb(230, 230, 230), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+        crate::scene::TextRow { x: 4.0, y, spans: vec![span].into(), clip: window, scale, face: crate::render::DEFAULT_FACE }
+    };
+    let frame = |rows| Frame { clear: [0.0, 0.0, 0.0, 1.0], fade: 1.0, rows, ..Default::default() };
+    let kept = row("a row prepared before the failure", 4.0, 1.0);
+    let mut metal = MetalWindow::offscreen(test_device(), Renderer::cpu_only(FACE, PX), size);
+    metal.renderer_mut().atlas().set_max_size(256);
+    // One glyph bigger than the whole capped atlas.
+    assert!(metal.capture(&frame(vec![kept.clone(), row("W", 30.0, 24.0)]), None, size.0, size.1).is_err(), "the huge glyph fit");
+    let prepared = metal.renderer().row_prepares();
+    let got = metal.capture(&frame(vec![kept.clone()]), None, size.0, size.1).unwrap();
+    assert_eq!(metal.renderer().row_prepares(), prepared, "the row was prepared again, so this proves nothing");
+    let (_, mut wgpu) = wgpu_window(size);
+    let want = wgpu.capture(&frame(vec![kept]), None, size.0, size.1).unwrap();
+    crate::render_pixel_tests::assert_same("after a failed frame", &want, &got, size.0);
+}
+
+/// A window moved onto a new device starts its atlas and rows over with it, and draws text as a
+/// fresh wgpu window does.
+#[test]
+fn text_draws_the_same_after_a_rebuild() {
+    let (on, mut wgpu, mut metal) = text_pair(true);
+    let cases: Vec<_> = crate::render_pixel_tests::pixel_cases(wgpu.renderer()).into_iter().filter(|c| !c.name.starts_with("cjk_flood") || c.name.ends_with("0")).collect();
+    let mut near = Vec::new();
+    match_in_order(&on, &mut wgpu, &mut metal, &cases[..cases.len() / 2], "before", &mut near);
+    let fresh = super::MetalShared::new(wgpu::PowerPreference::HighPerformance).unwrap();
+    metal.rebuild(&crate::gpu_shared::GpuShared::Metal(fresh), None).unwrap();
+    assert_eq!((metal.renderer_mut().atlas().generation(), metal.renderer().row_prepares()), (0, 0), "the atlas and rows started over");
+    let (on, mut wgpu) = wgpu_window(SIZE);
+    match_in_order(&on, &mut wgpu, &mut metal, &cases, "after", &mut near);
+    report_near(&near);
+}
+
+/// Steady text frames (the same screen with one line changing) make no Metal buffer, texture or
+/// staging chunk once the first frames sized them.
+#[test]
+fn steady_text_frames_make_no_buffers() {
+    let mut metal = metal_window(SIZE);
+    let mut s = crate::screen::Screen::new(80, 20);
+    for n in 0..19 {
+        s.feed(format!("steady line {n:02}\r\n").as_bytes());
+    }
+    let mut made = None;
+    for i in 0..40 {
+        s.feed(format!("\rtick {:02}", i % 10).as_bytes());
+        let c = screen_case(format!("tick {i}"), metal.renderer(), &s, SIZE);
+        metal.render(&c.frame, None, None).unwrap().kept.unwrap();
+        // The first ten frames place every glyph the ticks use.
+        if i == 10 {
+            made = Some((metal.text_objects_made(), metal.staging_made()));
+        }
+    }
+    let (objects, staging) = made.unwrap();
+    assert_eq!(metal.text_objects_made(), objects, "steady frames made text buffers or textures");
+    assert!(metal.staging_made() <= staging.max(3), "{} staging buffers", metal.staging_made());
 }
 
 /// The window's layer follows its root layer's bounds and scale, as wgpu's raw-window-metal layer
