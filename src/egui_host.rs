@@ -201,7 +201,8 @@ impl EguiHost {
         gpu: &crate::gpu_shared::GpuShared,
         attrs: winit::window::WindowAttributes,
     ) -> Result<EguiHost, String> {
-        let crate::gpu_shared::GpuShared::Wgpu { instance, adapter, device, queue } = gpu;
+        let gpu = gpu.for_egui()?;
+        let (instance, adapter, device, queue) = gpu.wgpu()?;
         let attrs = attrs.with_window_icon(crate::presence::window_icon());
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
         let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;

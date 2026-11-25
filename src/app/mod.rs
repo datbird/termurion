@@ -3316,7 +3316,7 @@ pub fn run() {
         prefs_reveal: false,
         prefs_gpu: None,
         display_handle: None,
-        gpu_recovery: gpu_pick::Recovery::new(gpu_pick::backend_order(crate::platform::IS_WINDOWS, None).len()),
+        gpu_recovery: gpu_pick::Recovery::new(gpu_pick::api_order(crate::platform::IS_WINDOWS, cfg!(target_os = "macos"), std::env::var(gpu_pick::FORCE_ENV).ok().as_deref()).len()),
         alpha_gpu: None,
         transparency_unavailable: false,
         alpha_pending: Vec::new(),
@@ -9029,6 +9029,20 @@ fn log_adapters_once(list: &[gpu_pick::Facts]) {
 fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop, power_preference: wgpu::PowerPreference) -> Result<Gpu, String> {
     let display = event_loop.owned_display_handle();
     let forced = std::env::var(gpu_pick::FORCE_ENV).ok();
+    // Metal, when asked for, is the only API tried: a failure is shown and the app ends, with no
+    // fallback to wgpu.
+    #[cfg(target_os = "macos")]
+    if gpu_pick::wants_metal(forced.as_deref()) {
+        return match init_metal(window, display, power_preference) {
+            Ok(gpu) => Ok(gpu),
+            Err(e) => {
+                crate::host_base::log(&format!("renderer: Metal unavailable: {e}"));
+                message_box(&format!("Termurion could not start Metal: {e}"));
+                teardown_process();
+                std::process::exit(1);
+            }
+        };
+    }
     let mut failures: Vec<String> = Vec::new();
     for (backends, label) in gpu_pick::backend_order(crate::platform::IS_WINDOWS, forced.as_deref()) {
         match init_gpu_on(window.clone(), &display, power_preference, backends) {
@@ -9137,6 +9151,18 @@ fn init_gpu_on(window: Arc<Window>, display: &winit::event_loop::OwnedDisplayHan
         crate::host_base::log(&format!("renderer: {:?} on {} ({})", info.backend, info.name, gpu_pick::why(power_preference, &facts, &gpu_pick::Facts::of(&info))));
     });
     let win = WgpuWindow::open(window.clone(), surface, &handles, &handles, false, &first_font(), FONT_PX * window.scale_factor() as f32)?;
+    Ok(Gpu { win, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), scene: Default::default(), painted_at: 0, display_hz: display_hz_of(&window), window })
+}
+
+/// The first terminal window on the native Metal backend: a new device for the GPU preference.
+#[cfg(target_os = "macos")]
+fn init_metal(window: Arc<Window>, display: winit::event_loop::OwnedDisplayHandle, power_preference: wgpu::PowerPreference) -> Result<Gpu, String> {
+    gpu_pick::next_generation();
+    crate::metal_backend::set_display(display);
+    let shared = crate::metal_backend::MetalShared::new(power_preference == wgpu::PowerPreference::LowPower)?;
+    static LOGGED: std::sync::Once = std::sync::Once::new();
+    LOGGED.call_once(|| crate::host_base::log(&format!("renderer: native Metal on {}", shared.name())));
+    let win = crate::metal_backend::MetalWindow::open(window.clone(), &shared, &first_font(), FONT_PX * window.scale_factor() as f32)?;
     Ok(Gpu { win, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), scene: Default::default(), painted_at: 0, display_hz: display_hz_of(&window), window })
 }
 

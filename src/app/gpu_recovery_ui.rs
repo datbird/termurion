@@ -9,6 +9,12 @@ use crate::gpu_pick::Action;
 /// surface cannot be made, so a failed attempt loses no window.
 fn rebuild_window_gpu(g: &mut Gpu, primary: &GpuHandles, alpha: Option<&AlphaGpu>) -> Result<(), String> {
     g.win.rebuild(&primary.shared(), alpha.map(GpuHandles::shared).as_ref())?;
+    after_rebuild(g);
+    Ok(())
+}
+
+/// What a window drops once its GPU side was made again.
+fn after_rebuild(g: &mut Gpu) {
     g.fx = None;
     g.bar = Default::default();
     g.layout = None;
@@ -17,6 +23,13 @@ fn rebuild_window_gpu(g: &mut Gpu, primary: &GpuHandles, alpha: Option<&AlphaGpu
     g.scene = Default::default();
     g.painted_at = 0;
     g.display_hz = super::display_hz_of(&g.window);
+}
+
+/// `rebuild_window_gpu` for a window on Metal: there is no see-through instance to carry.
+#[cfg(target_os = "macos")]
+fn rebuild_metal_window(g: &mut Gpu, primary: &crate::gpu_shared::GpuShared) -> Result<(), String> {
+    g.win.rebuild(primary, None)?;
+    after_rebuild(g);
     Ok(())
 }
 
@@ -58,11 +71,15 @@ impl App {
     /// One attempt on API number `api` of the start-up order.
     fn recover_gpu(&mut self, api: usize, now: Instant) {
         let forced = std::env::var(gpu_pick::FORCE_ENV).ok();
-        let order = gpu_pick::backend_order(crate::platform::IS_WINDOWS, forced.as_deref());
-        let Some(&(backends, label)) = order.get(api) else {
+        let order = gpu_pick::api_order(crate::platform::IS_WINDOWS, cfg!(target_os = "macos"), forced.as_deref());
+        let Some(&(api, label)) = order.get(api) else {
             return self.gpu_recovery.failed(now);
         };
-        match self.rebuild_all_gpus(backends) {
+        let rebuilt = match api {
+            gpu_pick::Api::Wgpu(backends) => self.rebuild_all_gpus(backends),
+            gpu_pick::Api::Metal => self.rebuild_all_metal(),
+        };
+        match rebuilt {
             Ok(summary) => {
                 crate::host_base::log(&format!("renderer: recovered on {label} {summary}"));
                 self.gpu_recovery.recovered(now);
@@ -129,6 +146,35 @@ impl App {
             self.alpha_gpu = alpha;
         }
         Ok(format!("{} ({})", info.name, gpu_pick::why(power::chosen(), &facts, &gpu_pick::Facts::of(&info))))
+    }
+
+    /// A new Metal device for every window (the native backend has no other API to move to).
+    #[cfg(target_os = "macos")]
+    fn rebuild_all_metal(&mut self) -> Result<String, String> {
+        gpu_pick::next_generation();
+        let shared = crate::metal_backend::MetalShared::new(power::chosen() == wgpu::PowerPreference::LowPower)?;
+        let primary = crate::gpu_shared::GpuShared::Metal(shared.clone());
+        let mut failure: Option<String> = None;
+        let mut each = |slot: &mut Option<Gpu>| {
+            if let Some(g) = slot.as_mut()
+                && let Err(e) = rebuild_metal_window(g, &primary)
+            {
+                failure.get_or_insert(e);
+            }
+        };
+        each(&mut self.gpu);
+        for (_, slot) in self.windows.parked_mut() {
+            each(&mut slot.gpu);
+        }
+        match failure {
+            Some(e) => Err(e),
+            None => Ok(shared.name()),
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn rebuild_all_metal(&mut self) -> Result<String, String> {
+        Err("Metal is macOS only".to_string())
     }
 
     fn redraw_every_window(&self) {

@@ -449,6 +449,16 @@ impl Renderer {
         self.shadows = QuadBuf::ALL.map(Shadow::new);
     }
 
+    /// Starts the GPU-facing CPU state over for a backend that is not wgpu's (the Metal one, made
+    /// again after a device loss): an empty glyph atlas that may grow to `max_side`, empty rows, and
+    /// vertex buffers that hold nothing. Fonts, faces and settings are kept.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn restart_for_backend(&mut self, max_side: u32) {
+        self.reset_glyphs(max_side);
+        self.gpu = None;
+        self.shadows = QuadBuf::ALL.map(Shadow::new);
+    }
+
     /// A new, empty glyph atlas and row renderer. Writes owed to the old device are dropped.
     fn reset_glyphs(&mut self, max_side: u32) {
         self.glyph_atlas = glyphon::TextAtlas::new(max_side);

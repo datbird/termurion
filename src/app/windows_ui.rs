@@ -1281,8 +1281,15 @@ pub(super) fn init_gpu_shared(window: Arc<Window>, from: &Gpu) -> Result<Gpu, St
 
 /// The same on kept handles.
 pub(super) fn init_gpu_from(window: Arc<Window>, from: &crate::gpu_shared::GpuShared) -> Result<Gpu, String> {
-    let on = crate::gpu_window::GpuHandles::of(from)?;
-    let win = crate::gpu_window::WgpuWindow::open_new(window.clone(), &on, &on, false, &super::first_font(), FONT_PX * window.scale_factor() as f32)?;
+    let px = FONT_PX * window.scale_factor() as f32;
+    let win = match from {
+        crate::gpu_shared::GpuShared::Wgpu { .. } => {
+            let on = crate::gpu_window::GpuHandles::of(from)?;
+            crate::gpu_window::WgpuWindow::open_new(window.clone(), &on, &on, false, &super::first_font(), px)?
+        }
+        #[cfg(target_os = "macos")]
+        crate::gpu_shared::GpuShared::Metal(m) => crate::metal_backend::MetalWindow::open(window.clone(), m, &super::first_font(), px)?,
+    };
     Ok(Gpu { win, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), scene: Default::default(), painted_at: 0, display_hz: display_hz_of(&window), window })
 }
 

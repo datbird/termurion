@@ -31,6 +31,8 @@ impl GpuHandles {
     pub fn of(shared: &GpuShared) -> Result<GpuHandles, String> {
         match shared {
             GpuShared::Wgpu { instance, adapter, device, queue } => Ok(GpuHandles { instance: instance.clone(), adapter: adapter.clone(), device: device.clone(), queue: queue.clone() }),
+            #[cfg(target_os = "macos")]
+            GpuShared::Metal(_) => Err("the Metal device has no wgpu handles".to_string()),
         }
     }
 }
@@ -93,6 +95,9 @@ pub type OverlayDraw<'a> = &'a mut dyn FnMut(&Overlay<'_>) -> Option<String>;
 /// A terminal window's GPU backend.
 pub enum WindowGpu {
     Wgpu(WgpuWindow),
+    /// The native Metal backend (macOS, `TERMURION_RENDERER=metal` for now).
+    #[cfg(target_os = "macos")]
+    Metal(crate::metal_backend::MetalWindow),
 }
 
 /// The wgpu backend of one window.
@@ -400,18 +405,23 @@ impl WindowGpu {
     pub fn size(&self) -> (u32, u32) {
         match self {
             WindowGpu::Wgpu(w) => (w.config.width, w.config.height),
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(w) => w.size(),
         }
     }
 
     /// Takes a new size. The surface's contents are undefined after it (the caller invalidates
     /// what it kept). `scale` is the window's backing scale.
-    pub fn resize(&mut self, w: u32, h: u32, _scale: f64) {
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+    pub fn resize(&mut self, w: u32, h: u32, scale: f64) {
         match self {
             WindowGpu::Wgpu(g) => {
                 g.config.width = w;
                 g.config.height = h;
                 g.configure();
             }
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(g) => g.resize(w, h, scale),
         }
     }
 
@@ -420,6 +430,8 @@ impl WindowGpu {
     pub fn render(&mut self, frame: &Frame, fx: Option<FxFrame<'_>>, overlay: Option<OverlayDraw<'_>>) -> Result<Drawn, RenderError> {
         match self {
             WindowGpu::Wgpu(w) => w.render(frame, fx, overlay),
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(w) => w.render(frame, fx, overlay),
         }
     }
 
@@ -427,6 +439,8 @@ impl WindowGpu {
     pub fn capture(&mut self, frame: &Frame, fx: Option<FxFrame<'_>>, w: u32, h: u32) -> Result<Vec<u8>, String> {
         match self {
             WindowGpu::Wgpu(g) => g.capture(frame, fx, w, h),
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(g) => g.capture(frame, fx, w, h),
         }
     }
 
@@ -435,6 +449,8 @@ impl WindowGpu {
     pub fn set_effect(&mut self, compiled: Option<Vec<Compiled>>, terms: RegionTerms) -> Result<(), String> {
         match self {
             WindowGpu::Wgpu(w) => w.set_effect(compiled, terms),
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(w) => w.set_effect(compiled, terms),
         }
     }
 
@@ -446,6 +462,8 @@ impl WindowGpu {
                 let size = (w.config.width, w.config.height);
                 w.chain.as_mut().is_some_and(|c| c.skip_if_still(u, size, eligible))
             }
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(w) => w.skip_if_still(u, eligible),
         }
     }
 
@@ -455,6 +473,8 @@ impl WindowGpu {
     pub fn rebuild(&mut self, shared: &GpuShared, alpha: Option<&GpuShared>) -> Result<(), String> {
         match self {
             WindowGpu::Wgpu(w) => w.rebuild(shared, alpha),
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(w) => w.rebuild(shared, alpha),
         }
     }
 
@@ -470,6 +490,8 @@ impl WindowGpu {
                 w.configure();
                 made
             }
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(w) => w.remake_surface(),
         }
     }
 
@@ -491,6 +513,9 @@ impl WindowGpu {
                 w.configure();
                 true
             }
+            // Metal windows are opaque (see-through windows are Windows only).
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(_) => false,
         }
     }
 
@@ -498,6 +523,8 @@ impl WindowGpu {
     pub fn keeps_alpha(&self) -> bool {
         match self {
             WindowGpu::Wgpu(w) => w.keeps_alpha(),
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(_) => false,
         }
     }
 
@@ -505,6 +532,8 @@ impl WindowGpu {
     pub fn has_alpha(&self) -> bool {
         match self {
             WindowGpu::Wgpu(w) => w.alpha.is_some(),
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(_) => false,
         }
     }
 
@@ -512,6 +541,8 @@ impl WindowGpu {
     pub fn set_timing(&mut self, on: bool) {
         match self {
             WindowGpu::Wgpu(w) => w.timing = on,
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(w) => w.set_timing(on),
         }
     }
 
@@ -519,6 +550,8 @@ impl WindowGpu {
     pub fn last_acquire(&self) -> Acquire {
         match self {
             WindowGpu::Wgpu(w) => w.acquire,
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(w) => w.last_acquire(),
         }
     }
 
@@ -526,6 +559,8 @@ impl WindowGpu {
     pub fn shared(&self) -> GpuShared {
         match self {
             WindowGpu::Wgpu(w) => w.primary.shared(),
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(w) => w.shared(),
         }
     }
 
@@ -533,6 +568,8 @@ impl WindowGpu {
     pub fn adapter_info(&self) -> wgpu::AdapterInfo {
         match self {
             WindowGpu::Wgpu(w) => w.on().adapter.get_info(),
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(w) => w.adapter_info(),
         }
     }
 
@@ -540,6 +577,8 @@ impl WindowGpu {
     pub fn max_texture_side(&self) -> u32 {
         match self {
             WindowGpu::Wgpu(w) => w.primary.device.limits().max_texture_dimension_2d,
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(_) => crate::metal_backend::MAX_TEXTURE_SIDE,
         }
     }
 
@@ -548,24 +587,30 @@ impl WindowGpu {
     pub fn wgpu_device(&self) -> Option<&wgpu::Device> {
         match self {
             WindowGpu::Wgpu(w) => Some(&w.on().device),
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(_) => None,
         }
     }
 
     pub fn renderer(&self) -> &Renderer {
         match self {
             WindowGpu::Wgpu(w) => &w.renderer,
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(w) => w.renderer(),
         }
     }
 
     pub fn renderer_mut(&mut self) -> &mut Renderer {
         match self {
             WindowGpu::Wgpu(w) => &mut w.renderer,
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(w) => w.renderer_mut(),
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A frame with some text and quads.
@@ -586,7 +631,7 @@ mod tests {
     }
 
     /// A texture's pixels as RGBA, row by row (BGRA targets swapped), as `draw_offscreen` reads them.
-    fn read_back(on: &GpuHandles, tex: &wgpu::Texture) -> Vec<u8> {
+    pub(crate) fn read_back(on: &GpuHandles, tex: &wgpu::Texture) -> Vec<u8> {
         let (w, h) = (tex.width(), tex.height());
         let row = w * 4;
         let padded = row.div_ceil(256) * 256;
@@ -611,7 +656,7 @@ mod tests {
         out
     }
 
-    fn handles() -> GpuHandles {
+    pub(crate) fn handles() -> GpuHandles {
         let (instance, adapter, device, queue) = crate::render::test_gpu::shared_all();
         crate::render::test_gpu::serial_on_gl(&adapter);
         GpuHandles { instance, adapter, device, queue }
@@ -619,12 +664,20 @@ mod tests {
 
     const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
 
+    /// The wgpu window inside (these tests make only wgpu ones).
+    fn wgpu_of(win: &WindowGpu) -> &WgpuWindow {
+        match win {
+            WindowGpu::Wgpu(w) => w,
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(_) => panic!("a wgpu window"),
+        }
+    }
+
     /// Draws through `render` (views, the effect's out view, the fade's raw view) and reads it back.
     fn rendered(on: &GpuHandles, win: &mut WindowGpu, f: &Frame, fx: Option<FxFrame<'_>>) -> Vec<u8> {
         let drawn = win.render(f, fx, None).expect("an offscreen window always draws");
         drawn.kept.unwrap();
-        let WindowGpu::Wgpu(w) = win;
-        read_back(on, w.offscreen_texture())
+        read_back(on, wgpu_of(win).offscreen_texture())
     }
 
     fn uniforms_at(ms: u64, size: (u32, u32)) -> Uniforms {
@@ -661,7 +714,7 @@ mod tests {
             let fx = FxFrame { uniforms: &u, region: None, same_scene, keep_output: false };
             crate::render_pixel_tests::assert_same(name, &rendered(&on, &mut win, &f, Some(fx)), &r.draw_offscreen_fx(&f, Some((&mut chain, &u)), w, h).unwrap(), w);
         }
-        let WindowGpu::Wgpu(inner) = &win;
+        let inner = wgpu_of(&win);
         assert!(inner.chain.as_ref().unwrap().frame_kept(), "the animation-only frame reused the kept picture");
     }
 
@@ -711,10 +764,7 @@ mod tests {
         let later = uniforms_at(300, (w, h));
         let next = |u| FxFrame { uniforms: u, region: None, same_scene: true, keep_output: false };
         assert_eq!(rendered(&on, &mut a, &f, Some(next(&later))), rendered(&on, &mut b, &f, Some(next(&later))));
-        let kept = |win: &WindowGpu| {
-            let WindowGpu::Wgpu(w) = win;
-            w.chain.as_ref().unwrap().kept_made()
-        };
+        let kept = |win: &WindowGpu| wgpu_of(win).chain.as_ref().unwrap().kept_made();
         assert_eq!(kept(&a), kept(&b));
     }
 

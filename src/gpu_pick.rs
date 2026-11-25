@@ -44,6 +44,28 @@ pub fn backend_order(windows: bool, forced: Option<&str>) -> Vec<(Backends, &'st
     order
 }
 
+/// A graphics API the terminal windows draw with: one of wgpu's, or the native Metal backend.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Api {
+    Wgpu(Backends),
+    Metal,
+}
+
+/// Whether `forced` (the value of `FORCE_ENV`) asks for the native Metal backend.
+pub fn wants_metal(forced: Option<&str>) -> bool {
+    matches!(forced.map(|s| s.trim().to_ascii_lowercase()).as_deref(), Some("metal"))
+}
+
+/// `backend_order` with the native Metal backend: on macOS `metal` asks for it alone, with no
+/// API after it (a Metal failure is shown, never silently replaced). Elsewhere, and on macOS
+/// without it, wgpu's order (`wgpu` keeps it on purpose).
+pub fn api_order(windows: bool, macos: bool, forced: Option<&str>) -> Vec<(Api, &'static str)> {
+    if macos && wants_metal(forced) {
+        return vec![(Api::Metal, "Metal")];
+    }
+    backend_order(windows, forced).into_iter().map(|(b, label)| (Api::Wgpu(b), label)).collect()
+}
+
 /// Prefer integrated: the low-power GPU. Off: the high-performance one (the system default would
 /// leave the pick to the enumeration order, which is not a decision).
 pub fn preference(prefer_integrated: bool) -> PowerPreference {
@@ -152,7 +174,9 @@ pub fn current_generation() -> u64 {
     GENERATION.load(Ordering::SeqCst)
 }
 
-fn report_lost(generation: u64, text: String) {
+/// Reports a loss of the device made in `generation` for `take_lost` (a stale generation's report
+/// is dropped). The wgpu backend reports through `watch`, the Metal one from its command buffers.
+pub(crate) fn report_lost(generation: u64, text: String) {
     if generation != GENERATION.load(Ordering::SeqCst) {
         return;
     }
@@ -181,13 +205,18 @@ pub fn watch(device: &wgpu::Device, generation: u64) {
         if error_means_lost(matches!(e, wgpu::Error::Validation { .. }), &text) {
             report_lost(generation, format!("device lost (error): {text}"));
         } else {
-            match first_time(&text, std::time::Instant::now()) {
-                Logged::First => crate::host_base::log(&format!("renderer: GPU error (later copies are not logged): {text}")),
-                Logged::Overflow(n) => crate::host_base::log(&format!("renderer: {n} more distinct GPU errors not logged; the newest: {text}")),
-                Logged::Quiet => {}
-            }
+            log_gpu_error(&text);
         }
     }));
+}
+
+/// Logs a GPU error that is not a loss, once per distinct text.
+pub(crate) fn log_gpu_error(text: &str) {
+    match first_time(text, std::time::Instant::now()) {
+        Logged::First => crate::host_base::log(&format!("renderer: GPU error (later copies are not logged): {text}")),
+        Logged::Overflow(n) => crate::host_base::log(&format!("renderer: {n} more distinct GPU errors not logged; the newest: {text}")),
+        Logged::Quiet => {}
+    }
 }
 
 /// Whether an uncaptured error says the device is gone. A validation error never does, whatever
@@ -421,6 +450,15 @@ mod tests {
             f(Backend::Dx12, "Intel(R) UHD Graphics 770", DeviceType::IntegratedGpu),
             f(Backend::Dx12, "Microsoft Basic Render Driver", DeviceType::Cpu),
         ]
+    }
+
+    #[test]
+    fn metal_is_asked_for_by_name_on_macos_only() {
+        assert_eq!(api_order(false, true, Some(" Metal ")), [(Api::Metal, "Metal")], "Metal alone: nothing follows it");
+        assert_eq!(api_order(false, true, None)[0].0, Api::Wgpu(Backends::PRIMARY), "wgpu stays the default for now");
+        assert_eq!(api_order(false, true, Some("wgpu"))[0].0, Api::Wgpu(Backends::PRIMARY));
+        assert_eq!(api_order(false, false, Some("metal"))[0].0, Api::Wgpu(Backends::PRIMARY), "no Metal off macOS");
+        assert_eq!(api_order(true, false, Some("metal")).len(), 3);
     }
 
     #[test]

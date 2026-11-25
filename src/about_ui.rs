@@ -84,8 +84,7 @@ pub struct AboutWindow {
 
 impl AboutWindow {
     pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared) -> Result<AboutWindow, String> {
-        let crate::gpu_shared::GpuShared::Wgpu { adapter, .. } = gpu;
-        let lines = this_build(&renderer_line(&adapter.get_info()));
+        let lines = this_build(&gpu.renderer_name());
         let host = EguiHost::open(event_loop, gpu, TITLE, 460.0, 250.0)?;
         Ok(AboutWindow { host, lines, choice: None })
     }

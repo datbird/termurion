@@ -7,6 +7,39 @@
 #[derive(Clone)]
 pub enum GpuShared {
     Wgpu { instance: wgpu::Instance, adapter: wgpu::Adapter, device: wgpu::Device, queue: wgpu::Queue },
+    /// The native Metal device the terminal windows draw on (macOS).
+    #[cfg(target_os = "macos")]
+    Metal(crate::metal_backend::MetalShared),
+}
+
+impl GpuShared {
+    /// The wgpu GPU an egui window opens on: this one, or for Metal the settings windows' own
+    /// wgpu device (egui draws with egui-wgpu only).
+    pub fn for_egui(&self) -> Result<GpuShared, String> {
+        match self {
+            GpuShared::Wgpu { .. } => Ok(self.clone()),
+            #[cfg(target_os = "macos")]
+            GpuShared::Metal(_) => crate::metal_backend::egui_wgpu(),
+        }
+    }
+
+    /// The four wgpu objects of a wgpu GPU; an error for any other.
+    pub fn wgpu(&self) -> Result<(&wgpu::Instance, &wgpu::Adapter, &wgpu::Device, &wgpu::Queue), String> {
+        match self {
+            GpuShared::Wgpu { instance, adapter, device, queue } => Ok((instance, adapter, device, queue)),
+            #[cfg(target_os = "macos")]
+            GpuShared::Metal(_) => Err("not a wgpu device".to_string()),
+        }
+    }
+
+    /// The renderer line About shows: the API and the GPU.
+    pub fn renderer_name(&self) -> String {
+        match self {
+            GpuShared::Wgpu { adapter, .. } => crate::about_ui::renderer_line(&adapter.get_info()),
+            #[cfg(target_os = "macos")]
+            GpuShared::Metal(m) => format!("Metal, {}", m.name()),
+        }
+    }
 }
 
 #[cfg(test)]
