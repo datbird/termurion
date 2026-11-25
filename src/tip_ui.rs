@@ -128,10 +128,7 @@ impl TipWindow {
     #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         tip: &Tip,
         buttons: Vec<(&'static str, Action)>,
         work: Work,
@@ -148,7 +145,7 @@ impl TipWindow {
             .with_visible(false)
             .with_inner_size(LogicalSize::new(WIDTH, start_h));
         let attrs = crate::platform::window_style::skip_taskbar(attrs);
-        let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
+        let host = EguiHost::open_with(event_loop, gpu, attrs)?;
         let size = (WIDTH as f32 * host.window.scale_factor() as f32, start_h as f32 * host.window.scale_factor() as f32);
         let (x, y) = clamp_origin(window_origin(work, offset), size, work);
         host.window.set_outer_position(PhysicalPosition::new(x as f64, y as f64));

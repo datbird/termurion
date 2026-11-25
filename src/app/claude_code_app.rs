@@ -122,7 +122,7 @@ impl App {
         };
         let steps = cc::steps(self.globals.bool(super::api_ui::ENABLE_KEY), self.globals.bool(super::api_ui::SET_COOKIE_KEY));
         let dark = self.dark();
-        match OnboardingWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, steps, &shown, dark) {
+        match OnboardingWindow::open(event_loop, &g.shared(), steps, &shown, dark) {
             Ok(mut w) => {
                 w.focus();
                 self.claude_sync_steps(&mut w);

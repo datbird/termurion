@@ -70,7 +70,7 @@ impl App {
             return w.focus();
         }
         let Some(g) = self.gpu.as_ref() else { return };
-        match ListPopup::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, "Paste History", ["Value", "Time"], rows, None) {
+        match ListPopup::open(event_loop, &g.shared(), "Paste History", ["Value", "Time"], rows, None) {
             Ok(w) => self.paste_history_win = Some((w, pane)),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }
@@ -182,7 +182,7 @@ impl App {
             return;
         }
         let Some(g) = self.gpu.as_ref() else { return };
-        match AdvancedPasteWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, sources, source, form, session, d) {
+        match AdvancedPasteWindow::open(event_loop, &g.shared(), sources, source, form, session, d) {
             Ok(w) => self.advanced_paste_win = Some((w, pane, from_menu)),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }

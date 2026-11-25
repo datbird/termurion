@@ -85,7 +85,7 @@ impl App {
         let panel = screenshot::Panel::new(history + rows, (top, top + rows - 1));
         p.freeze(snap);
         let Some(g) = self.gpu.as_ref() else { return };
-        match crate::shot_ui::ShotWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, panel) {
+        match crate::shot_ui::ShotWindow::open(event_loop, &g.shared(), panel) {
             Ok(window) => {
                 self.place_shot_window(&window);
                 self.shot = Some(Shot { window, pane });

@@ -181,12 +181,12 @@ impl App {
     /// `showTipForKey:`: opens the card and notes the time.
     fn show_tip(&mut self, event_loop: &ActiveEventLoop, key: &str) {
         let Some(tip) = tips::all().iter().find(|t| t.key == key).cloned() else { return };
-        let gpu = self.gpu.as_ref().map(|g| (&g.instance, &g.adapter, &g.device, &g.queue)).or(self.prefs_gpu.as_ref().map(|(i, a, d, q)| (i, a, d, q)));
-        let Some((i, a, d, q)) = gpu else { return };
+        let gpu = self.gpu.as_ref().map(super::Gpu::shared).or_else(|| self.prefs_gpu.clone());
+        let Some(shared) = gpu else { return };
         let work = work_area(self.hwnd());
         let offset = self.globals.raw(tips::OFFSET_KEY).and_then(|v| v.as_str()).and_then(tip_ui::parse_offset).unwrap_or((0.0, 0.0));
         let buttons = self.tip_buttons(&tip, false);
-        match TipWindow::open(event_loop, i, a, d, q, &tip, buttons, work, offset) {
+        match TipWindow::open(event_loop, &shared, &tip, buttons, work, offset) {
             Ok(w) => {
                 self.tip_window = Some(w);
                 self.globals.set(tips::LAST_TIP_KEY, toml::Value::Float(now_secs()));

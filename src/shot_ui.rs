@@ -52,13 +52,10 @@ impl ShotWindow {
     #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         panel: Panel,
     ) -> Result<ShotWindow, String> {
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, "Make Screenshot", 612.0, 720.0)?;
+        let host = EguiHost::open(event_loop, gpu, "Make Screenshot", 612.0, 720.0)?;
         Ok(ShotWindow {
             host,
             panel,

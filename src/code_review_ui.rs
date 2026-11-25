@@ -29,8 +29,8 @@ pub struct ManagerWindow {
 }
 
 impl ManagerWindow {
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, prompts: Vec<SavedPrompt>, selected_uuid: Option<&str>) -> Result<ManagerWindow, String> {
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, cr::MANAGER_TITLE, 720.0, 460.0)?;
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, prompts: Vec<SavedPrompt>, selected_uuid: Option<&str>) -> Result<ManagerWindow, String> {
+        let host = EguiHost::open(event_loop, gpu, cr::MANAGER_TITLE, 720.0, 460.0)?;
         let selected = selected_uuid.and_then(|u| prompts.iter().position(|p| p.uuid == u)).or_else(|| (!prompts.is_empty()).then_some(0));
         Ok(ManagerWindow { host, prompts, selected, focus_name: false })
     }
@@ -135,8 +135,8 @@ pub struct NameWindow {
 }
 
 impl NameWindow {
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<NameWindow, String> {
-        let host = EguiHost::open_dialog(event_loop, instance, adapter, device, queue, cr::SAVE_TITLE, 380.0, 170.0)?;
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared) -> Result<NameWindow, String> {
+        let host = EguiHost::open_dialog(event_loop, gpu, cr::SAVE_TITLE, 380.0, 170.0)?;
         Ok(NameWindow { host, name: String::new(), first: true })
     }
 

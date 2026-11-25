@@ -62,8 +62,8 @@ pub struct ExportWindow {
 
 impl ExportWindow {
     #[allow(clippy::too_many_arguments)]
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, tree: &[Node]) -> Result<ExportWindow, String> {
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, sa::EXPORT_TITLE, 480.0, 420.0)?;
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, tree: &[Node]) -> Result<ExportWindow, String> {
+        let host = EguiHost::open(event_loop, gpu, sa::EXPORT_TITLE, 480.0, 420.0)?;
         Ok(ExportWindow { host, rows: rows(tree), chosen: BTreeSet::new(), autolaunch: false })
     }
 

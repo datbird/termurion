@@ -112,7 +112,7 @@ impl App {
             return self.page_save_alert(&page_saver::save_failed_text(crate::ssh_files::FileError::ConnectionClosed.text()));
         };
         let Some(g) = self.gpu.as_ref() else { return };
-        let window = match SshPanelWindow::open_titled(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, crate::ssh_panel::CHOOSE_TITLE) {
+        let window = match SshPanelWindow::open_titled(event_loop, &g.shared(), crate::ssh_panel::CHOOSE_TITLE) {
             Ok(w) => w,
             Err(e) => return self.banners.set("window", format!("Could not open the window: {e}")),
         };

@@ -47,10 +47,7 @@ impl PlaybackWindow {
     #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         frames: Vec<(Duration, Vec<u8>)>,
         size: (u32, u32),
     ) -> Result<PlaybackWindow, String> {
@@ -62,7 +59,7 @@ impl PlaybackWindow {
             .with_title(web_replay::WINDOW_TITLE)
             .with_resizable(true)
             .with_inner_size(winit::dpi::LogicalSize::new(w, h + CONTROLS));
-        let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
+        let host = EguiHost::open_with(event_loop, gpu, attrs)?;
         host.track_taskbar();
         let marks = web_replay::timeline(&frames);
         let clock = Clock::at_end(marks.last().copied().unwrap_or(0.0));

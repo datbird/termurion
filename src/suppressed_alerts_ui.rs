@@ -130,12 +130,12 @@ pub struct SuppressedWindow {
 
 impl SuppressedWindow {
     #[allow(clippy::too_many_arguments)]
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, rows: Vec<Row>, show_remembered: bool) -> Result<SuppressedWindow, String> {
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, rows: Vec<Row>, show_remembered: bool) -> Result<SuppressedWindow, String> {
         let attrs = crate::platform::window::attributes()
             .with_title(TITLE)
             .with_inner_size(winit::dpi::LogicalSize::new(SIZE.0, SIZE.1))
             .with_min_inner_size(winit::dpi::LogicalSize::new(MIN_SIZE.0, MIN_SIZE.1));
-        let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
+        let host = EguiHost::open_with(event_loop, gpu, attrs)?;
         host.track_taskbar();
         Ok(SuppressedWindow { host, rows, selected: BTreeSet::new(), anchor: None, show_remembered })
     }

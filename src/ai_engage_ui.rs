@@ -28,8 +28,8 @@ pub struct EngageWindow {
 }
 
 impl EngageWindow {
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, ask: &ai_engage::Ask) -> Result<EngageWindow, String> {
-        let host = EguiHost::open_dialog(event_loop, instance, adapter, device, queue, "Engage Artificial Intelligence", f64::from(ai_engage::FIELD_W) + 40.0, f64::from(ai_engage::FIELD_H) + 150.0)?;
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, ask: &ai_engage::Ask) -> Result<EngageWindow, String> {
+        let host = EguiHost::open_dialog(event_loop, gpu, "Engage Artificial Intelligence", f64::from(ai_engage::FIELD_W) + 40.0, f64::from(ai_engage::FIELD_H) + 150.0)?;
         crate::settings_keys::add_icon_font(host.ctx());
         Ok(EngageWindow { host, rows: ai_engage::dialog_rows(ask), text: ask.prefill.clone(), skip: false, focus: true, opened: None })
     }
@@ -121,8 +121,8 @@ pub struct WaitWindow {
 }
 
 impl WaitWindow {
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, message: &str) -> Result<WaitWindow, String> {
-        let host = EguiHost::open_dialog(event_loop, instance, adapter, device, queue, "Termurion", 300.0, 110.0)?;
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, message: &str) -> Result<WaitWindow, String> {
+        let host = EguiHost::open_dialog(event_loop, gpu, "Termurion", 300.0, 110.0)?;
         Ok(WaitWindow { host, message: message.to_string(), opened: None })
     }
 

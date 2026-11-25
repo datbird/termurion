@@ -400,7 +400,7 @@ impl App {
             return;
         }
         let Some(g) = self.gpu.as_ref() else { return };
-        match AddClipWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue) {
+        match AddClipWindow::open(event_loop, &g.shared()) {
             Ok(w) => self.add_clip_win = Some((w, pane)),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }

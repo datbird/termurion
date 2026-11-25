@@ -55,13 +55,13 @@ const SHARES: [f32; 4] = [0.44, 0.24, 0.12, 0.20];
 const ROW: f32 = 20.0;
 
 impl SshPanelWindow {
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<SshPanelWindow, String> {
-        Self::open_titled(event_loop, instance, adapter, device, queue, m::TITLE)
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared) -> Result<SshPanelWindow, String> {
+        Self::open_titled(event_loop, gpu, m::TITLE)
     }
 
     /// The same window under another title (the folder picker of Save Page As).
-    pub fn open_titled(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, title: &str) -> Result<SshPanelWindow, String> {
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, title, 860.0, 520.0)?;
+    pub fn open_titled(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, title: &str) -> Result<SshPanelWindow, String> {
+        let host = EguiHost::open(event_loop, gpu, title, 860.0, 520.0)?;
         Ok(SshPanelWindow { host, local_user: crate::ssh_args::local_user(), path_text: String::new(), path_shown: None, search: String::new(), goto: None })
     }
 

@@ -530,7 +530,7 @@ impl App {
             return w.focus();
         }
         let Some(g) = self.gpu.as_ref() else { return };
-        match PickerWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, Vec::new(), rt::DEFAULT_PYTHON) {
+        match PickerWindow::open(event_loop, &g.shared(), Vec::new(), rt::DEFAULT_PYTHON) {
             Ok(w) => self.script_picker = Some(w),
             Err(e) => return self.banners.set("window", format!("Could not open the window: {e}")),
         }
@@ -1432,7 +1432,7 @@ impl App {
             return w.focus();
         }
         let Some(g) = self.gpu.as_ref() else { return };
-        match ExportWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &self.scripts_tree) {
+        match ExportWindow::open(event_loop, &g.shared(), &self.scripts_tree) {
             Ok(w) => self.script_export = Some(w),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }

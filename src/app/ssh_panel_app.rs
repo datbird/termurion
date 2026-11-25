@@ -173,7 +173,7 @@ impl App {
             return;
         }
         let Some(g) = self.gpu.as_ref() else { return };
-        let window = match SshPanelWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue) {
+        let window = match SshPanelWindow::open(event_loop, &g.shared()) {
             Ok(w) => w,
             Err(e) => return self.banners.set("window", format!("Could not open the window: {e}")),
         };

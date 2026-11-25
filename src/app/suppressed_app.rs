@@ -24,7 +24,7 @@ impl App {
         }
         let rows = self.suppressed_rows();
         let Some(g) = self.gpu.as_ref() else { return };
-        match SuppressedWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, rows, self.show_remembered) {
+        match SuppressedWindow::open(event_loop, &g.shared(), rows, self.show_remembered) {
             Ok(w) => self.suppressed_window = Some(w),
             Err(e) => {
                 self.banners.set("window", format!("Could not open the window: {e}"));

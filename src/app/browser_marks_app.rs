@@ -117,10 +117,10 @@ impl App {
         let dev_null = self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| io.dev_null);
         let stored = prompt.guid().and_then(|(guid, _)| self.browser_marks_cache(dev_null).iter().find(|m| m.guid == guid).map(|m| m.name.clone())).unwrap_or_default();
         let made = match &prompt {
-            MarkPrompt::Delete { .. } => crate::prompt_ui::ConfirmWindow::choice(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, "Delete Named Mark", &marks::delete_text(&stored), "Cancel", "Delete").map(Made::Confirm),
+            MarkPrompt::Delete { .. } => crate::prompt_ui::ConfirmWindow::choice(event_loop, &g.shared(), "Delete Named Mark", &marks::delete_text(&stored), "Cancel", "Delete").map(Made::Confirm),
             _ => {
                 let text = if prompt.is_edit() { marks::rename_text(&stored) } else { crate::prompt_ui::local_stamp() };
-                crate::prompt_ui::PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, marks::PROMPT_TITLE, marks::PROMPT_LABEL, &text).map(|w| Made::Name(if prompt.is_edit() { w.with_selected() } else { w }))
+                crate::prompt_ui::PromptWindow::open(event_loop, &g.shared(), marks::PROMPT_TITLE, marks::PROMPT_LABEL, &text).map(|w| Made::Name(if prompt.is_edit() { w.with_selected() } else { w }))
             }
         };
         match (made, prompt) {

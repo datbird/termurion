@@ -330,12 +330,12 @@ pub struct ChatWindow {
 }
 
 impl ChatWindow {
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<ChatWindow, String> {
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared) -> Result<ChatWindow, String> {
         let attrs = crate::platform::window::attributes()
             .with_title(tb::WINDOW_TITLE)
             .with_inner_size(winit::dpi::LogicalSize::new(tb::SIZE.0, tb::SIZE.1))
             .with_min_inner_size(winit::dpi::LogicalSize::new(tb::MIN_SIZE.0, tb::MIN_SIZE.1));
-        let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
+        let host = EguiHost::open_with(event_loop, gpu, attrs)?;
         host.track_taskbar();
         crate::settings_keys::add_icon_font(host.ctx());
         Ok(ChatWindow { host, data: ChatData::default(), title: tb::WINDOW_TITLE.to_string(), list_visible: true, list: ListState::default(), convo: ConvoState::default(), input: InputUi::default(), keys: Default::default() })

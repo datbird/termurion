@@ -71,7 +71,7 @@ impl App {
             return;
         };
         let mut card = browser_autofill::load_card(&browser_autofill::card_path(&base));
-        let opened = CardWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, card.clone());
+        let opened = CardWindow::open(event_loop, &g.shared(), card.clone());
         card.wipe();
         match opened {
             Ok(w) => {
@@ -310,7 +310,7 @@ mod tests {
         assert!(between(src, "pub(super) fn autofill_confirmed", "/// Pushes each fill").contains("autofill_bound("), "the answer re-checks the page");
         let pwm = prod(include_str!("pwm_app.rs"));
         assert!(pwm.contains("ConfirmKind::Autofill(pane, ask) => {\n                if ok {\n                    self.autofill_confirmed(pane, ask);"), "only Fill runs it");
-        assert!(pwm.contains("ConfirmWindow::choice(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &c.heading, &c.text, pwm::TITLE_CANCEL, crate::browser_autofill::CONFIRM_FILL)"), "Enter answers Cancel");
+        assert!(pwm.contains("ConfirmWindow::choice(event_loop, &g.shared(), &c.heading, &c.text, pwm::TITLE_CANCEL, crate::browser_autofill::CONFIRM_FILL)"), "Enter answers Cancel");
     }
 
     /// The handler arm: isolated world only, main frame only, the view's secret, an https page.

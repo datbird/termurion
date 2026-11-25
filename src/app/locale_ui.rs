@@ -76,9 +76,9 @@ pub(super) struct PickerWindow {
 
 impl PickerWindow {
     #[allow(clippy::too_many_arguments)]
-    fn open(event_loop: &ActiveEventLoop, gpu: (&wgpu::Instance, &wgpu::Adapter, &wgpu::Device, &wgpu::Queue), purpose: Purpose, picker: Picker, current: Option<&str>, message: &str, remember_label: Option<String>, minimal: bool) -> Result<PickerWindow, String> {
+    fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, purpose: Purpose, picker: Picker, current: Option<&str>, message: &str, remember_label: Option<String>, minimal: bool) -> Result<PickerWindow, String> {
         let height = if remember_label.is_some() { 230.0 } else { 200.0 };
-        let mut host = EguiHost::open_dialog(event_loop, gpu.0, gpu.1, gpu.2, gpu.3, "Locale", 480.0, height)?;
+        let mut host = EguiHost::open_dialog(event_loop, gpu, "Locale", 480.0, height)?;
         // The locale list drops down inside the window: the window keeps its old height, so
         // about nine rows show when it opens.
         host.set_dialog_floor(height);
@@ -198,8 +198,8 @@ impl App {
         if self.locale_window.is_some() {
             return;
         }
-        let gpu = self.gpu.as_ref().map(|g| (g.instance.clone(), g.adapter.clone(), g.device.clone(), g.queue.clone())).or_else(|| self.prefs_gpu.clone());
-        let Some((instance, adapter, device, queue)) = gpu else { return };
+        let gpu = self.gpu.as_ref().map(super::Gpu::shared).or_else(|| self.prefs_gpu.clone());
+        let Some(shared) = gpu else { return };
         while let Some(ask) = self.locale_asks.pop_front() {
             let (guid, purpose, current, message, label, minimal) = match &ask {
                 Ask::Mismatch { guid, locale, .. } => {
@@ -216,7 +216,7 @@ impl App {
                 }
             };
             let picker = self.locale_picker(&guid);
-            match PickerWindow::open(event_loop, (&instance, &adapter, &device, &queue), purpose, picker, current.as_deref(), message, label, minimal) {
+            match PickerWindow::open(event_loop, &shared, purpose, picker, current.as_deref(), message, label, minimal) {
                 Ok(w) => self.locale_window = Some(w),
                 Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
             }

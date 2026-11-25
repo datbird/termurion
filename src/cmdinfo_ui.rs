@@ -77,10 +77,7 @@ impl CmdInfoWindow {
     #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         pane: PaneId,
         info: Info,
         started: Option<String>,
@@ -96,7 +93,7 @@ impl CmdInfoWindow {
             .with_visible(false)
             .with_inner_size(winit::dpi::LogicalSize::new(cmdinfo::WIDTH, h));
         let attrs = crate::platform::window_style::skip_taskbar(attrs);
-        let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
+        let host = EguiHost::open_with(event_loop, gpu, attrs)?;
         let scale = host.window.scale_factor();
         let (x, y) = cmdinfo::place(at, cmdinfo::WIDTH * scale, h * scale, work, scale);
         host.window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));

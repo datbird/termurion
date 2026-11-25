@@ -37,7 +37,7 @@ impl App {
         }
         let dark = self.dark();
         let Some(g) = self.gpu.as_ref() else { return false };
-        match Panel::open(event_loop, (&g.instance, &g.adapter, &g.device, &g.queue), kind, view, pane, dark) {
+        match Panel::open(event_loop, &g.shared(), kind, view, pane, dark) {
             Ok(p) => {
                 self.panels.push(p);
                 true

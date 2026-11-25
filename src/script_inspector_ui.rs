@@ -163,8 +163,8 @@ pub struct InspectorWindow {
 }
 
 impl InspectorWindow {
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<InspectorWindow, String> {
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, TITLE, 760.0, 600.0)?;
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared) -> Result<InspectorWindow, String> {
+        let host = EguiHost::open(event_loop, gpu, TITLE, 760.0, 600.0)?;
         crate::settings_keys::add_icon_font(host.ctx());
         Ok(InspectorWindow { host, data: InspectorData::default(), selected: None })
     }

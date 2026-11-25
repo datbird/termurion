@@ -38,9 +38,9 @@ pub struct KeyWindow {
 const FIELD_WIDTH: f32 = 516.0;
 
 impl KeyWindow {
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, v: Vendor) -> Result<KeyWindow, String> {
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, v: Vendor) -> Result<KeyWindow, String> {
         let (heading, hint) = key_prompt(v);
-        let host = EguiHost::open_dialog(event_loop, instance, adapter, device, queue, &heading, f64::from(FIELD_WIDTH) + 40.0, 330.0)?;
+        let host = EguiHost::open_dialog(event_loop, gpu, &heading, f64::from(FIELD_WIDTH) + 40.0, 330.0)?;
         Ok(KeyWindow { host, hint, vendor: v, key: Secret::new(String::new()), focus: true, opened: None })
     }
 

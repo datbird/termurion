@@ -198,7 +198,7 @@ impl App {
         let Some(g) = self.gpu.as_ref() else { return };
         self.web_replay = None;
         self.web_replay_pane = None;
-        match PlaybackWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, frames, size) {
+        match PlaybackWindow::open(event_loop, &g.shared(), frames, size) {
             Ok(w) => {
                 w.focus();
                 self.web_replay = Some(w);

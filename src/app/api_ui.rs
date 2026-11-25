@@ -1144,7 +1144,7 @@ impl App {
             },
             None => {
                 let Some(g) = self.gpu.as_ref() else { return };
-                ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, f.heading, &f.text, &f.labels, None, &[], false, false)
+                ConfirmWindow::actions(event_loop, &g.shared(), f.heading, &f.text, &f.labels, None, &[], false, false)
             }
         };
         match opened {

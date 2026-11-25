@@ -147,16 +147,13 @@ impl EguiHost {
     #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         title: &str,
         w: f64,
         h: f64,
     ) -> Result<EguiHost, String> {
         let attrs = crate::platform::window::attributes().with_title(title).with_inner_size(winit::dpi::LogicalSize::new(w, h));
-        let host = Self::open_with(event_loop, instance, adapter, device, queue, attrs)?;
+        let host = Self::open_with(event_loop, gpu, attrs)?;
         host.track_taskbar();
         Ok(host)
     }
@@ -166,15 +163,12 @@ impl EguiHost {
     #[allow(clippy::too_many_arguments)]
     pub fn open_dialog(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         title: &str,
         w: f64,
         h: f64,
     ) -> Result<EguiHost, String> {
-        let host = Self::open_with(event_loop, instance, adapter, device, queue, crate::dialog_frame::attributes(title, w, h))?;
+        let host = Self::open_with(event_loop, gpu, crate::dialog_frame::attributes(title, w, h))?;
         host.track_taskbar();
         Ok(host.as_dialog(title, h))
     }
@@ -206,12 +200,10 @@ impl EguiHost {
     /// A window made from `attrs` (a popover's: no frame, placed, no taskbar button).
     pub fn open_with(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         attrs: winit::window::WindowAttributes,
     ) -> Result<EguiHost, String> {
+        let crate::gpu_shared::GpuShared::Wgpu { instance, adapter, device, queue } = gpu;
         let attrs = attrs.with_window_icon(crate::presence::window_icon());
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
         let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;

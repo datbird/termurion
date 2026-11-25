@@ -485,7 +485,7 @@ impl App {
         let opened = match self.gpu.as_ref() {
             Some(g) => {
                 let (user, password) = req.prefill.as_ref().map_or(("", None), |c| (c.user.as_str(), Some(&c.password)));
-                AuthWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &ba::prompt_heading(&req), user, password, req.offer_remember, req.remember_by_default, req.offer_password_manager)
+                AuthWindow::open(event_loop, &g.shared(), &ba::prompt_heading(&req), user, password, req.offer_remember, req.remember_by_default, req.offer_password_manager)
             }
             None => Err("no graphics device".to_string()),
         };

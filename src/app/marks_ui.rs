@@ -225,7 +225,7 @@ impl App {
         let Some(g) = self.gpu.as_ref() else { return };
         let stamp = crate::prompt_ui::local_stamp();
         let text = rename.map_or(stamp.as_str(), |(_, name)| name);
-        match PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, "Set Named Mark", "Enter Mark Name", text) {
+        match PromptWindow::open(event_loop, &g.shared(), "Set Named Mark", "Enter Mark Name", text) {
             Ok(w) => self.prompt = Some((w, id, PromptFor::Terminal(rename.map(|(m, _)| m)))),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }

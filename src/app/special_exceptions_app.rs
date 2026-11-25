@@ -66,7 +66,7 @@ impl App {
         let Some(g) = self.gpu.as_ref() else { return };
         // The installed fonts are listed once, here.
         let fonts = g.renderer.installed_families();
-        match EguiHost::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, crate::special_exceptions_ui::TITLE, 560.0, 440.0) {
+        match EguiHost::open(event_loop, &g.shared(), crate::special_exceptions_ui::TITLE, 560.0, 440.0) {
             Ok(host) => self.special_exceptions = Some(Open { host, win: window_for(&stored, fonts), guid }),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }

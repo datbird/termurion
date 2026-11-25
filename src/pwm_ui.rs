@@ -140,10 +140,7 @@ impl PwmWindow {
     /// A window over `owner` (the terminal window's HWND), centered on it under its title bar.
     pub fn open(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         owner: isize,
         forced: Option<bool>,
     ) -> Result<PwmWindow, String> {
@@ -154,7 +151,7 @@ impl PwmWindow {
             .with_min_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64))
             .with_visible(false);
         let attrs = crate::platform::window_style::owner_window(attrs, owner);
-        let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
+        let host = EguiHost::open_with(event_loop, gpu, attrs)?;
         host.follow_theme(forced);
         if let Some((x, y)) = crate::platform::display::sheet_origin(owner, host.window.outer_size().width) {
             host.window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
@@ -906,8 +903,8 @@ fn gate_body(ui: &mut egui::Ui, user: &str, password: &mut Secret, note: Option<
 }
 
 impl GateWindow {
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, user: &str) -> Result<GateWindow, String> {
-        let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, gate_attributes())?;
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, user: &str) -> Result<GateWindow, String> {
+        let host = EguiHost::open_with(event_loop, gpu, gate_attributes())?;
         host.track_taskbar();
         let host = host.as_dialog("Termurion", f64::from(GATE_START_H));
         Ok(GateWindow { host, user: user.to_string(), password: Secret::new(String::new()), note: None, checking: false, focus: true, opened: None })

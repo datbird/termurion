@@ -253,10 +253,7 @@ impl CockpitWindow {
     /// A hidden window at `frame`; `show_and_focus` shows it.
     pub fn open(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         frame: Frame,
         dark: bool,
     ) -> Result<CockpitWindow, String> {
@@ -271,7 +268,7 @@ impl CockpitWindow {
             .with_inner_size(winit::dpi::PhysicalSize::new(frame.w as f64, frame.h as f64))
             .with_min_inner_size(winit::dpi::LogicalSize::new(400.0, min_h as f64));
         let attrs = crate::platform::window_style::skip_taskbar(attrs);
-        let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
+        let host = EguiHost::open_with(event_loop, gpu, attrs)?;
         host.follow_theme(Some(dark));
         crate::settings_keys::add_icon_font(host.ctx());
         Ok(CockpitWindow { host, shown: false, shown_at: None, reported: frame, painted: Instant::now(), last_query: None, dismissed: None, keys: Default::default() })

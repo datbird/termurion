@@ -668,12 +668,12 @@ impl SettingsWindow {
         self.host.follow_theme(forced);
     }
 
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, mode: Mode) -> Result<Self, String> {
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, mode: Mode) -> Result<Self, String> {
         let (title, w, h) = match mode {
             Mode::Settings => ("Termurion Settings", 980.0, 720.0),
             Mode::Profiles => ("Profiles", 420.0, 460.0),
         };
-        let host = crate::egui_host::EguiHost::open(event_loop, instance, adapter, device, queue, title, w, h)?;
+        let host = crate::egui_host::EguiHost::open(event_loop, gpu, title, w, h)?;
         let host_dark = host.window.theme().is_none_or(|t| t == winit::window::Theme::Dark);
         settings_keys::add_icon_font(host.ctx());
         if mode == Mode::Settings

@@ -293,7 +293,7 @@ pub struct WebPopover {
 
 impl WebPopover {
     #[allow(clippy::too_many_arguments)]
-    pub fn open(_event_loop: &ActiveEventLoop, _instance: &wgpu::Instance, _adapter: &wgpu::Adapter, _device: &wgpu::Device, _queue: &wgpu::Queue, _kind: Kind, _size: (f64, f64), _at: (f64, f64), _work: Option<Rect>) -> Result<WebPopover, String> {
+    pub fn open(_event_loop: &ActiveEventLoop, _gpu: &crate::gpu_shared::GpuShared, _kind: Kind, _size: (f64, f64), _at: (f64, f64), _work: Option<Rect>) -> Result<WebPopover, String> {
         Err(no())
     }
 

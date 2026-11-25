@@ -123,7 +123,7 @@ impl App {
         let Some(g) = self.gpu.as_ref() else { return };
         let Some(imported) = self.trigger_imports.pop_front() else { return };
         let text = tf::select_profiles_text(&imported);
-        match EguiHost::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, tf::IMPORT_TITLE, 620.0, 700.0) {
+        match EguiHost::open(event_loop, &g.shared(), tf::IMPORT_TITLE, 620.0, 700.0) {
             Ok(host) => {
                 host.focus();
                 self.trigger_import = Some(ImportWindow { host, list: ListState::default(), text, imported });

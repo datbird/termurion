@@ -14,9 +14,9 @@ impl App {
             w.focus();
             return;
         }
-        let gpu = self.gpu.as_ref().map(|g| (&g.instance, &g.adapter, &g.device, &g.queue)).or(self.prefs_gpu.as_ref().map(|(i, a, d, q)| (i, a, d, q)));
+        let gpu = self.gpu.as_ref().map(super::Gpu::shared).or_else(|| self.prefs_gpu.clone());
         match gpu {
-            Some((i, a, d, q)) => match AboutWindow::open(event_loop, i, a, d, q) {
+            Some(shared) => match AboutWindow::open(event_loop, &shared) {
                 Ok(w) => self.about_window = Some(w),
                 Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
             },

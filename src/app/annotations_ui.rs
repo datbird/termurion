@@ -23,7 +23,7 @@ impl App {
                     let text = self.panes.get(&id).map(|p| p.session_note.clone()).unwrap_or_default();
                     self.note_win = None;
                     let Some(g) = self.gpu.as_ref() else { return true };
-                    match NoteWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, "Session Note", &text, false) {
+                    match NoteWindow::open(event_loop, &g.shared(), "Session Note", &text, false) {
                         Ok(w) => self.note_win = Some((w, id, None)),
                         Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
                     }
@@ -107,7 +107,7 @@ impl App {
         let text = self.panes.get(&pane).and_then(|p| p.screen.notes.by_id.get(&note)).map(|n| n.text.clone()).unwrap_or_default();
         self.note_win = None;
         let Some(g) = self.gpu.as_ref() else { return };
-        match NoteWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, "Annotation", &text, true) {
+        match NoteWindow::open(event_loop, &g.shared(), "Annotation", &text, true) {
             Ok(w) => self.note_win = Some((w, pane, Some(note))),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }

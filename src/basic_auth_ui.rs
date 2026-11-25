@@ -74,10 +74,7 @@ impl AuthWindow {
     #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         text: &str,
         user: &str,
         password: Option<&Secret>,
@@ -85,7 +82,7 @@ impl AuthWindow {
         remember_by_default: bool,
         offer_password_manager: bool,
     ) -> Result<AuthWindow, String> {
-        let host = EguiHost::open_dialog(event_loop, instance, adapter, device, queue, "Termurion", 420.0, 230.0)?;
+        let host = EguiHost::open_dialog(event_loop, gpu, "Termurion", 420.0, 230.0)?;
         let layout = layout(offer_remember, offer_password_manager, !user.is_empty());
         let pw = password.map(Secret::duplicate).unwrap_or_else(|| Secret::new(String::new()));
         let start = (user.len(), pw.expose().len());

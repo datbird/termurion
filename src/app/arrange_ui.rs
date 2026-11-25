@@ -410,7 +410,7 @@ impl App {
         let (date, time, secs) = arrangement::date_names(crate::prompt_ui::local_time());
         let name = arrangements::unique_name(&date, &time, &secs, &taken);
         let Some(g) = self.gpu.as_ref() else { return };
-        match PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, "Save Window Arrangement", "Name for saved window arrangement:", &name) {
+        match PromptWindow::open(event_loop, &g.shared(), "Save Window Arrangement", "Name for saved window arrangement:", &name) {
             Ok(w) => self.arrange_prompt = Some((w.with_extra("Save to File with Contents...").refuse_blank(), what)),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }

@@ -140,7 +140,7 @@ impl App {
         let Some(first) = self.param_prompts.first_mut() else { return };
         let Some(var) = first.queue.current().map(str::to_string) else { return };
         let Some(g) = self.gpu.as_ref() else { return };
-        match PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, sp::TITLE, &sp::label(&var), "") {
+        match PromptWindow::open(event_loop, &g.shared(), sp::TITLE, &sp::label(&var), "") {
             Ok(w) => {
                 w.focus();
                 first.guard = InputGuard::new(Instant::now());

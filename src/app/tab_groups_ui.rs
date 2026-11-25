@@ -193,7 +193,7 @@ impl App {
             return w.focus();
         }
         let Some(g) = self.gpu.as_ref() else { return };
-        match PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, title, tab_groups::GROUP_PROMPT, text.trim()) {
+        match PromptWindow::open(event_loop, &g.shared(), title, tab_groups::GROUP_PROMPT, text.trim()) {
             Ok(w) => self.group_prompt = Some((w, what)),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }

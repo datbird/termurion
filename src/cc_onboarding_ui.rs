@@ -187,15 +187,12 @@ impl OnboardingWindow {
     #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         steps: Vec<Step>,
         settings: &std::path::Path,
         dark: bool,
     ) -> Result<OnboardingWindow, String> {
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, claude_code::PANEL_TITLE, 800.0, 380.0)?;
+        let host = EguiHost::open(event_loop, gpu, claude_code::PANEL_TITLE, 800.0, 380.0)?;
         host.follow_theme(Some(dark));
         crate::settings_keys::add_icon_font(host.ctx());
         Ok(OnboardingWindow { host, flow: Flow::new(steps), settings: settings.to_path_buf() })

@@ -39,12 +39,11 @@ pub(super) fn record_answer(spec: &Spec, index: usize, store: &dyn Store, catalo
 
 /// `App::open_warning_window` with the GPU handles and "AlertsIndicateShortcuts" (`underline`)
 /// given, for a caller that holds part of the app borrowed.
-pub(super) fn open_warning(event_loop: &ActiveEventLoop, gpu: (&wgpu::Instance, &wgpu::Adapter, &wgpu::Device, &wgpu::Queue), spec: &Spec, remembered: Option<&str>, underline: bool) -> Result<ConfirmWindow, String> {
-    let (instance, adapter, device, queue) = gpu;
+pub(super) fn open_warning(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, spec: &Spec, remembered: Option<&str>, underline: bool) -> Result<ConfirmWindow, String> {
     let labels: Vec<&str> = spec.labels.iter().map(String::as_str).collect();
     let heading = spec.shown_heading();
     let text = remembered.map_or_else(|| spec.text.clone(), |saved| warnings::remembered_text(&spec.text, saved));
-    ConfirmWindow::actions(event_loop, instance, adapter, device, queue, heading, &text, &labels, warnings::checkbox_label(spec), &warnings::shortcuts(&spec.labels), underline, remembered.is_some())
+    ConfirmWindow::actions(event_loop, gpu, heading, &text, &labels, warnings::checkbox_label(spec), &warnings::shortcuts(&spec.labels), underline, remembered.is_some())
 }
 
 impl App {
@@ -98,7 +97,7 @@ impl App {
     /// explanation and "Permanently Forget Saved Selection" after the buttons.
     pub(super) fn open_warning_window(&self, event_loop: &ActiveEventLoop, spec: &Spec, remembered: Option<&str>) -> Result<ConfirmWindow, String> {
         let g = self.gpu.as_ref().ok_or_else(|| "no window".to_string())?;
-        open_warning(event_loop, (&g.instance, &g.adapter, &g.device, &g.queue), spec, remembered, self.globals.bool("AlertsIndicateShortcuts"))
+        open_warning(event_loop, &g.shared(), spec, remembered, self.globals.bool("AlertsIndicateShortcuts"))
     }
 
     /// A warning shown in its own window answered with button `index`: "Permanently Forget

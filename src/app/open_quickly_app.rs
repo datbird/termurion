@@ -109,7 +109,7 @@ impl App {
         let dark = self.dark();
         let duration = self.globals.get("OpenQuicklyAnimationDuration").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(0.12) as f32;
         let Some(g) = self.gpu.as_ref() else { return };
-        match OpenQuicklyWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, monitor, &self.quickly_query, dark, duration) {
+        match OpenQuicklyWindow::open(event_loop, &g.shared(), monitor, &self.quickly_query, dark, duration) {
             Ok(window) => {
                 self.open_quickly = Some(Quickly { window, preview: None, items: Vec::new(), snippet_guids: Vec::new(), actions: Vec::new(), work, images: HashMap::new(), invocation_pane: None });
                 self.quickly_refresh(event_loop);
@@ -382,7 +382,7 @@ impl App {
         if self.open_quickly.as_ref().is_some_and(|q| q.preview.is_none()) {
             let dark = self.dark();
             let Some(g) = self.gpu.as_ref() else { return };
-            match PreviewWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, dark) {
+            match PreviewWindow::open(event_loop, &g.shared(), dark) {
                 Ok(p) => {
                     if let Some(q) = self.open_quickly.as_mut() {
                         q.preview = Some(p);

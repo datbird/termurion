@@ -379,7 +379,7 @@ impl App {
                     return true;
                 }
                 let Some(g) = self.gpu.as_ref() else { return true };
-                match NameWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue) {
+                match NameWindow::open(event_loop, &g.shared()) {
                     Ok(w) => self.workgroups.review.name = Some((w, text)),
                     Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
                 }
@@ -410,7 +410,7 @@ impl App {
         let prompts = cr::prompts_of(&self.globals);
         let last = cr::last_selected(&self.globals);
         let Some(g) = self.gpu.as_ref() else { return };
-        match ManagerWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, prompts, last.as_deref()) {
+        match ManagerWindow::open(event_loop, &g.shared(), prompts, last.as_deref()) {
             Ok(w) => self.workgroups.review.manager = Some(w),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }

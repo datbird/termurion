@@ -87,9 +87,9 @@ pub struct Panel {
 }
 
 impl Panel {
-    pub fn open(event_loop: &ActiveEventLoop, gpu: (&wgpu::Instance, &wgpu::Adapter, &wgpu::Device, &wgpu::Queue), kind: Kind, view: Box<dyn View>, pane: Option<u64>, dark: bool) -> Result<Panel, String> {
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, kind: Kind, view: Box<dyn View>, pane: Option<u64>, dark: bool) -> Result<Panel, String> {
         let (w, h) = view.size();
-        let host = EguiHost::open(event_loop, gpu.0, gpu.1, gpu.2, gpu.3, &view.title(), w, h)?;
+        let host = EguiHost::open(event_loop, gpu, &view.title(), w, h)?;
         host.ctx().set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
         host.focus();
         Ok(Panel { host, kind, view, pane })

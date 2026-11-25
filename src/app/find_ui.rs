@@ -1059,7 +1059,7 @@ impl App {
         let query = self.focused_id().and_then(|id| self.finds.get(&id)).map(|f| f.query.clone()).unwrap_or_default();
         let Some(g) = self.gpu.as_ref() else { return };
         let mode = self.global_mode();
-        match crate::global_find_ui::GlobalFindWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &query, mode) {
+        match crate::global_find_ui::GlobalFindWindow::open(event_loop, &g.shared(), &query, mode) {
             Ok(w) => self.global_find = Some(w),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }

@@ -2453,7 +2453,7 @@ impl App {
                 let dark = self.dark();
                 let work = self.monitor_rects().map(|(w, _)| w);
                 if let Some(g) = self.gpu.as_ref() {
-                    match crate::status_popover_ui::InfoPopover::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, lines, at, work, dark) {
+                    match crate::status_popover_ui::InfoPopover::open(event_loop, &g.shared(), lines, at, work, dark) {
                         Ok(w) => self.composer_windows.help = Some(w),
                         Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
                     }
@@ -2462,7 +2462,7 @@ impl App {
         if let Some((pane, url, browser)) = self.composer_windows.explain_ask.take() {
             let text = composer::explain_text(&url, &browser);
             if let Some(g) = self.gpu.as_ref() {
-                match crate::prompt_ui::ConfirmWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, composer::EXPLAIN_HEADING, &text) {
+                match crate::prompt_ui::ConfirmWindow::open(event_loop, &g.shared(), composer::EXPLAIN_HEADING, &text) {
                     Ok(w) => self.composer_windows.explain = Some((w, pane, url)),
                     Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
                 }

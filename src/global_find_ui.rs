@@ -129,14 +129,11 @@ pub struct GlobalFindWindow {
 impl GlobalFindWindow {
     pub fn open(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         query: &str,
         mode: Mode,
     ) -> Result<GlobalFindWindow, String> {
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, "Find Globally", 560.0, 420.0)?;
+        let host = EguiHost::open(event_loop, gpu, "Find Globally", 560.0, 420.0)?;
         Ok(GlobalFindWindow { host, query: query.into(), groups: Vec::new(), error: None, first: true, mode })
     }
 

@@ -108,7 +108,7 @@ impl App {
         }
         let Some(g) = self.gpu.as_ref() else { return };
         let Some(alert) = self.ai_asks.pop_front() else { return };
-        match ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &alert.heading, &alert.text, &alert.buttons, alert.silence.is_some().then_some(ConfirmWindow::SUPPRESS), &[], false, false) {
+        match ConfirmWindow::actions(event_loop, &g.shared(), &alert.heading, &alert.text, &alert.buttons, alert.silence.is_some().then_some(ConfirmWindow::SUPPRESS), &[], false, false) {
             Ok(mut w) => {
                 // An alert that names its refusing button makes a close and Escape answer it.
                 w.close_with(alert.close);
@@ -167,7 +167,7 @@ impl App {
         }
         let Some(g) = self.gpu.as_ref() else { return };
         let Some((vendor, then)) = self.ai_key_asks.pop_front() else { return };
-        match KeyWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, vendor) {
+        match KeyWindow::open(event_loop, &g.shared(), vendor) {
             Ok(w) => self.ai_key_window = Some((w, vendor, then)),
             Err(e) => {
                 self.banners.set("window", format!("Could not open the window: {e}"));

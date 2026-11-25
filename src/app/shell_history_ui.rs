@@ -191,7 +191,7 @@ impl App {
     pub(super) fn open_list_popup_for(&mut self, event_loop: &ActiveEventLoop, pane: PaneId, title: &str, headers: [&str; 2], rows: Vec<(String, String)>, values: Vec<String>, what: PopupFor) {
         self.list_popup = None;
         let Some(g) = self.gpu.as_ref() else { return };
-        match ListPopup::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, title, headers, rows, None) {
+        match ListPopup::open(event_loop, &g.shared(), title, headers, rows, None) {
             Ok(w) => self.list_popup = Some((w, pane, what, values)),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }

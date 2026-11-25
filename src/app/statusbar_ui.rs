@@ -843,7 +843,7 @@ impl App {
             let size = crate::status_popover_ui::popover_size(size, work, scale, f64::from(g.device.limits().max_texture_dimension_2d));
             let origin = g.window.inner_position().unwrap_or_default();
             let at = (origin.x as f64 + f64::from(anchor.0), origin.y as f64 + f64::from(anchor.1));
-            match crate::status_popover_ui::TextPopover::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, text, size, at, work) {
+            match crate::status_popover_ui::TextPopover::open(event_loop, &g.shared(), text, size, at, work) {
                 Ok(w) => self.text_popover = Some((pane, w)),
                 Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
             }
@@ -1133,7 +1133,7 @@ impl App {
         let saved = self.status_layout_value(&target);
         let profiles: Vec<(String, String)> = self.store.profiles.iter().map(|p| (p.guid(), p.name())).collect();
         let Some(g) = self.gpu.as_ref() else { return };
-        match crate::statusbar_setup_ui::StatusBarSetupWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &title, layout, dark_background, profiles, select, configure, super::statusbar_content::clock_for_knobs) {
+        match crate::statusbar_setup_ui::StatusBarSetupWindow::open(event_loop, &g.shared(), &title, layout, dark_background, profiles, select, configure, super::statusbar_content::clock_for_knobs) {
             Ok(win) => self.status_setup = Some(StatusSetup { win, target, saved }),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }

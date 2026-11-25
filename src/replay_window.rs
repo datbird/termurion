@@ -59,10 +59,7 @@ impl ReplayWindow {
     /// `window.frame.size`), which only exists once the window does.
     pub fn open(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         ticks: Vec<i64>,
         forced: Option<bool>,
     ) -> Result<ReplayWindow, String> {
@@ -78,7 +75,7 @@ impl ReplayWindow {
             .with_min_inner_size(winit::dpi::LogicalSize::new(replay_panel::MIN_WIDTH as f64, h as f64))
             .with_max_inner_size(winit::dpi::LogicalSize::new(100_000.0, h as f64));
         let attrs = crate::platform::window_style::skip_taskbar(attrs);
-        let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
+        let host = EguiHost::open_with(event_loop, gpu, attrs)?;
         host.follow_theme(forced);
         crate::platform::window_style::no_activate(&host.window);
         Ok(ReplayWindow { host, panel: Panel { export: Export::Normal, ticks_at_open: ticks }, slider: 1.0, shown: false })

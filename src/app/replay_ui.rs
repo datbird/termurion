@@ -245,7 +245,7 @@ impl App {
     fn open_replay_panel(&mut self, event_loop: &ActiveEventLoop) {
         let ticks = self.focused_id().and_then(|id| self.panes.get(&id)).map(|p| p.dvr.timestamps()).unwrap_or_default();
         let Some(g) = self.gpu.as_ref() else { return };
-        match ReplayWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, ticks, crate::tab_theme::forced_dark(self.tab_style())) {
+        match ReplayWindow::open(event_loop, &g.shared(), ticks, crate::tab_theme::forced_dark(self.tab_style())) {
             Ok(mut w) => {
                 if let Some(at) = self.replay_panel_origin(w.outer_size()) {
                     w.place(at);
@@ -501,7 +501,7 @@ impl App {
         let Some(g) = self.gpu.as_ref() else { return };
         let mut failed = None;
         for (slot, heading, text) in self.recording_warnings.iter_mut().filter(|(w, _, _)| w.is_none()) {
-            match crate::prompt_ui::ConfirmWindow::warning(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, heading, text) {
+            match crate::prompt_ui::ConfirmWindow::warning(event_loop, &g.shared(), heading, text) {
                 Ok(w) => *slot = Some(w),
                 Err(e) => failed = Some(e),
             }

@@ -33,7 +33,7 @@ impl App {
         let Some(g) = self.gpu.as_ref() else { return };
         let (pos, size) = (g.window.outer_position().unwrap_or_default(), g.window.outer_size());
         let center = (f64::from(pos.x) + f64::from(size.width) / 2.0, f64::from(pos.y) + f64::from(size.height) / 2.0);
-        match TagEditor::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, pane, url, title, tags, all, center) {
+        match TagEditor::open(event_loop, &g.shared(), pane, url, title, tags, all, center) {
             Ok(w) => {
                 w.focus();
                 self.bookmark_editor = Some(w);

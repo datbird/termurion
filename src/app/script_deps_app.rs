@@ -139,7 +139,7 @@ impl App {
     pub(super) fn open_dependency_editor(&mut self, event_loop: &ActiveEventLoop) {
         if self.script_deps.is_none() {
             let Some(g) = self.gpu.as_ref() else { return };
-            match DepsWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue) {
+            match DepsWindow::open(event_loop, &g.shared()) {
                 Ok(w) => self.script_deps = Some(w),
                 Err(e) => return self.banners.set("window", format!("Could not open the window: {e}")),
             }
@@ -336,7 +336,7 @@ impl App {
                     return;
                 }
                 let Some(g) = self.gpu.as_ref() else { return };
-                match PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, sd::ADD_HEADING, sd::ADD_TEXT, "") {
+                match PromptWindow::open(event_loop, &g.shared(), sd::ADD_HEADING, sd::ADD_TEXT, "") {
                     Ok(p) => self.script_deps_state.prompt = Some((p, container)),
                     Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
                 }

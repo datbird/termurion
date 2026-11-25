@@ -892,7 +892,7 @@ impl App {
     /// next window and for panels opened meanwhile (`prefs_gpu`).
     pub(super) fn drop_resident_window(&mut self) {
         let Some(g) = self.gpu.take() else { return };
-        self.prefs_gpu = Some((g.instance.clone(), g.adapter.clone(), g.device.clone(), g.queue.clone()));
+        self.prefs_gpu = Some(g.shared());
         self.resident_window_gone = Some(g.window.id());
         menu::window_gone(&g.window);
         self.menu_bar = None;
@@ -1276,12 +1276,12 @@ impl WinSlot {
 
 /// A window's surface and renderer on the first window's device.
 pub(super) fn init_gpu_shared(window: Arc<Window>, from: &Gpu) -> Result<Gpu, String> {
-    init_gpu_from(window, &(from.instance.clone(), from.adapter.clone(), from.device.clone(), from.queue.clone()))
+    init_gpu_from(window, &from.shared())
 }
 
-/// The same on kept handles (instance, adapter, device, queue).
-pub(super) fn init_gpu_from(window: Arc<Window>, from: &(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue)) -> Result<Gpu, String> {
-    let (instance, adapter, device, queue) = from;
+/// The same on kept handles.
+pub(super) fn init_gpu_from(window: Arc<Window>, from: &crate::gpu_shared::GpuShared) -> Result<Gpu, String> {
+    let crate::gpu_shared::GpuShared::Wgpu { instance, adapter, device, queue } = from;
     let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
     let caps = surface.get_capabilities(adapter);
     let format = caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(caps.formats[0]);
@@ -2137,7 +2137,7 @@ impl App {
         };
         let Some(g) = self.gpu.as_ref() else { return };
         let title = if tab { crate::wintitle::SET_TAB_TITLE } else { crate::wintitle::SET_WINDOW_TITLE };
-        match crate::prompt_ui::PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, title, label, &now) {
+        match crate::prompt_ui::PromptWindow::open(event_loop, &g.shared(), title, label, &now) {
             Ok(w) => self.title_prompt = Some((w, target)),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }

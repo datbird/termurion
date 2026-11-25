@@ -16,7 +16,7 @@ impl App {
             return w.focus();
         }
         let Some(g) = self.gpu.as_ref() else { return };
-        match ConsoleWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue) {
+        match ConsoleWindow::open(event_loop, &g.shared()) {
             Ok(w) => self.script_console = Some(w),
             Err(e) => return self.banners.set("window", format!("Could not open the window: {e}")),
         }
@@ -128,7 +128,7 @@ impl App {
     fn open_script_inspector(&mut self, event_loop: &ActiveEventLoop) {
         if self.script_inspector.is_none() {
             let Some(g) = self.gpu.as_ref() else { return };
-            match InspectorWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue) {
+            match InspectorWindow::open(event_loop, &g.shared()) {
                 Ok(w) => self.script_inspector = Some(w),
                 Err(e) => return self.banners.set("window", format!("Could not open the window: {e}")),
             }

@@ -464,6 +464,11 @@ struct Gpu {
 }
 
 impl Gpu {
+    /// The shared handles egui windows open on.
+    fn shared(&self) -> crate::gpu_shared::GpuShared {
+        crate::gpu_shared::GpuShared::Wgpu { instance: self.instance.clone(), adapter: self.adapter.clone(), device: self.device.clone(), queue: self.queue.clone() }
+    }
+
     /// Asks the window to draw a newly built frame. Every request but the animation's comes
     /// here, so an animation frame never draws over a change with the kept frame.
     fn redraw(&self) {
@@ -2193,7 +2198,7 @@ pub struct App {
     quit_asking: bool,
     prefs_startup: Vec<scripts_alerts::Ask>,
     prefs_reveal: bool,
-    prefs_gpu: Option<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue)>,
+    prefs_gpu: Option<crate::gpu_shared::GpuShared>,
     /// The second wgpu instance for see-through windows, made on first need (app-wide).
     alpha_gpu: Option<AlphaGpu>,
     /// No DX12 adapter answered: every window draws opaque (a banner says so once).
@@ -5144,8 +5149,8 @@ impl App {
 
     fn make_settings(&mut self, event_loop: &ActiveEventLoop, mode: Mode) {
         // A resident Termurion on Wayland has no window, only its kept device (the tray's Settings).
-        let Some((i, a, d, q)) = self.gpu.as_ref().map(|g| (&g.instance, &g.adapter, &g.device, &g.queue)).or(self.prefs_gpu.as_ref().map(|(i, a, d, q)| (i, a, d, q))) else { return };
-        match SettingsWindow::open(event_loop, i, a, d, q, mode) {
+        let Some(shared) = self.gpu.as_ref().map(Gpu::shared).or_else(|| self.prefs_gpu.clone()) else { return };
+        match SettingsWindow::open(event_loop, &shared, mode) {
             Ok(mut s) => {
                 s.follow_theme(crate::tab_theme::forced_dark(self.tab_style()));
                 // Hotkeys that failed to register show in the sheet.
@@ -5855,7 +5860,7 @@ impl App {
             }
             // The window's last tab closed: the window goes; the last window ends Termurion. The
             // settings folder's quit question may open after it has gone, with its GPU.
-            self.prefs_gpu = self.gpu.as_ref().map(|g| (g.instance.clone(), g.adapter.clone(), g.device.clone(), g.queue.clone()));
+            self.prefs_gpu = self.gpu.as_ref().map(Gpu::shared);
             // iTerm2's rule for the last window (`AD:915-942`, R3): Termurion stays resident unless
             // "Quit when all windows are closed" says otherwise (and the grace period has passed).
             if self.windows.parked().next().is_none() && self.after_last_window_now() == crate::resident::AfterLast::StayResident {

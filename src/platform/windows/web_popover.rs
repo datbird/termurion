@@ -50,9 +50,9 @@ impl WebPopover {
     /// Opens the window (its bottom centered on `at`, screen pixels, kept on `work`) at the final
     /// content `size` points (`content_size`); the view comes with `attach`.
     #[allow(clippy::too_many_arguments)]
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, kind: Kind, size: (f64, f64), at: (f64, f64), work: Option<Rect>) -> Result<WebPopover, String> {
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, kind: Kind, size: (f64, f64), at: (f64, f64), work: Option<Rect>) -> Result<WebPopover, String> {
         let attrs = crate::status_popover_ui::popover_attributes("Popover", size.0, size.1);
-        let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
+        let host = EguiHost::open_with(event_loop, gpu, attrs)?;
         let scale = host.window.scale_factor();
         let (x, y) = crate::status_popover_ui::place(at, size.0 * scale, size.1 * scale, work);
         host.window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));

@@ -964,7 +964,7 @@ impl App {
     pub(super) fn show_status_popover(&mut self, event_loop: &ActiveEventLoop, at: (f64, f64), work: Option<Rect>) {
         let (patterns, merge, subtitle, dark) = (self.status_patterns(), self.globals.bool(status_tool::MERGE_KEY), self.globals.bool(status_tool::SUBTITLE_KEY), self.dark());
         let Some(g) = self.gpu.as_ref() else { return };
-        match crate::status_popover_ui::StatusPopover::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, patterns, merge, subtitle, at, work, dark) {
+        match crate::status_popover_ui::StatusPopover::open(event_loop, &g.shared(), patterns, merge, subtitle, at, work, dark) {
             Ok(w) => self.status_popover = Some(w),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }
@@ -1036,7 +1036,7 @@ impl App {
                     w.focus();
                 } else if let Some(g) = self.gpu.as_ref() {
                     let (title, info) = status_tool::NEW_PATTERN;
-                    match crate::prompt_ui::PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, title, info, "") {
+                    match crate::prompt_ui::PromptWindow::open(event_loop, &g.shared(), title, info, "") {
                         Ok(w) => {
                             self.status_prompt = Some(w);
                             if let Some(p) = self.status_popover.as_mut() {
@@ -1352,7 +1352,7 @@ impl App {
         let Some(g) = self.gpu.as_ref() else { return };
         let origin = g.window.inner_position().unwrap_or_default();
         let at = (origin.x as f64 + f64::from(r.x + r.w / 2.0), origin.y as f64 + f64::from(r.y));
-        match crate::status_popover_ui::InfoPopover::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, lines, at, work, dark) {
+        match crate::status_popover_ui::InfoPopover::open(event_loop, &g.shared(), lines, at, work, dark) {
             Ok(w) => self.jobs_popover = Some(w),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }

@@ -586,11 +586,11 @@ impl App {
         }
         // After the last window has gone, the settings folder's quit question opens with the
         // GPU that window used.
-        let gpu = self.gpu.as_ref().map(|g| (&g.instance, &g.adapter, &g.device, &g.queue)).or(self.prefs_gpu.as_ref().map(|(i, a, d, q)| (i, a, d, q)));
-        let Some((instance, adapter, device, queue)) = gpu else { return };
+        let gpu = self.gpu.as_ref().map(super::Gpu::shared).or_else(|| self.prefs_gpu.clone());
+        let Some(shared) = gpu else { return };
         let Some(ask) = self.scripts_alerts.remove(at) else { return };
         let underline = self.globals.bool("AlertsIndicateShortcuts");
-        match super::warnings_app::open_warning(event_loop, (instance, adapter, device, queue), &ask.spec, ask.remembered.as_deref(), underline) {
+        match super::warnings_app::open_warning(event_loop, &shared, &ask.spec, ask.remembered.as_deref(), underline) {
             Ok(mut w) => {
                 // The entry question's Enter waits until the whole body has been shown (13y1 review).
                 if matches!(ask.then, Then::EnterWorkgroup { .. } | Then::RestoreWorkgroup { .. }) {

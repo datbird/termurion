@@ -106,7 +106,7 @@ impl App {
             Ok(summary) => {
                 crate::host_base::log(&format!("renderer: recovered on {label} {summary}"));
                 self.gpu_recovery.recovered(now);
-                self.prefs_gpu = self.prefs_gpu.take().and(self.gpu.as_ref().map(|g| (g.instance.clone(), g.adapter.clone(), g.device.clone(), g.queue.clone())));
+                self.prefs_gpu = self.prefs_gpu.take().and(self.gpu.as_ref().map(Gpu::shared));
                 self.redraw_every_window();
             }
             Err(e) => {

@@ -282,7 +282,7 @@ impl App {
             return true;
         }
         let Some(g) = self.gpu.as_ref() else { return false };
-        match ChatWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue) {
+        match ChatWindow::open(event_loop, &g.shared()) {
             Ok(w) => {
                 w.follow_theme(crate::tab_theme::forced_dark(self.tab_style()));
                 if let Some(m) = g.window.current_monitor() {
@@ -1489,7 +1489,7 @@ impl App {
         }
         let Some(title) = self.chat_db.as_ref().and_then(|db| db.chat(id).ok().flatten()).map(|c| c.title) else { return };
         let Some(g) = self.gpu.as_ref() else { return };
-        match crate::prompt_ui::PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, chat_list::RENAME_TITLE, chat_list::RENAME_PROMPT, &title) {
+        match crate::prompt_ui::PromptWindow::open(event_loop, &g.shared(), chat_list::RENAME_TITLE, chat_list::RENAME_PROMPT, &title) {
             Ok(w) => self.chat_prompt = Some((w.with_ok_label(chat_list::RENAME_BUTTON).with_selected(), id.to_string())),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }

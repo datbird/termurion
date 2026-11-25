@@ -52,15 +52,12 @@ impl NoteWindow {
     #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         title: &str,
         text: &str,
         deletable: bool,
     ) -> Result<NoteWindow, String> {
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, title, 320.0, 200.0)?;
+        let host = EguiHost::open(event_loop, gpu, title, 320.0, 200.0)?;
         Ok(NoteWindow { host, text: text.into(), deletable, confirming: false, suppress: false, first: true })
     }
 

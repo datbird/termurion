@@ -207,7 +207,7 @@ impl App {
         let Some(g) = self.gpu.as_ref() else { return };
         if self.ai_engage.is_none()
             && let Some((pane, ask)) = self.ai_engage_open.take() {
-                match EngageWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &ask) {
+                match EngageWindow::open(event_loop, &g.shared(), &ask) {
                     Ok(w) => self.ai_engage = Some((w, pane, ask)),
                     Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
                 }
@@ -215,7 +215,7 @@ impl App {
         if self.ai_wait.is_none() {
             let live = self.ai_engage_pending.keys().copied().filter(|id| self.ai_runs.contains_key(id)).min();
             if let Some(id) = live {
-                match WaitWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, ai_engage::THINKING) {
+                match WaitWindow::open(event_loop, &g.shared(), ai_engage::THINKING) {
                     Ok(w) => self.ai_wait = Some((w, id)),
                     Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
                 }

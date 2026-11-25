@@ -180,9 +180,9 @@ impl StatusBarSetupWindow {
     /// Opens the window on `layout`. With `select`, that component is selected; with
     /// `configure` too, its Configure Component sheet opens (the bar's "Configure").
     #[allow(clippy::too_many_arguments)]
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, title: &str, layout: Layout, dark_background: bool, profiles: Vec<(String, String)>, select: Option<usize>, configure: bool, clock: fn(&toml::Table) -> String) -> Result<StatusBarSetupWindow, String> {
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, title: &str, layout: Layout, dark_background: bool, profiles: Vec<(String, String)>, select: Option<usize>, configure: bool, clock: fn(&toml::Table) -> String) -> Result<StatusBarSetupWindow, String> {
         // iTerm2's content view is 918 x 526 (`SXIB:28`).
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, title, 918.0, 526.0)?;
+        let host = EguiHost::open(event_loop, gpu, title, 918.0, 526.0)?;
         add_symbol_font(host.ctx());
         let selected = select.filter(|&i| i < layout.components.len());
         Ok(StatusBarSetupWindow { host, layout, selected, dark_background, profiles, drag: None, sheet: None, advanced: None, configure_first: configure && selected.is_some(), clock })

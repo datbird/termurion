@@ -340,10 +340,7 @@ impl OpenQuicklyWindow {
     #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         monitor: Rect,
         query: &str,
         dark: bool,
@@ -358,7 +355,7 @@ impl OpenQuicklyWindow {
             .with_position(winit::dpi::PhysicalPosition::new(monitor.x as f64, monitor.y as f64))
             .with_inner_size(winit::dpi::LogicalSize::new(WIDTH as f64, NON_TABLE as f64));
         let attrs = crate::platform::window_style::skip_taskbar(attrs);
-        let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
+        let host = EguiHost::open_with(event_loop, gpu, attrs)?;
         let scale = host.window.scale_factor();
         install_fonts(host.ctx());
         host.ctx().set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
@@ -656,7 +653,7 @@ pub struct PreviewWindow {
 }
 
 impl PreviewWindow {
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, dark: bool) -> Result<PreviewWindow, String> {
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, dark: bool) -> Result<PreviewWindow, String> {
         let attrs = crate::platform::window::attributes()
             .with_title("Open Quickly Preview")
             .with_decorations(false)
@@ -666,7 +663,7 @@ impl PreviewWindow {
             .with_visible(false)
             .with_inner_size(winit::dpi::LogicalSize::new(PREVIEW_W as f64, 306.0));
         let attrs = crate::platform::window_style::skip_taskbar(attrs);
-        let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
+        let host = EguiHost::open_with(event_loop, gpu, attrs)?;
         install_fonts(host.ctx());
         host.ctx().set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
         crate::platform::window_style::no_activate(&host.window);

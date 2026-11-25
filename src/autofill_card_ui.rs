@@ -52,8 +52,8 @@ impl Drop for CardWindow {
 }
 
 impl CardWindow {
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, card: Card) -> Result<CardWindow, String> {
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, CARD_TITLE, 460.0, 470.0)?;
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, card: Card) -> Result<CardWindow, String> {
+        let host = EguiHost::open(event_loop, gpu, CARD_TITLE, 460.0, 470.0)?;
         // What the editor holds is what it shows: bounded, with no hidden character.
         Ok(CardWindow { host, card: card.bounded(), focus: true, opened: None })
     }

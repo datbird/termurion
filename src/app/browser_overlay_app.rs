@@ -166,7 +166,7 @@ impl App {
 
     fn browser_tip_open(&mut self, text: &str, at: (f64, f64, f64, f64), event_loop: &ActiveEventLoop) -> Option<TipWindow> {
         let g = self.gpu.as_ref()?;
-        match TipWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, text, at) {
+        match TipWindow::open(event_loop, &g.shared(), text, at) {
             Ok(t) => Some(t),
             Err(_) => {
                 crate::dlog!("browser tip: the window could not be made");

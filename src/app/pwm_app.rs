@@ -582,11 +582,11 @@ impl App {
         let mut failed = None;
         for c in self.pwm.confirms.iter_mut().filter(|c| c.window.is_none()) {
             let opened = match &c.kind {
-                ConfirmKind::Check(..) => ConfirmWindow::choice(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &c.heading, &c.text, pwm::TITLE_CANCEL, pwm::TITLE_ENTER_PASSWORD),
-                ConfirmKind::Broadcast(..) => ConfirmWindow::choice(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &c.heading, &c.text, pwm::TITLE_CANCEL, BROADCAST_ENTER),
-                ConfirmKind::Warning => ConfirmWindow::warning(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &c.heading, &c.text),
-                ConfirmKind::Autofill(..) => ConfirmWindow::choice(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &c.heading, &c.text, pwm::TITLE_CANCEL, crate::browser_autofill::CONFIRM_FILL),
-                ConfirmKind::Notice(spec) => super::warnings_app::open_warning(event_loop, (&g.instance, &g.adapter, &g.device, &g.queue), spec, c.remembered.as_deref(), underline),
+                ConfirmKind::Check(..) => ConfirmWindow::choice(event_loop, &g.shared(), &c.heading, &c.text, pwm::TITLE_CANCEL, pwm::TITLE_ENTER_PASSWORD),
+                ConfirmKind::Broadcast(..) => ConfirmWindow::choice(event_loop, &g.shared(), &c.heading, &c.text, pwm::TITLE_CANCEL, BROADCAST_ENTER),
+                ConfirmKind::Warning => ConfirmWindow::warning(event_loop, &g.shared(), &c.heading, &c.text),
+                ConfirmKind::Autofill(..) => ConfirmWindow::choice(event_loop, &g.shared(), &c.heading, &c.text, pwm::TITLE_CANCEL, crate::browser_autofill::CONFIRM_FILL),
+                ConfirmKind::Notice(spec) => super::warnings_app::open_warning(event_loop, &g.shared(), spec, c.remembered.as_deref(), underline),
             };
             match opened {
                 Ok(mut w) => {
@@ -673,7 +673,7 @@ impl App {
         // macOS has no HWND: its owner handle is the window's view (the sheet owner is unused there).
         let owner = self.hwnd().or_else(|| self.gpu.as_ref().and_then(|g| crate::platform::window::view_of(&g.window)));
         let opened = match (self.gpu.as_ref(), owner) {
-            (Some(g), Some(h)) => PwmWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, h, crate::tab_theme::forced_dark(self.tab_style())).map(|w| (w, h)),
+            (Some(g), Some(h)) => PwmWindow::open(event_loop, &g.shared(), h, crate::tab_theme::forced_dark(self.tab_style())).map(|w| (w, h)),
             _ => Err("no terminal window".to_string()),
         };
         let (window, owner_hwnd) = match opened {
@@ -786,7 +786,7 @@ impl App {
     fn open_gate_window(&mut self, event_loop: &ActiveEventLoop) {
         let Some(g) = self.pwm.gate.as_ref().filter(|g| g.window.is_none()) else { return };
         let opened = match self.gpu.as_ref() {
-            Some(gpu) => GateWindow::open(event_loop, &gpu.instance, &gpu.adapter, &gpu.device, &gpu.queue, &g.user),
+            Some(gpu) => GateWindow::open(event_loop, &gpu.shared(), &g.user),
             None => Err("there is no window to ask in.".to_string()),
         };
         match opened {

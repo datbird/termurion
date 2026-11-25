@@ -60,8 +60,8 @@ fn add_body(ui: &mut egui::Ui, title: &mut String, detail: &mut String, first: &
 }
 
 impl AddClipWindow {
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<AddClipWindow, String> {
-        let host = EguiHost::open_dialog(event_loop, instance, adapter, device, queue, "New Clipping", 420.0, 290.0)?;
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared) -> Result<AddClipWindow, String> {
+        let host = EguiHost::open_dialog(event_loop, gpu, "New Clipping", 420.0, 290.0)?;
         Ok(AddClipWindow { host, title: String::new(), detail: String::new(), first: true })
     }
 

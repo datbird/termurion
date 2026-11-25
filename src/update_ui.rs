@@ -86,9 +86,9 @@ pub struct UpdateWindow {
 
 impl UpdateWindow {
     #[allow(clippy::too_many_arguments)]
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, view: View) -> Result<UpdateWindow, String> {
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, view: View) -> Result<UpdateWindow, String> {
         let (w, h) = size_of(&view);
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, update::TITLE, w, h)?;
+        let host = EguiHost::open(event_loop, gpu, update::TITLE, w, h)?;
         Ok(UpdateWindow { host, view, choice: None })
     }
 

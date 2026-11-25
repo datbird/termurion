@@ -32,7 +32,7 @@ impl App {
         let Some(g) = self.gpu.as_ref() else { return };
         let origin = g.window.inner_position().unwrap_or_default();
         let at = (f64::from(origin.x) + f64::from(at.0), f64::from(origin.y) + f64::from(at.1));
-        match CmdInfoWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, pane, info, started, from_offscreen, at, work, dark) {
+        match CmdInfoWindow::open(event_loop, &g.shared(), pane, info, started, from_offscreen, at, work, dark) {
             Ok(w) => self.cmdinfo = Some(w),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }

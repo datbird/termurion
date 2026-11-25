@@ -527,7 +527,7 @@ impl App {
             return w.focus();
         }
         let Some(g) = self.gpu.as_ref() else { return };
-        match crate::prompt_ui::PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, "tmux", "Enter command to send tmux:", "") {
+        match crate::prompt_ui::PromptWindow::open(event_loop, &g.shared(), "tmux", "Enter command to send tmux:", "") {
             Ok(w) => self.tmux_prompt = Some((w, pane)),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }

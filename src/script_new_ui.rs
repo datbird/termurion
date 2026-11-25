@@ -37,8 +37,8 @@ pub struct PickerWindow {
 
 impl PickerWindow {
     #[allow(clippy::too_many_arguments)]
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, versions: Vec<String>, default_version: &str) -> Result<PickerWindow, String> {
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, sn::PICKER_TITLE, 480.0, 400.0)?;
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, versions: Vec<String>, default_version: &str) -> Result<PickerWindow, String> {
+        let host = EguiHost::open(event_loop, gpu, sn::PICKER_TITLE, 480.0, 400.0)?;
         crate::settings_keys::add_icon_font(host.ctx());
         let mut w = PickerWindow { host, env: None, dependencies: String::new(), versions: Vec::new(), version: default_version.to_string(), default_version: default_version.to_string() };
         w.set_versions(versions);

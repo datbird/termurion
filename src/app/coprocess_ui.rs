@@ -78,7 +78,7 @@ impl App {
         let mru = string_list(self.globals.get(coprocess::MRU_KEY));
         let ignored = string_list(self.globals.get(coprocess::IGNORE_ERRORS_KEY));
         let first = mru.first().cloned().unwrap_or_default();
-        match PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, "Run Coprocess", "Coprocess command to run:", &first) {
+        match PromptWindow::open(event_loop, &g.shared(), "Run Coprocess", "Coprocess command to run:", &first) {
             Ok(w) => self.co_prompt = Some((w.with_choices(mru).with_check("Silently ignore errors from this command", ignored).refuse_blank(), id)),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }

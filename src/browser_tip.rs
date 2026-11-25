@@ -241,9 +241,9 @@ pub struct TipWindow {
 
 impl TipWindow {
     #[allow(clippy::too_many_arguments)]
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, text: &str, at: R) -> Result<TipWindow, String> {
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, text: &str, at: R) -> Result<TipWindow, String> {
         let attrs = crate::status_popover_ui::popover_attributes("Termurion Link", 10.0, 10.0).with_active(false).with_resizable(false).with_window_level(winit::window::WindowLevel::AlwaysOnTop);
-        let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
+        let host = EguiHost::open_with(event_loop, gpu, attrs)?;
         crate::open_quickly_ui::install_fonts(host.ctx());
         host.follow_theme(None);
         if let Some(h) = host.hwnd() {

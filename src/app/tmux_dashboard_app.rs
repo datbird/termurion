@@ -26,7 +26,7 @@ impl App {
             w.focus();
         } else {
             let Some(g) = self.gpu.as_ref() else { return };
-            match TmuxDashboardWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue) {
+            match TmuxDashboardWindow::open(event_loop, &g.shared()) {
                 Ok(w) => self.tmux_dash = Some(w),
                 Err(e) => return self.banners.set("window", format!("Could not open the window: {e}")),
             }

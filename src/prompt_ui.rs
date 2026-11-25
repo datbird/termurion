@@ -65,17 +65,14 @@ impl PromptWindow {
     #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         title: &str,
         label: &str,
         initial: &str,
     ) -> Result<PromptWindow, String> {
         // A long label (an alert's explanation) wraps; the window grows by a line for each 55 characters.
         let lines = (label.chars().count() as f64 / 55.0).ceil().max(1.0);
-        let host = EguiHost::open_dialog(event_loop, instance, adapter, device, queue, title, 420.0, 112.0 + 18.0 * lines)?;
+        let host = EguiHost::open_dialog(event_loop, gpu, title, 420.0, 112.0 + 18.0 * lines)?;
         Ok(PromptWindow { host, label: label.into(), text: initial.into(), first: true, choices: Vec::new(), check: None, refuse_blank: false, extra: None, hint: String::new(), ok_only: false, ok_label: None, select_all: false })
     }
 
@@ -537,17 +534,14 @@ impl ConfirmWindow {
     #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         heading: &str,
         text: &str,
     ) -> Result<ConfirmWindow, String> {
         // Windows words (Explorer, taskbar) read as the Mac's on macOS.
         let (heading, text) = (crate::platform::native_words(heading), crate::platform::native_words(text));
         let (heading, text) = (heading.as_ref(), text.as_ref());
-        let host = EguiHost::open_dialog(event_loop, instance, adapter, device, queue, heading, 480.0, window_height(text))?;
+        let host = EguiHost::open_dialog(event_loop, gpu, heading, 480.0, window_height(text))?;
         Ok(ConfirmWindow { host, text: text.into(), suppress: false, checkbox: true, checkbox_label: Self::SUPPRESS, ok: "OK".into(), cancel: Some("Cancel".into()), enter_cancels: false, actions: Vec::new(), shortcuts: Vec::new(), underline: false, forget: false, close: None, spaces: None, gated: None, read: false, guard: None })
     }
 
@@ -556,14 +550,11 @@ impl ConfirmWindow {
     #[allow(clippy::too_many_arguments)]
     pub fn warning(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         heading: &str,
         text: &str,
     ) -> Result<ConfirmWindow, String> {
-        let mut w = ConfirmWindow::open(event_loop, instance, adapter, device, queue, heading, text)?;
+        let mut w = ConfirmWindow::open(event_loop, gpu, heading, text)?;
         w.checkbox = false;
         w.cancel = None;
         Ok(w)
@@ -575,16 +566,13 @@ impl ConfirmWindow {
     #[allow(clippy::too_many_arguments)]
     pub fn choice(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         heading: &str,
         text: &str,
         first: &str,
         second: &str,
     ) -> Result<ConfirmWindow, String> {
-        let mut w = ConfirmWindow::open(event_loop, instance, adapter, device, queue, heading, text)?;
+        let mut w = ConfirmWindow::open(event_loop, gpu, heading, text)?;
         w.checkbox = false;
         w.ok = crate::platform::native_words(second).into_owned();
         w.cancel = Some(crate::platform::native_words(first).into_owned());
@@ -601,10 +589,7 @@ impl ConfirmWindow {
     #[allow(clippy::too_many_arguments)]
     pub fn actions(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         heading: &str,
         text: &str,
         labels: &[&str],
@@ -613,7 +598,7 @@ impl ConfirmWindow {
         underline: bool,
         forget: bool,
     ) -> Result<ConfirmWindow, String> {
-        let mut w = ConfirmWindow::open(event_loop, instance, adapter, device, queue, heading, text)?;
+        let mut w = ConfirmWindow::open(event_loop, gpu, heading, text)?;
         w.checkbox = checkbox.is_some();
         w.checkbox_label = checkbox.unwrap_or(Self::SUPPRESS);
         w.cancel = None;

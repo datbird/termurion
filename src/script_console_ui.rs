@@ -186,8 +186,8 @@ pub struct ConsoleWindow {
 }
 
 impl ConsoleWindow {
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<ConsoleWindow, String> {
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, TITLE, 900.0, 560.0)?;
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared) -> Result<ConsoleWindow, String> {
+        let host = EguiHost::open(event_loop, gpu, TITLE, 900.0, 560.0)?;
         crate::settings_keys::add_icon_font(host.ctx());
         Ok(ConsoleWindow {
             host,

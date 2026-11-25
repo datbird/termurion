@@ -49,10 +49,7 @@ impl GitLogWindow {
     #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         text: String,
         at: LogAt,
         font: LogFont,
@@ -66,7 +63,7 @@ impl GitLogWindow {
             .with_inner_size(winit::dpi::PhysicalSize::new(w, h))
             .with_position(winit::dpi::PhysicalPosition::new(at.x, y));
         let attrs = crate::platform::window_style::skip_taskbar(attrs);
-        let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
+        let host = EguiHost::open_with(event_loop, gpu, attrs)?;
         host.ctx().set_visuals(if font.dark { egui::Visuals::dark() } else { egui::Visuals::light() });
         host.focus();
         Ok(GitLogWindow { host, text, font, focused: false })

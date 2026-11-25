@@ -51,9 +51,9 @@ pub(crate) fn popover_attributes(title: &str, w: f64, h: f64) -> winit::window::
 /// pixels) as a popover above its button (`preferredEdge: .maxY`), kept on `work`, the work
 /// area of the button's monitor (`place`).
 #[allow(clippy::too_many_arguments)]
-fn popover_window(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, title: &str, w: f64, h: f64, at: (f64, f64), work: Option<Rect>) -> Result<EguiHost, String> {
+fn popover_window(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, title: &str, w: f64, h: f64, at: (f64, f64), work: Option<Rect>) -> Result<EguiHost, String> {
     let attrs = popover_attributes(title, w, h);
-    let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
+    let host = EguiHost::open_with(event_loop, gpu, attrs)?;
     let scale = host.window.scale_factor();
     let (pw, ph) = (w * scale, h * scale);
     let (x, y) = place(at, pw, ph, work);
@@ -122,10 +122,7 @@ impl StatusPopover {
     #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         patterns: Vec<Pattern>,
         merge: bool,
         subtitle: bool,
@@ -133,7 +130,7 @@ impl StatusPopover {
         work: Option<Rect>,
         dark: bool,
     ) -> Result<StatusPopover, String> {
-        let host = popover_window(event_loop, instance, adapter, device, queue, "Session Status", SETTINGS_W, SETTINGS_H, at, work)?;
+        let host = popover_window(event_loop, gpu, "Session Status", SETTINGS_W, SETTINGS_H, at, work)?;
         host.ctx().set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
         Ok(StatusPopover { host, patterns, merge, subtitle, selected: None, dirty: false, focused: false, hold: false })
     }
@@ -273,17 +270,14 @@ impl InfoPopover {
     #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &crate::gpu_shared::GpuShared,
         lines: Vec<(String, String)>,
         at: (f64, f64),
         work: Option<Rect>,
         dark: bool,
     ) -> Result<InfoPopover, String> {
         let h = lines.len().max(1) as f64 * INFO_LINE + 2.0 * f64::from(MARGIN);
-        let host = popover_window(event_loop, instance, adapter, device, queue, "Info", INFO_W, h, at, work)?;
+        let host = popover_window(event_loop, gpu, "Info", INFO_W, h, at, work)?;
         host.ctx().set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
         Ok(InfoPopover { host, lines, focused: false })
     }
@@ -340,9 +334,9 @@ impl TextPopover {
     /// `size`: the content area in points (at least one); `at`: the point its bottom centers
     /// on, screen pixels; `work`: the work area of that point's monitor.
     #[allow(clippy::too_many_arguments)]
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, text: &str, size: (f64, f64), at: (f64, f64), work: Option<Rect>) -> Result<TextPopover, String> {
+    pub fn open(event_loop: &ActiveEventLoop, gpu: &crate::gpu_shared::GpuShared, text: &str, size: (f64, f64), at: (f64, f64), work: Option<Rect>) -> Result<TextPopover, String> {
         let (w, h) = (size.0.max(1.0), size.1.max(1.0));
-        let host = popover_window(event_loop, instance, adapter, device, queue, "Popover", w, h, at, work)?;
+        let host = popover_window(event_loop, gpu, "Popover", w, h, at, work)?;
         Ok(TextPopover { host, text: text.to_string(), focused: false })
     }
 
