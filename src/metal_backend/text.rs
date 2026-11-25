@@ -27,12 +27,22 @@ const ATLAS: [Entry; 3] = [Entry::new(0, Kind::Texture, true, true), Entry::new(
 /// Group 1: the viewport uniform. Group 2 (rows only): one chunk of the row table.
 const UNIFORM: [Entry; 1] = [Entry::new(0, Kind::Buffer, true, false)];
 
-/// The slots the groups above get in the vertex stage (`shaders::stage_resources`).
-const PARAMS_SLOT: usize = 0;
-const TABLE_SLOT: usize = 1;
-/// The sizes buffer comes after the stage's other buffers.
-const GLYPH_SIZES_SLOT: usize = 1;
-const ROW_SIZES_SLOT: usize = 2;
+/// A text pipeline and the vertex buffer slots its translation gave the viewport, the row table
+/// (rows only) and the sizes buffer.
+struct TextPipeline {
+    state: Pipeline,
+    params: usize,
+    table: Option<usize>,
+    sizes: usize,
+}
+
+impl TextPipeline {
+    fn new(device: &ProtocolObject<dyn MTLDevice>, format: MTLPixelFormat, wgsl: &str, entries: (&str, &str), groups: &[&[Entry]], buffers: &'static [Layout]) -> Result<TextPipeline, String> {
+        let shader = Shader::new(device, wgsl, entries, groups, buffers)?;
+        let table = if groups.len() > 2 { Some(shader.vertex_buffer(2, 0)?) } else { None };
+        Ok(TextPipeline { state: shader.pipeline(device, format, Blend::ALPHA)?, params: shader.vertex_buffer(1, 0)?, table, sizes: shader.sizes_slot() })
+    }
+}
 
 /// `GlyphToRender`, as glyphon's `Cache` lays it out.
 const GLYPH_ATTRS: [Attr; 6] = [
@@ -68,11 +78,9 @@ pub(super) struct TextStart {
 }
 
 impl TextStart {
-    /// The sizes of a new atlas that may grow to `max_side` and a new row renderer over it, as
-    /// `Renderer::restart_for_backend` makes them.
-    pub fn fresh(max_side: u32) -> TextStart {
-        let atlas = TextAtlas::new(max_side);
-        let rows = RowRenderer::new(&atlas);
+    /// The sizes `atlas` and `rows` are at (a new atlas and row renderer).
+    pub fn of(atlas: &TextAtlas, rows: &RowRenderer) -> TextStart {
+        debug_assert!(atlas.generation() == 0, "a Metal draw over an atlas that already grew");
         TextStart { color_mode: atlas.color_mode(), color_size: atlas.color_size(), mask_size: atlas.mask_size(), capacity: rows.capacity(), table_rows: rows.table_rows() }
     }
 }
@@ -92,8 +100,8 @@ pub(super) struct Made {
 
 /// The text half of the Metal draw.
 pub(super) struct MetalText {
-    glyphs: Pipeline,
-    rows: Pipeline,
+    glyphs: TextPipeline,
+    rows: TextPipeline,
     sampler: Retained<ProtocolObject<dyn MTLSamplerState>>,
     color_format: MTLPixelFormat,
     color: Texture,
@@ -110,7 +118,7 @@ pub(super) struct MetalText {
 }
 
 fn private_buffer(device: &ProtocolObject<dyn MTLDevice>, size: u64) -> Result<Buffer, String> {
-    device.newBufferWithLength_options(size as usize, MTLResourceOptions::StorageModePrivate).ok_or_else(|| format!("no Metal buffer of {size} bytes"))
+    super::new_buffer(device, size as usize, MTLResourceOptions::StorageModePrivate).ok_or_else(|| format!("no Metal buffer of {size} bytes"))
 }
 
 /// An atlas texture: private, sampled, and a render target only so a new one can be cleared.
@@ -119,7 +127,7 @@ fn atlas_texture(device: &ProtocolObject<dyn MTLDevice>, format: MTLPixelFormat,
     let desc = unsafe { MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(format, size as usize, size as usize, false) };
     desc.setUsage(MTLTextureUsage::ShaderRead | MTLTextureUsage::RenderTarget);
     desc.setStorageMode(MTLStorageMode::Private);
-    device.newTextureWithDescriptor(&desc).ok_or_else(|| format!("no Metal atlas texture of {size} px"))
+    super::new_texture(device, &desc).ok_or_else(|| format!("no Metal atlas texture of {size} px"))
 }
 
 /// glyphon's sampler (Nearest filters, LOD clamped to 0, edges clamped), as wgpu-hal
@@ -140,8 +148,8 @@ fn sampler(device: &ProtocolObject<dyn MTLDevice>) -> Result<Retained<ProtocolOb
 
 impl MetalText {
     pub fn new(device: &ProtocolObject<dyn MTLDevice>, format: MTLPixelFormat, start: &TextStart) -> Result<MetalText, String> {
-        let glyphs = Shader::new(device, include_str!("../../crates/glyphon/src/shader.wgsl"), ("vs_main", "fs_main"), &[&ATLAS, &UNIFORM], &GLYPH_BUFFERS)?.pipeline(device, format, Blend::ALPHA)?;
-        let rows = Shader::new(device, include_str!("../../crates/glyphon/src/row_shader.wgsl"), ("vs_row", "fs_main"), &[&ATLAS, &UNIFORM, &UNIFORM], &ROW_BUFFERS)?.pipeline(device, format, Blend::ALPHA)?;
+        let glyphs = TextPipeline::new(device, format, include_str!("../../crates/glyphon/src/shader.wgsl"), ("vs_main", "fs_main"), &[&ATLAS, &UNIFORM], &GLYPH_BUFFERS)?;
+        let rows = TextPipeline::new(device, format, include_str!("../../crates/glyphon/src/row_shader.wgsl"), ("vs_row", "fs_main"), &[&ATLAS, &UNIFORM, &UNIFORM], &ROW_BUFFERS)?;
         let color_format = match start.color_mode {
             ColorMode::Accurate => MTLPixelFormat::RGBA8Unorm_sRGB,
             ColorMode::Web => MTLPixelFormat::RGBA8Unorm,
@@ -316,8 +324,8 @@ impl MetalText {
 
     /// Sets `pipeline` with the atlas and the viewport bound, as `GpuRows::render` and
     /// `GpuText::render` bind groups 0 and 1.
-    fn bind(&self, enc: &ProtocolObject<dyn MTLRenderCommandEncoder>, pipeline: &ProtocolObject<dyn MTLRenderPipelineState>, (w, h): (u32, u32)) {
-        enc.setRenderPipelineState(pipeline);
+    fn bind(&self, enc: &ProtocolObject<dyn MTLRenderCommandEncoder>, pipeline: &TextPipeline, (w, h): (u32, u32)) {
+        enc.setRenderPipelineState(&pipeline.state);
         enc.setFrontFacingWinding(MTLWinding::CounterClockwise);
         enc.setCullMode(MTLCullMode::None);
         enc.setTriangleFillMode(MTLTriangleFillMode::Fill);
@@ -330,7 +338,7 @@ impl MetalText {
             enc.setFragmentTexture_atIndex(Some(&self.color), 0);
             enc.setFragmentTexture_atIndex(Some(&self.mask), 1);
             enc.setFragmentSamplerState_atIndex(Some(&self.sampler), 0);
-            enc.setVertexBytes_length_atIndex(std::ptr::NonNull::from(&params).cast(), 16, PARAMS_SLOT);
+            enc.setVertexBytes_length_atIndex(std::ptr::NonNull::from(&params).cast(), 16, pipeline.params);
         }
     }
 
@@ -345,7 +353,7 @@ impl MetalText {
             if bound != Some(batch.chunk) {
                 bound = Some(batch.chunk);
                 // SAFETY: the table holds whole chunks and the batch's chunk is in it.
-                unsafe { enc.setVertexBuffer_offset_atIndex(Some(&self.table), (batch.chunk as u64 * ROW_TABLE_CHUNK) as usize, TABLE_SLOT) };
+                unsafe { enc.setVertexBuffer_offset_atIndex(Some(&self.table), (batch.chunk as u64 * ROW_TABLE_CHUNK) as usize, self.rows.table.expect("the row pipeline binds a table")) };
             }
             let (from, to) = (batch.start as u64, batch.end as u64);
             // The slices wgpu binds, and their lengths in the sizes buffer, in mapping order.
@@ -355,7 +363,7 @@ impl MetalText {
             unsafe {
                 enc.setVertexBuffer_offset_atIndex(Some(&self.instances), (from * INSTANCE_SIZE) as usize, shaders::vertex_buffer_slot(0) as usize);
                 enc.setVertexBuffer_offset_atIndex(Some(&self.ids), (from * ROW_ID_SIZE) as usize, shaders::vertex_buffer_slot(1) as usize);
-                enc.setVertexBytes_length_atIndex(std::ptr::NonNull::from(&sizes).cast(), 8, ROW_SIZES_SLOT);
+                enc.setVertexBytes_length_atIndex(std::ptr::NonNull::from(&sizes).cast(), 8, self.rows.sizes);
                 draw_quads(enc, batch.end - batch.start);
             }
         }
@@ -371,7 +379,7 @@ impl MetalText {
         // SAFETY: the instances are in the buffer (`write`); the slots are the shader's.
         unsafe {
             enc.setVertexBuffer_offset_atIndex(Some(&self.vertices), 0, shaders::vertex_buffer_slot(0) as usize);
-            enc.setVertexBytes_length_atIndex(std::ptr::NonNull::from(&sizes).cast(), 4, GLYPH_SIZES_SLOT);
+            enc.setVertexBytes_length_atIndex(std::ptr::NonNull::from(&sizes).cast(), 4, self.glyphs.sizes);
             draw_quads(enc, self.count);
         }
     }

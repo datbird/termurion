@@ -340,6 +340,8 @@ pub struct Renderer {
     /// atlas changes and glyph instances go to the backend in the `DrawList` and `Uploads`.
     glyph_atlas: glyphon::TextAtlas,
     row_text: glyphon::RowRenderer,
+    /// How the atlas stores color glyphs; always Accurate outside tests.
+    color_mode: glyphon::ColorMode,
     text: glyphon::TextRenderer,
     font_system: FontSystem,
     swash: SwashCache,
@@ -459,9 +461,27 @@ impl Renderer {
         self.shadows = QuadBuf::ALL.map(Shadow::new);
     }
 
+    /// The glyph atlas and row renderer, whose sizes a new backend starts its textures and
+    /// buffers at.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn glyph_state(&self) -> (&glyphon::TextAtlas, &glyphon::RowRenderer) {
+        (&self.glyph_atlas, &self.row_text)
+    }
+
+    /// Starts the glyph atlas over in `mode` (tests: every atlas is Accurate otherwise), on the
+    /// renderer's wgpu device when it has one.
+    #[cfg(all(test, target_os = "macos"))]
+    pub(crate) fn set_color_mode(&mut self, mode: glyphon::ColorMode) {
+        self.color_mode = mode;
+        match self.gpu.as_ref().map(|g| (g.device.clone(), g.queue.clone(), g.draw.format())) {
+            Some((device, queue, format)) => self.attach(&device, &queue, format),
+            None => self.reset_glyphs(wgpu::Limits::default().max_texture_dimension_2d),
+        }
+    }
+
     /// A new, empty glyph atlas and row renderer. Writes owed to the old device are dropped.
     fn reset_glyphs(&mut self, max_side: u32) {
-        self.glyph_atlas = glyphon::TextAtlas::new(max_side);
+        self.glyph_atlas = glyphon::TextAtlas::with_color_mode(max_side, self.color_mode);
         self.row_text = glyphon::RowRenderer::new(&self.glyph_atlas);
         self.spare = None;
         self.unsent = false;
@@ -492,6 +512,7 @@ impl Renderer {
             groups: Vec::new(),
             glyph_atlas,
             row_text,
+            color_mode: glyphon::ColorMode::Accurate,
             text: glyphon::TextRenderer::new(),
             font_system,
             swash: SwashCache::new(),

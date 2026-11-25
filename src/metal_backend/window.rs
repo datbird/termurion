@@ -34,6 +34,8 @@ pub struct MetalWindow {
     draw: MetalDraw,
     /// The device generation this window's command buffers report a loss for.
     generation: u64,
+    /// Set when a Metal failure left the GPU side behind the CPU side: both start over first.
+    stale: Option<String>,
     acquire: Acquire,
     timing: bool,
     /// Keeps the view the layer sits in alive as long as the window draws.
@@ -53,6 +55,21 @@ fn target(device: &ProtocolObject<dyn MTLDevice>, (w, h): (u32, u32), views: boo
     device.newTextureWithDescriptor(&desc).ok_or_else(|| format!("no Metal texture of {w} x {h}"))
 }
 
+/// Why a frame did not draw: the CPU prepare (nothing reached the GPU side; the next frame takes
+/// it up) or the Metal side (the two are apart until `MetalWindow::in_step`).
+enum Failed {
+    Prepare(String),
+    Metal(String),
+}
+
+/// Restarts `renderer`'s atlas, rows, spare lists and buffer shadows, and makes a draw whose
+/// textures and buffers start at their sizes.
+fn fresh_draw(device: &ProtocolObject<dyn MTLDevice>, renderer: &mut Renderer) -> Result<MetalDraw, String> {
+    renderer.restart_for_backend(MAX_TEXTURE_SIDE);
+    let (atlas, rows) = renderer.glyph_state();
+    MetalDraw::new(device, FORMAT, &TextStart::of(atlas, rows))
+}
+
 impl MetalWindow {
     /// A window's layer on `shared`, configured at the window's size and scale, and a renderer.
     pub fn open(window: Arc<Window>, shared: &MetalShared, font: &str, px: f32) -> Result<crate::gpu_window::WindowGpu, String> {
@@ -69,10 +86,7 @@ impl MetalWindow {
     }
 
     fn new(shared: &MetalShared, surface: Option<Surface>, size: (u32, u32), scale: f64, mut renderer: Renderer, window: Option<Arc<Window>>) -> Result<MetalWindow, String> {
-        let draw = MetalDraw::new(&shared.device, FORMAT, &TextStart::fresh(MAX_TEXTURE_SIDE))?;
-        // The draw's atlas textures and row buffers are new: so are the CPU atlas and rows, so
-        // every glyph and row write from the first frame on reaches them.
-        renderer.restart_for_backend(MAX_TEXTURE_SIDE);
+        let draw = fresh_draw(&shared.device, &mut renderer)?;
         Ok(MetalWindow {
             shared: shared.clone(),
             surface,
@@ -81,6 +95,7 @@ impl MetalWindow {
             renderer,
             draw,
             generation: crate::gpu_pick::current_generation(),
+            stale: None,
             acquire: Acquire::default(),
             timing: false,
             _window: window,
@@ -164,6 +179,7 @@ impl MetalWindow {
     }
 
     fn render_frame(&mut self, frame: &Frame) -> Result<Drawn, RenderError> {
+        self.in_step().map_err(RenderError::Refused)?;
         // No chain is ever built yet (`set_effect`), so an effect frame draws as a plain one, as a
         // wgpu window without a chain does; the in-window menu bar is Linux only.
         let wait_start = Instant::now();
@@ -194,6 +210,15 @@ impl MetalWindow {
         // A drawable has no non-sRGB view: the fade runs on its own view, as on a wgpu surface
         // without view formats.
         let kept = self.encode(&cb, frame, texture, None);
+        let kept = match kept {
+            Ok(()) => Ok(()),
+            Err(Failed::Prepare(e)) => Err(e),
+            Err(Failed::Metal(e)) => {
+                cb.commit();
+                // As a lost surface: the app remakes it (`remake_surface`) and draws again.
+                return Err(RenderError::Lost(e));
+            }
+        };
         let draw = draw_start.map(|t| t.elapsed());
         let present_start = self.timing.then(Instant::now);
         // A frame that failed before it drew (no buffer, a refused prepare) is not shown: the
@@ -209,13 +234,43 @@ impl MetalWindow {
         Ok(Drawn { bar: None, kept, draw, present: present_start.map(|t| t.elapsed()) })
     }
 
-    /// The CPU half prepares the frame and the Metal draw encodes it.
-    fn encode(&mut self, cb: &ProtocolObject<dyn MTLCommandBuffer>, frame: &Frame, view: &ProtocolObject<dyn MTLTexture>, raw: Option<&ProtocolObject<dyn MTLTexture>>) -> Result<(), String> {
+    /// The CPU half prepares the frame and the Metal draw encodes it. A Metal failure leaves the
+    /// GPU side without changes the CPU side counts as sent (a grown atlas, a row slot), so the
+    /// window is marked to start both over (`in_step`) before it draws again.
+    fn encode(&mut self, cb: &ProtocolObject<dyn MTLCommandBuffer>, frame: &Frame, view: &ProtocolObject<dyn MTLTexture>, raw: Option<&ProtocolObject<dyn MTLTexture>>) -> Result<(), Failed> {
         let (w, h) = (view.width() as u32, view.height() as u32);
-        let (list, up) = self.renderer.prepare(frame, w, h)?;
+        let (list, up) = self.renderer.prepare(frame, w, h).map_err(Failed::Prepare)?;
         let drawn = self.draw.run(&self.shared.device, cb, &list, &up, view, raw);
         self.renderer.recycle(list, up);
-        drawn
+        drawn.map_err(|e| {
+            let e = format!("Metal: {e}");
+            self.stale = Some(e.clone());
+            Failed::Metal(e)
+        })
+    }
+
+    /// Starts the text over on both sides when a Metal failure left them apart: the CPU atlas,
+    /// rows, spare lists and buffer shadows, and a new draw sized from them.
+    fn in_step(&mut self) -> Result<(), String> {
+        if self.stale.is_none() {
+            return Ok(());
+        }
+        self.draw = fresh_draw(&self.shared.device, &mut self.renderer)?;
+        self.stale = None;
+        Ok(())
+    }
+
+    /// Why the window must start over before its next frame, if it must (tests).
+    #[cfg(test)]
+    pub fn stale(&self) -> Option<&str> {
+        self.stale.as_deref()
+    }
+
+    /// Starts the atlas over in `mode`, on both sides (tests).
+    #[cfg(test)]
+    pub fn set_color_mode(&mut self, mode: glyphon::ColorMode) {
+        self.renderer.set_color_mode(mode);
+        self.draw = fresh_draw(&self.shared.device, &mut self.renderer).expect("the Metal draw");
     }
 
     /// Draws `frame` into an offscreen texture of `w` by `h` and reads it back as RGBA.
@@ -224,6 +279,7 @@ impl MetalWindow {
     }
 
     fn capture_frame(&mut self, frame: &Frame, w: u32, h: u32) -> Result<Vec<u8>, String> {
+        self.in_step()?;
         let max = MAX_TEXTURE_SIDE;
         if w == 0 || h == 0 || w > max || h > max {
             return Err(format!("an image of {w} x {h} pixels is larger than the graphics card allows ({max})"));
@@ -234,7 +290,7 @@ impl MetalWindow {
         let cb = self.shared.command_buffer(self.generation)?;
         let drawn = self.encode(&cb, frame, &tex, Some(&raw));
         cb.commit();
-        drawn?;
+        drawn.map_err(|(Failed::Prepare(e) | Failed::Metal(e))| e)?;
         super::readback::read_rgba(&self.shared.queue, &tex, w, h)
     }
 
@@ -252,22 +308,21 @@ impl MetalWindow {
 
     /// Moves the window onto a new Metal device after a loss: new pipelines, buffers and atlas
     /// textures, the layer set to the new device, the glyph atlas, rows and spare lists started
-    /// over with them. On an error the window is left as it was.
+    /// over with them. On an error the window starts over again at its next frame.
     pub fn rebuild(&mut self, shared: &GpuShared, _alpha: Option<&GpuShared>) -> Result<(), String> {
         let GpuShared::Metal(m) = shared else { return Err("a Metal window needs a Metal device".to_string()) };
-        let draw = MetalDraw::new(&m.device, FORMAT, &TextStart::fresh(MAX_TEXTURE_SIDE))?;
         self.shared = m.clone();
-        self.draw = draw;
         self.generation = crate::gpu_pick::current_generation();
-        self.renderer.restart_for_backend(MAX_TEXTURE_SIDE);
         self.configure();
-        Ok(())
+        self.stale = Some("a new Metal device".to_string());
+        self.in_step()
     }
 
-    /// The layer outlives a lost drawable: it is only set up again.
+    /// The layer outlives a lost drawable: it is only set up again, and text a Metal failure left
+    /// apart starts over.
     pub fn remake_surface(&mut self) -> Result<(), String> {
         self.configure();
-        Ok(())
+        self.in_step()
     }
 
     pub fn set_timing(&mut self, on: bool) {

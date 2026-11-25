@@ -62,8 +62,9 @@ impl ImagePipeline {
         Some((texture, if d.repeat { &self.repeat_sampler } else { &self.sampler }))
     }
 
-    /// Makes sure every picture in `images` has a texture; drops ones long unused.
-    pub fn prepare<'a>(&mut self, device: &ProtocolObject<dyn MTLDevice>, images: impl IntoIterator<Item = &'a ImageDraw>) {
+    /// Makes sure every picture in `images` has a texture; drops ones long unused. A picture the
+    /// device has no room for is an error (the window starts over), not a silent gap.
+    pub fn prepare<'a>(&mut self, device: &ProtocolObject<dyn MTLDevice>, images: impl IntoIterator<Item = &'a ImageDraw>) -> Result<(), String> {
         self.frames += 1;
         for q in images {
             if let Some(entry) = self.cache.get_mut(&(q.key, q.repeat)) {
@@ -80,7 +81,7 @@ impl ImagePipeline {
             desc.setUsage(MTLTextureUsage::ShaderRead);
             // Managed: written from the CPU once, then read by the GPU (Intel Macs allow no shared textures).
             desc.setStorageMode(MTLStorageMode::Managed);
-            let Some(texture) = device.newTextureWithDescriptor(&desc) else { continue };
+            let texture = super::new_texture(device, &desc).ok_or_else(|| format!("no Metal texture for a {w} x {h} picture"))?;
             let region = MTLRegion { origin: MTLOrigin { x: 0, y: 0, z: 0 }, size: MTLSize { width: w as usize, height: h as usize, depth: 1 } };
             // SAFETY: `pixels` holds exactly w * h RGBA texels (checked above).
             unsafe { texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(region, 0, std::ptr::NonNull::new(q.pixels.as_ptr() as *mut _).expect("a non-empty picture"), w as usize * 4) };
@@ -89,5 +90,6 @@ impl ImagePipeline {
         }
         let now = self.frames;
         self.cache.retain(|_, (_, used)| now - *used <= TEXTURE_KEEP);
+        Ok(())
     }
 }

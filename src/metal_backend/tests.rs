@@ -78,10 +78,14 @@ fn largest_step(a: &[u8], b: &[u8]) -> u8 {
     a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0)
 }
 
+/// Cases allowed to be one step apart: each only for float rounding in the MSL compile, and each
+/// named in the task report. Empty: every case is byte-equal.
+const ONE_STEP_ALLOWED: &[&str] = &[];
+
 fn compare(name: &str, wgpu: &[u8], metal: &[u8], w: u32, near: &mut Vec<String>) {
     match largest_step(wgpu, metal) {
         0 => {}
-        1 => near.push(name.to_string()),
+        1 if ONE_STEP_ALLOWED.contains(&name) => near.push(name.to_string()),
         _ => crate::render_pixel_tests::assert_same(name, wgpu, metal, w),
     }
 }
@@ -109,10 +113,7 @@ fn metal_matches_wgpu_on_quads_and_images() {
         let b = super::readback::read_rgba(&test_device().queue, metal.offscreen_texture(), w, h).unwrap();
         compare(&format!("{name} render"), &a, &b, w, &mut near);
     }
-    // Allowed only for float rounding in the MSL compile; each is listed in the task report.
-    if !near.is_empty() {
-        eprintln!("cases one step apart: {near:?}");
-    }
+    report_near(&near);
 }
 
 /// A new scale reaches the layer at once, and the next frame draws at the new size with the new
@@ -226,7 +227,7 @@ fn match_in_order(on: &crate::gpu_window::GpuHandles, wgpu: &mut WindowGpu, meta
 }
 
 fn report_near(near: &[String]) {
-    // Allowed only for float rounding in the MSL compile; each is listed in the task report.
+    // Only cases on `ONE_STEP_ALLOWED` get here.
     if !near.is_empty() {
         eprintln!("cases one step apart: {near:?}");
     }
@@ -323,7 +324,9 @@ fn a_failed_prepare_loses_no_write_on_metal() {
     let mut metal = MetalWindow::offscreen(test_device(), Renderer::cpu_only(FACE, PX), size);
     metal.renderer_mut().atlas().set_max_size(256);
     // One glyph bigger than the whole capped atlas.
-    assert!(metal.capture(&frame(vec![kept.clone(), row("W", 30.0, 24.0)]), None, size.0, size.1).is_err(), "the huge glyph fit");
+    let failed = metal.capture(&frame(vec![kept.clone(), row("W", 30.0, 24.0)]), None, size.0, size.1).expect_err("the huge glyph fit");
+    assert!(failed.contains("AtlasFull"), "failed for another reason: {failed}");
+    assert!(metal.stale().is_none(), "a failed prepare is no Metal failure");
     let prepared = metal.renderer().row_prepares();
     let got = metal.capture(&frame(vec![kept.clone()]), None, size.0, size.1).unwrap();
     assert_eq!(metal.renderer().row_prepares(), prepared, "the row was prepared again, so this proves nothing");
@@ -369,7 +372,67 @@ fn steady_text_frames_make_no_buffers() {
     }
     let (objects, staging) = made.unwrap();
     assert_eq!(metal.text_objects_made(), objects, "steady frames made text buffers or textures");
-    assert!(metal.staging_made() <= staging.max(3), "{} staging buffers", metal.staging_made());
+    // Each offscreen frame waits for its command buffer, so the one chunk comes back every time.
+    assert_eq!(metal.staging_made(), staging, "steady frames made staging chunks");
+}
+
+/// The atlas in Web color mode (color glyphs in RGBA8Unorm, not sRGB) on both sides.
+#[test]
+fn metal_matches_wgpu_in_web_color_mode() {
+    let (on, mut wgpu, mut metal) = text_pair(true);
+    wgpu.renderer_mut().set_color_mode(glyphon::ColorMode::Web);
+    metal.set_color_mode(glyphon::ColorMode::Web);
+    let cases: Vec<_> = crate::render_pixel_tests::pixel_cases(wgpu.renderer()).into_iter().filter(|c| !c.name.starts_with("cjk_flood") || c.name.ends_with('0')).collect();
+    // The mode must change something: a flood frame (it has emoji) draws otherwise in Accurate.
+    let flood = cases.iter().find(|c| c.name.starts_with("cjk_flood")).expect("a flood frame");
+    let mut accurate = metal_window(flood.size);
+    assert_ne!(metal.capture(&flood.frame, None, flood.size.0, flood.size.1).unwrap(), accurate.capture(&flood.frame, None, flood.size.0, flood.size.1).unwrap(), "Web mode drew as Accurate");
+    metal.set_color_mode(glyphon::ColorMode::Web);
+    let mut near = Vec::new();
+    match_in_order(&on, &mut wgpu, &mut metal, &cases, "web", &mut near);
+    report_near(&near);
+}
+
+/// A Metal allocation that fails mid-frame (a grown atlas or row buffer, a staging chunk, a quad
+/// buffer, a picture) leaves the CPU side counting changes the GPU never got: the frame is a lost
+/// surface, and once the app remakes it both sides start over and draw as wgpu does.
+#[test]
+fn a_failed_metal_allocation_starts_both_sides_over() {
+    let (_, mut wgpu, _) = text_pair(true);
+    let mut cases: Vec<_> = crate::render_pixel_tests::pixel_cases(wgpu.renderer()).into_iter().filter(|c| c.name.starts_with("cjk_flood")).take(40).collect();
+    let size = cases[0].size;
+    // Many quads grow a quad buffer; a picture needs a texture.
+    let quads = Frame { clear: [0.0, 0.0, 0.0, 1.0], fade: 1.0, quads: (0..4000).map(|k| Quad { rect: rect((k % 100) as f32 * 8.0, (k / 100) as f32 * 8.0, 6.0, 6.0), color: [0.5, 0.2, 0.9, 1.0] }).collect(), ..cases[3].frame.clone() };
+    let pictured = Frame { images: vec![picture(9, rect(20.5, 30.0, 200.0, 100.0), (17, 11), [0.0, 0.0, 1.0, 1.0], false)], ..cases[5].frame.clone() };
+    cases.insert(4, crate::render_pixel_tests::PixelCase { name: "many quads".into(), frame: quads, size });
+    cases.insert(7, crate::render_pixel_tests::PixelCase { name: "a picture".into(), frame: pictured, size });
+    let mut metal = metal_window(size);
+    let mut lost = Vec::new();
+    for (i, c) in cases.iter().enumerate() {
+        // Fail the first allocation of these frames: the first frame's staging chunk, the quad
+        // buffer, the picture's texture (or whatever that frame makes first).
+        if [0, 4, 7].contains(&i) {
+            super::fail_allocations(1);
+        }
+        let want = wgpu.capture(&c.frame, None, size.0, size.1).unwrap();
+        match metal.render(&c.frame, None, None) {
+            Err(crate::gpu_window::RenderError::Lost(why)) => {
+                lost.push(c.name.clone());
+                assert!(why.starts_with("Metal: "), "{why}");
+                assert!(metal.stale().is_some());
+                // As the app does with a lost surface: remake it and draw again.
+                metal.remake_surface().unwrap();
+                assert!(metal.stale().is_none());
+                assert_eq!(metal.renderer_mut().atlas().generation(), 0, "the atlas started over");
+                metal.render(&c.frame, None, None).unwrap().kept.unwrap();
+            }
+            other => other.unwrap_or_else(|_| panic!("{}: an error that is not a lost surface", c.name)).kept.unwrap(),
+        }
+        super::fail_allocations(0);
+        let got = super::readback::read_rgba(&test_device().queue, metal.offscreen_texture(), size.0, size.1).unwrap();
+        crate::render_pixel_tests::assert_same(&c.name, &want, &got, size.0);
+    }
+    assert_eq!(lost, [cases[0].name.as_str(), "many quads", "a picture"]);
 }
 
 /// The window's layer follows its root layer's bounds and scale, as wgpu's raw-window-metal layer

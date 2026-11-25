@@ -187,3 +187,42 @@ pub fn egui_wgpu() -> Result<crate::gpu_shared::GpuShared, String> {
     *slot = Some(gpu.clone());
     Ok(gpu)
 }
+
+/// A Metal buffer, or None when the device has no room (or a test made it fail).
+#[cfg(target_os = "macos")]
+pub(crate) fn new_buffer(device: &ProtocolObject<dyn MTLDevice>, size: usize, options: objc2_metal::MTLResourceOptions) -> Option<Retained<ProtocolObject<dyn objc2_metal::MTLBuffer>>> {
+    if fails_now() {
+        return None;
+    }
+    device.newBufferWithLength_options(size, options)
+}
+
+/// A Metal texture, or None when the device has no room (or a test made it fail).
+#[cfg(target_os = "macos")]
+pub(crate) fn new_texture(device: &ProtocolObject<dyn MTLDevice>, desc: &objc2_metal::MTLTextureDescriptor) -> Option<Retained<ProtocolObject<dyn objc2_metal::MTLTexture>>> {
+    if fails_now() {
+        return None;
+    }
+    device.newTextureWithDescriptor(desc)
+}
+
+#[cfg(all(test, target_os = "macos"))]
+thread_local!(static FAILS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) });
+
+/// Makes the next `n` buffers or textures this thread asks for fail (tests).
+#[cfg(all(test, target_os = "macos"))]
+pub fn fail_allocations(n: u32) {
+    FAILS.with(|f| f.set(n));
+}
+
+#[cfg(target_os = "macos")]
+fn fails_now() -> bool {
+    #[cfg(test)]
+    return FAILS.with(|f| {
+        let n = f.get();
+        f.set(n.saturating_sub(1));
+        n > 0
+    });
+    #[cfg(not(test))]
+    false
+}

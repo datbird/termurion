@@ -73,7 +73,7 @@ impl Staging {
             Some(i) => i,
             None => {
                 let size = len.next_power_of_two().max(CHUNK_MIN);
-                let buf = device.newBufferWithLength_options(size, MTLResourceOptions::StorageModeShared).ok_or("no Metal staging buffer")?;
+                let buf = super::new_buffer(device, size, MTLResourceOptions::StorageModeShared).ok_or("no Metal staging buffer")?;
                 self.made += 1;
                 self.chunks.push((buf, Arc::new(AtomicBool::new(true))));
                 self.chunks.len() - 1
@@ -90,7 +90,7 @@ impl Staging {
 }
 
 fn private_buffer(device: &ProtocolObject<dyn MTLDevice>, size: u64) -> Result<Buffer, String> {
-    device.newBufferWithLength_options(size as usize, MTLResourceOptions::StorageModePrivate).ok_or_else(|| format!("no Metal buffer of {size} bytes"))
+    super::new_buffer(device, size as usize, MTLResourceOptions::StorageModePrivate).ok_or_else(|| format!("no Metal buffer of {size} bytes"))
 }
 
 /// The slot of the vertex stage's buffer sizes (after the screen uniform; `shaders::stage_resources`).
@@ -116,7 +116,7 @@ impl MetalDraw {
     /// for the fade pass.
     pub fn run(&mut self, device: &ProtocolObject<dyn MTLDevice>, cb: &ProtocolObject<dyn MTLCommandBuffer>, list: &DrawList, up: &Uploads, view: &ProtocolObject<dyn MTLTexture>, raw: Option<&ProtocolObject<dyn MTLTexture>>) -> Result<(), String> {
         self.write_buffers(device, cb, list, up)?;
-        self.images.prepare(device, list.backdrop.iter().chain(&list.picture));
+        self.images.prepare(device, list.backdrop.iter().chain(&list.picture))?;
         self.last_uniform = list.quad_uniform;
 
         let pass = MTLRenderPassDescriptor::new();

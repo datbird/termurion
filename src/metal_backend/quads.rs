@@ -33,6 +33,8 @@ pub(super) struct Shader {
     pub vs: Retained<ProtocolObject<dyn MTLFunction>>,
     pub fs: Retained<ProtocolObject<dyn MTLFunction>>,
     buffers: &'static [Layout],
+    /// The vertex stage's slots, as the translation used them.
+    vertex: naga::back::msl::EntryPointResources,
 }
 
 /// The Metal vertex format wgpu-hal maps `format` to (`conv::map_vertex_format`), for the ones
@@ -80,9 +82,21 @@ impl Shader {
                 attributes: b.attrs.iter().map(|a| AttributeMapping { shader_location: a.location, offset: a.offset, format: a.format }).collect(),
             })
             .collect();
-        let (vs_src, vs_name) = shaders::to_msl_with(&module, &info, ShaderStage::Vertex, vs, shaders::stage_resources(groups, ShaderStage::Vertex), mappings)?;
+        let vertex = shaders::stage_resources(groups, ShaderStage::Vertex);
+        let (vs_src, vs_name) = shaders::to_msl_with(&module, &info, ShaderStage::Vertex, vs, vertex.clone(), mappings)?;
         let (fs_src, fs_name) = shaders::to_msl_with(&module, &info, ShaderStage::Fragment, fs, shaders::stage_resources(groups, ShaderStage::Fragment), Vec::new())?;
-        Ok(Shader { vs: function(device, &vs_src, &vs_name)?, fs: function(device, &fs_src, &fs_name)?, buffers })
+        Ok(Shader { vs: function(device, &vs_src, &vs_name)?, fs: function(device, &fs_src, &fs_name)?, buffers, vertex })
+    }
+
+    /// The vertex stage's buffer slot for `group`, `binding`.
+    pub fn vertex_buffer(&self, group: u32, binding: u32) -> Result<usize, String> {
+        let at = self.vertex.resources.get(&naga::ResourceBinding { group, binding }).and_then(|t| t.buffer);
+        at.map(usize::from).ok_or_else(|| format!("no vertex buffer slot for group {group} binding {binding}"))
+    }
+
+    /// The vertex stage's sizes buffer slot (vertex pulling reads the bound lengths there).
+    pub fn sizes_slot(&self) -> usize {
+        usize::from(self.vertex.sizes_buffer.expect("a vertex stage always has a sizes buffer"))
     }
 
     /// A pipeline writing `format`, blending as `blend` says (source and destination factors for
