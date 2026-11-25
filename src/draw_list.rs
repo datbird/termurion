@@ -45,15 +45,24 @@ pub struct Uploads {
     pub buffers: Vec<BufferWrite>,
     pub atlas: Vec<AtlasOp>,
     /// Byte buffers of spent writes, kept so the next frame's writes do not allocate.
+    /// Capped by `POOL_COUNT` and `POOL_BYTES`, so one huge frame does not pin its memory.
     pool: Vec<Vec<u8>>,
 }
+
+/// Most spare buffers kept: a steady frame has a few writes per quad buffer.
+const POOL_COUNT: usize = 32;
+/// Most spare capacity kept in all (8 MiB).
+const POOL_BYTES: usize = 8 << 20;
 
 impl Uploads {
     /// Empties the lists for the next frame, keeping their storage.
     pub fn reset(&mut self) {
         for w in self.buffers.drain(..) {
             if let BufferWrite::Quads { bytes, .. } = w {
-                self.pool.push(bytes);
+                let held: usize = self.pool.iter().map(|b| b.capacity()).sum();
+                if self.pool.len() < POOL_COUNT && held + bytes.capacity() <= POOL_BYTES {
+                    self.pool.push(bytes);
+                }
             }
         }
         self.atlas.clear();
@@ -288,5 +297,26 @@ mod tests {
         s.write(&[2; 100], &mut out);
         let BufferWrite::Quads { bytes, .. } = &out.buffers[0] else { panic!("{out:?}") };
         assert_eq!((bytes.as_ptr(), bytes.as_slice()), (first, &[2u8; 100][..]), "the second frame's write took a new buffer");
+    }
+
+    #[test]
+    fn the_spare_pool_is_capped() {
+        let mut s = Shadow::new(QuadBuf::Under);
+        let mut out = Uploads::default();
+        // One very large frame, then several small ones.
+        s.write(&vec![1u8; 3 * POOL_BYTES], &mut out);
+        out.reset();
+        for i in 0..5u8 {
+            s.write(&[i; 100], &mut out);
+            out.reset();
+        }
+        assert!(out.pool.len() <= POOL_COUNT);
+        assert!(out.pool.iter().map(|b| b.capacity()).sum::<usize>() <= POOL_BYTES, "the pool pinned the big frame");
+        // Many small writes at once stop at the count.
+        for i in 0..POOL_COUNT * 2 {
+            out.push_quads(QuadBuf::Under, i as u64, &[0; 8]);
+        }
+        out.reset();
+        assert_eq!(out.pool.len(), POOL_COUNT);
     }
 }
