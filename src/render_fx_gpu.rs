@@ -140,7 +140,29 @@ pub struct Chain {
     /// The copies that put a new frame under a built frame's rects (`Shade::Fresh`): one for a
     /// pass in the middle, one with the last pass's write mask. Made with the first kept output.
     fill: Option<(wgpu::BindGroupLayout, wgpu::RenderPipeline, wgpu::RenderPipeline)>,
+    /// Render passes begun (tests).
+    passes_run: u64,
+    one_pass_on: bool,
+    ran_one_pass: bool,
+    /// The last shader's GLSL body, for its one-pass variant (a chain of at most two shaders).
+    one_src: Option<std::sync::Arc<str>>,
+    /// The region path's one pass (`make_one_pass`), made with the first kept output.
+    one: Option<OnePass>,
+    one_tried: bool,
 }
+
+/// The region path's last pass as one: full screen, it shades the rects and copies last frame's
+/// kept texel elsewhere, writing the window and the other kept texture (`render_fx::wrap_glsl_for`).
+struct OnePass {
+    layout: wgpu::BindGroupLayout,
+    pipeline: wgpu::RenderPipeline,
+    /// `iShadeRects` and `iShadeCount`, and what the buffer holds.
+    shade: wgpu::Buffer,
+    held: Option<[u8; SHADE_BYTES]>,
+}
+
+/// The one-pass shader's `TermurionShade` block: 16 uvec4 rects, then the count (std140).
+const SHADE_BYTES: usize = crate::render_fx::SHADE_RECTS * 16 + 16;
 
 /// What a run of the passes shades (`Chain::run_with`).
 #[derive(Clone, Copy, Debug)]
@@ -154,14 +176,19 @@ pub enum Shade<'a> {
 }
 
 /// The chain's kept output (raw format, window size) and the copy that puts it in the window.
+/// With the one pass it is a pair: a pass cannot read and write one texture, so each frame reads
+/// `views[cur]` and writes the other.
 struct Kept {
-    _texture: wgpu::Texture,
-    view: wgpu::TextureView,
-    /// With view formats: the copy into the window's raw view and its bind group (without view
-    /// formats the encode copy reads `view` instead).
-    copy: Option<(wgpu::BindGroupLayout, wgpu::RenderPipeline, wgpu::BindGroup)>,
+    _textures: Vec<wgpu::Texture>,
+    views: Vec<wgpu::TextureView>,
+    cur: usize,
+    /// With view formats: the copy into the window's raw view and its bind group per view
+    /// (without view formats the encode copy reads `views[0]` instead).
+    copy: Option<(wgpu::BindGroupLayout, wgpu::RenderPipeline, Vec<wgpu::BindGroup>)>,
     /// The `fill` copies' bind group: the frame as the first pass reads it.
     fill: wgpu::BindGroup,
+    /// The one pass's bind groups: reading `views[0]`, `views[1]`, and the frame (`Shade::Fresh`).
+    one: Vec<wgpu::BindGroup>,
 }
 
 /// The format the passes write: the window's, without the sRGB suffix.
@@ -203,6 +230,8 @@ impl Chain {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        // A third pass writes the frame texture, so such a chain never keeps an output.
+        let one_src = shaders.last().and_then(|s| s.glsl.clone()).filter(|_| shaders.len() <= 2);
         let mut passes = Vec::new();
         let last = shaders.len().saturating_sub(1);
         for (i, shader) in shaders.into_iter().enumerate() {
@@ -239,7 +268,7 @@ impl Chain {
         }
         let last_packed = vec![Vec::new(); passes.len()];
         let scratch = vec![Vec::new(); passes.len()];
-        Ok(Chain { passes, bind_layout, sampler, format, size: (0, 0), targets: Vec::new(), blits: None, plain: None, keep_alpha, frame_drawn: false, binds: Vec::new(), copy_binds: Vec::new(), last_packed, binds_made: 0, uniform_writes: 0, ran: false, skipped: 0, scratch, staged: false, region_terms: None, kept: None, kept_ok: false, kept_made: 0, keep_next: true, shaded_region: false, fill: None })
+        Ok(Chain { passes, bind_layout, sampler, format, size: (0, 0), targets: Vec::new(), blits: None, plain: None, keep_alpha, frame_drawn: false, binds: Vec::new(), copy_binds: Vec::new(), last_packed, binds_made: 0, uniform_writes: 0, ran: false, skipped: 0, scratch, staged: false, region_terms: None, kept: None, kept_ok: false, kept_made: 0, keep_next: true, shaded_region: false, fill: None, passes_run: 0, one_pass_on: true, ran_one_pass: false, one_src, one: None, one_tried: false })
     }
 
     /// For a card that cannot view a texture in a second format (`view_formats_supported` false):
@@ -315,6 +344,21 @@ impl Chain {
     /// Whether the last run shaded only rects.
     pub fn shaded_region(&self) -> bool {
         self.shaded_region
+    }
+
+    /// Whether the region path may run its last pass as one (tests compare it with the old way).
+    pub fn set_one_pass(&mut self, on: bool) {
+        self.one_pass_on = on;
+    }
+
+    /// Whether the last run wrote the window and the kept output in one pass.
+    pub fn ran_one_pass(&self) -> bool {
+        self.ran_one_pass
+    }
+
+    /// How many render passes the chain has begun.
+    pub fn passes_run(&self) -> u64 {
+        self.passes_run
     }
 
     /// How many times the kept output was made (it follows the size, not the frames).
@@ -449,17 +493,23 @@ impl Chain {
             self.kept = None;
             return;
         }
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("render_fx kept"),
-            size: wgpu::Extent3d { width: self.size.0.max(1), height: self.size.1.max(1), depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: raw_format(self.format),
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&Default::default());
+        self.make_one_pass(device);
+        let n = if self.one.is_some() { 2 } else { 1 };
+        let textures: Vec<_> = (0..n)
+            .map(|_| {
+                device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("render_fx kept"),
+                    size: wgpu::Extent3d { width: self.size.0.max(1), height: self.size.1.max(1), depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: raw_format(self.format),
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+            })
+            .collect();
+        let views: Vec<_> = textures.iter().map(|t| t.create_view(&Default::default())).collect();
         let copy = self.blits.is_none().then(|| {
             // The pipeline outlives a resize; only its bind group follows the texture.
             let (layout, pipeline) = match self.kept.take().and_then(|k| k.copy) {
@@ -469,8 +519,8 @@ impl Chain {
                     copy_pipeline(device, raw_format(self.format), out_mask)
                 }
             };
-            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("render_fx kept"), layout: &layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }] });
-            (layout, pipeline, bind)
+            let binds = views.iter().map(|v| device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("render_fx kept"), layout: &layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(v) }] })).collect();
+            (layout, pipeline, binds)
         });
         let keep_alpha = self.keep_alpha;
         let (fill_layout, _, _) = self.fill.get_or_insert_with(|| {
@@ -483,12 +533,80 @@ impl Chain {
             _ => &self.targets[0].raw,
         };
         let fill = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("render_fx fill"), layout: fill_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(first_input) }] });
-        self.kept = Some(Kept { _texture: texture, view, copy, fill });
+        let one = match &self.one {
+            Some(o) => {
+                let last = self.passes.len() - 1;
+                let input = &self.targets[last % 2].raw;
+                // Outside the rects a fresh frame shows the frame itself.
+                views.iter().chain([first_input]).map(|outside| {
+                    device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("render_fx one pass"),
+                        layout: &o.layout,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(input) },
+                            wgpu::BindGroupEntry { binding: 1, resource: self.passes[last].uniforms.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(outside) },
+                            wgpu::BindGroupEntry { binding: 4, resource: o.shade.as_entire_binding() },
+                        ],
+                    })
+                }).collect()
+            }
+            None => Vec::new(),
+        };
+        self.binds_made += one.len() as u64;
+        self.kept = Some(Kept { _textures: textures, views, cur: 0, copy, fill, one });
         self.kept_made += 1;
     }
 
+    /// Builds the one pass the first time a kept output is made: only with view formats and a
+    /// GLSL last shader whose variant compiles. Any other chain keeps the two passes.
+    fn make_one_pass(&mut self, device: &wgpu::Device) {
+        if std::mem::replace(&mut self.one_tried, true) || self.blits.is_some() {
+            return;
+        }
+        let Some(src) = self.one_src.clone() else { return };
+        let Ok(compiled) = crate::render_fx::compile_one_pass(&src) else { return };
+        let texture = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+            count: None,
+        };
+        let buffer = |binding| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None };
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("render_fx one pass"),
+            entries: &[texture(0), buffer(1), wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None }, texture(3), buffer(4)],
+        });
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("render_fx one pass"), bind_group_layouts: &[Some(&layout)], ..Default::default() });
+        let vertex = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("render_fx vertex"), source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(VERTEX)) });
+        let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("render_fx one pass"), source: wgpu::ShaderSource::Naga(Cow::Owned(compiled.module)) });
+        // Both targets get the last pass's mask: the kept output always had it.
+        let write_mask = if self.keep_alpha { wgpu::ColorWrites::ALL } else { wgpu::ColorWrites::COLOR };
+        let target = Some(wgpu::ColorTargetState { format: raw_format(self.format), blend: None, write_mask });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("render_fx one pass"),
+            layout: Some(&pl),
+            vertex: wgpu::VertexState { module: &vertex, entry_point: Some("vs_main"), compilation_options: Default::default(), buffers: &[] },
+            fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some(&compiled.entry), compilation_options: Default::default(), targets: &[target.clone(), target] }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        if [ready(device, validation.pop()), ready(device, internal.pop())].into_iter().flatten().next().is_some() {
+            return;
+        }
+        let shade = device.create_buffer(&wgpu::BufferDescriptor { label: Some("render_fx shade rects"), size: SHADE_BYTES as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        self.one = Some(OnePass { layout, pipeline, shade, held: None });
+    }
+
     /// One copy pass from `src` into `dst`.
-    fn blit(encoder: &mut wgpu::CommandEncoder, bind: &wgpu::BindGroup, pipeline: &wgpu::RenderPipeline, dst: &wgpu::TextureView) {
+    fn blit(encoder: &mut wgpu::CommandEncoder, bind: &wgpu::BindGroup, pipeline: &wgpu::RenderPipeline, dst: &wgpu::TextureView, passes: &mut u64) {
+        *passes += 1;
         let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("render_fx copy"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: dst, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
@@ -530,7 +648,7 @@ impl Chain {
             Some((b, p)) => {
                 let last = self.passes.len().saturating_sub(1);
                 let make = |src: &wgpu::TextureView| device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("render_fx copy"), layout: &b.layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(src) }] });
-                let result = self.kept.as_ref().map_or(&p.raw[(last + 1) % 2], |k| &k.view);
+                let result = self.kept.as_ref().map_or(&p.raw[(last + 1) % 2], |k| &k.views[0]);
                 vec![make(&p.frame), make(result)]
             }
             None => Vec::new(),
@@ -573,6 +691,36 @@ impl Chain {
             Shade::Kept(r) => (Some(r).filter(|_| self.kept.is_some() && self.kept_ok), false),
             Shade::Fresh(r) => (Some(r).filter(|_| self.kept.is_some() && !self.region_terms.as_ref().is_some_and(|t| t.contains(&RegionTerm::StillLooks))), true),
         };
+        // A full frame no next frame builds on writes the window directly (the copy passes
+        // without view formats run anyway, so there the kept output stays).
+        let skip_kept = rects.is_none() && !self.keep_next && self.blits.is_none();
+        // The last pass writes the window and the other kept texture at once, unless the rects
+        // do not fit the shader's array.
+        let one_pass = self.one_pass_on && !skip_kept && self.one.is_some() && self.kept.as_ref().is_some_and(|k| k.one.len() == 3) && rects.is_none_or(|r| r.len() <= crate::render_fx::SHADE_RECTS);
+        if one_pass {
+            let mut bytes = [0u8; SHADE_BYTES];
+            let (sw, sh) = self.size;
+            // A full frame shades one rect over everything.
+            let full = [PxRect { x: 0, y: 0, w: sw, h: sh }];
+            let list = rects.unwrap_or(&full);
+            for (r, at) in list.iter().zip(bytes.chunks_exact_mut(16)) {
+                // Cut as the scissors are.
+                let (x, y) = (r.x.min(sw), r.y.min(sh));
+                let (w, h) = (r.w.min(sw - x), r.h.min(sh - y));
+                for (v, b) in [x, y, w, h].into_iter().zip(at.chunks_exact_mut(4)) {
+                    b.copy_from_slice(&v.to_le_bytes());
+                }
+            }
+            bytes[SHADE_BYTES - 16..SHADE_BYTES - 12].copy_from_slice(&(list.len() as u32).to_le_bytes());
+            let o = self.one.as_mut().expect("checked above");
+            if o.held != Some(bytes) {
+                match uploads.as_deref_mut() {
+                    Some(up) => up.write(device, &o.shade, 0, &bytes),
+                    None => queue.write_buffer(&o.shade, 0, &bytes),
+                }
+                o.held = Some(bytes);
+            }
+        }
         // The uniform buffers hold what the last frame packed; only a change is written.
         let staged = std::mem::take(&mut self.staged);
         for (i, pass) in self.passes.iter().enumerate() {
@@ -606,12 +754,9 @@ impl Chain {
         // An animation-only region frame finds the decoded frame still there: with a kept output
         // no pass writes it.
         if let Some((b, p)) = plain.filter(|_| rects.is_none() || fresh) {
-            Self::blit(&mut encoder, &self.copy_binds[0], &b.decode, &p.raw[0]);
+            Self::blit(&mut encoder, &self.copy_binds[0], &b.decode, &p.raw[0], &mut self.passes_run);
         }
-        // A full frame no next frame builds on writes the window directly (the copy passes
-        // without view formats run anyway, so there the kept output stays).
-        let skip_kept = rects.is_none() && !self.keep_next && plain.is_none();
-        let kept = self.kept.as_ref().map(|k| &k.view).filter(|_| !skip_kept);
+        let kept = self.kept.as_ref().map(|k| &k.views[k.cur]).filter(|_| !skip_kept);
         // An animation-only region frame keeps every pixel outside its rects from the last frame.
         let load = if rects.is_some() && !fresh { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(wgpu::Color::BLACK) };
         // A fresh region frame starts each pass's output as the new frame, which is what every
@@ -621,6 +766,24 @@ impl Chain {
             _ => None,
         };
         for (i, pass) in self.passes.iter().enumerate() {
+            if i == last && one_pass {
+                let (k, o) = (self.kept.as_ref().expect("one pass has a kept output"), self.one.as_ref().expect("checked above"));
+                self.passes_run += 1;
+                let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("render_fx one pass"),
+                    color_attachments: &[cleared(out), cleared(&k.views[1 - k.cur])],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                rp.set_pipeline(&o.pipeline);
+                // Outside the rects: last frame's kept output, or the new frame.
+                let outside = if rects.is_some() && !fresh { k.cur } else { 2 };
+                rp.set_bind_group(0, &k.one[outside], &[]);
+                rp.draw(0..3, 0..1);
+                continue;
+            }
             // Ping-pong: pass i reads target i % 2 (its bind group) and writes the other, or the
             // kept output or the window when it is the last.
             let output = match plain {
@@ -629,6 +792,7 @@ impl Chain {
                 None if i == last => kept.unwrap_or(out),
                 None => &self.targets[(i + 1) % 2].raw,
             };
+            self.passes_run += 1;
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("render_fx"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: output, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load, store: wgpu::StoreOp::Store } })],
@@ -661,8 +825,8 @@ impl Chain {
             }
         }
         match (plain, &self.kept) {
-            (Some((b, _)), _) => Self::blit(&mut encoder, &self.copy_binds[1], &b.encode, out),
-            (None, Some(Kept { copy: Some((_, pipeline, bind)), .. })) if !skip_kept => Self::blit(&mut encoder, bind, pipeline, out),
+            (Some((b, _)), _) => Self::blit(&mut encoder, &self.copy_binds[1], &b.encode, out, &mut self.passes_run),
+            (None, Some(Kept { copy: Some((_, pipeline, binds)), cur, .. })) if !skip_kept && !one_pass => Self::blit(&mut encoder, &binds[*cur], pipeline, out, &mut self.passes_run),
             (None, _) => {}
         }
         match uploads {
@@ -673,10 +837,19 @@ impl Chain {
                 queue.submit([encoder.finish()]);
             }
         }
+        if let Some(k) = self.kept.as_mut().filter(|_| one_pass) {
+            k.cur = 1 - k.cur;
+        }
         self.kept_ok = self.kept.is_some() && !skip_kept;
         self.shaded_region = rects.is_some();
+        self.ran_one_pass = one_pass;
         self.ran = true;
     }
+}
+
+/// A color attachment cleared to black and stored.
+fn cleared(view: &wgpu::TextureView) -> Option<wgpu::RenderPassColorAttachment<'_>> {
+    Some(wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })
 }
 
 /// The kept output's copy into the window's raw view (`COPY`).

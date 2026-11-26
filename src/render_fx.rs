@@ -567,8 +567,40 @@ fn discover_in(builtin: &[crate::render_fx_builtin::Builtin], user: Option<&Path
 /// numbers, then `main()`. `main()` goes last because naga rejects a call to a function defined
 /// later.
 pub fn wrap_glsl(body: &str) -> String {
+    wrap_glsl_for(body, false)
+}
+
+/// How many rects the one-pass region shader takes (`ONE_PASS_MAIN`); more run two passes.
+pub const SHADE_RECTS: usize = 16;
+
+/// `main()` of the region path's one pass (`wrap_glsl_for`): `mainImage` only inside the rects,
+/// last frame's kept texel elsewhere, the color written to the window and the next kept texture.
+const ONE_PASS_MAIN: &str = "// The prefix maps texture2D to texture for the shaders; this one needs the type.
+#undef texture2D
+layout(location = 1) out vec4 _keptColor;
+layout(set = 0, binding = 3) uniform texture2D termurionKept;
+layout(set = 0, binding = 4, std140) uniform TermurionShade {
+    uvec4 iShadeRects[16];
+    uint iShadeCount;
+};
+void main() {
+    uvec2 p = uvec2(gl_FragCoord.xy);
+    bool shade = false;
+    for (uint i = 0u; i < iShadeCount; i++) {
+        uvec4 r = iShadeRects[i];
+        // Unsigned: a pixel left of or above the rect wraps past its size.
+        if (p.x - r.x < r.z && p.y - r.y < r.w) { shade = true; }
+    }
+    if (shade) { mainImage(_fragColor, gl_FragCoord.xy); } else { _fragColor = texelFetch(sampler2D(termurionKept, iChannel0_smp), ivec2(p), 0); }
+    _keptColor = _fragColor;
+}
+";
+
+/// `wrap_glsl`, or with `one_pass` the region path's variant (`ONE_PASS_MAIN`).
+pub fn wrap_glsl_for(body: &str, one_pass: bool) -> String {
     let body = patch_input_box(body);
-    format!("{PREFIX}\n#line 1\n{body}\nvoid main() {{ mainImage(_fragColor, gl_FragCoord.xy); }}\n")
+    let main = if one_pass { ONE_PASS_MAIN } else { "void main() { mainImage(_fragColor, gl_FragCoord.xy); }\n" };
+    format!("{PREFIX}\n#line 1\n{body}\n{main}")
 }
 
 /// Termurion's patch for cursor-fx-style shaders (each line stays one line, so error line numbers
@@ -728,6 +760,8 @@ pub struct Compiled {
     pub info: naga::valid::ModuleInfo,
     /// The fragment entry point's name.
     pub entry: String,
+    /// A GLSL shader's body, for its one-pass region variant (`compile_one_pass`).
+    pub glsl: Option<std::sync::Arc<str>>,
 }
 
 impl std::fmt::Debug for Compiled {
@@ -759,7 +793,7 @@ fn validate(module: naga::Module, src: &str, entry: &str, first_line: u32) -> Re
     if !module.entry_points.iter().any(|e| e.name == entry && e.stage == naga::ShaderStage::Fragment) {
         return Err(format!("no fragment entry point named {entry}"));
     }
-    Ok(Compiled { module, info, entry: entry.to_string() })
+    Ok(Compiled { module, info, entry: entry.to_string(), glsl: None })
 }
 
 /// Compiles a Ghostty/Shadertoy GLSL body (`mainImage`).
@@ -770,7 +804,17 @@ pub fn compile_glsl(body: &str) -> Result<Compiled, String> {
     let module = fe
         .parse(&naga::front::glsl::Options::from(naga::ShaderStage::Fragment), &src)
         .map_err(|e| located(&src, first, e.errors.iter().map(|x| (x.meta, x.kind.to_string())), e.emit_to_string(&src)))?;
-    validate(module, &src, "main", first)
+    let mut c = validate(module, &src, "main", first)?;
+    c.glsl = Some(body.into());
+    Ok(c)
+}
+
+/// The one-pass region variant of a GLSL body (`wrap_glsl_for`). It fails where the body needs
+/// uniform control flow (derivatives), and such a shader keeps the two passes.
+pub fn compile_one_pass(body: &str) -> Result<Compiled, String> {
+    let src = wrap_glsl_for(body, true);
+    let module = naga::front::glsl::Frontend::default().parse(&naga::front::glsl::Options::from(naga::ShaderStage::Fragment), &src).map_err(|e| e.emit_to_string(&src))?;
+    validate(module, &src, "main", prefix_lines())
 }
 
 /// Compiles a WGSL shader with a `fs_main` fragment entry point and the same bindings.
@@ -1580,6 +1624,21 @@ mod tests {
                 assert!(layout.fields.contains_key("iCurrentCursor"));
             }
             assert!(p.manifest.cursor_color.as_deref().and_then(hex_color).is_some(), "{} has a preset color", p.id);
+        }
+    }
+
+    /// Every shipped shader has the region path's one-pass variant (`compile_one_pass`), with
+    /// each Live Lines setting, and its uniform block is laid out as the plain shader's.
+    #[test]
+    fn every_builtin_shader_compiles_for_one_pass() {
+        let (list, _) = discover(None);
+        for p in list.iter().filter(|p| p.builtin()) {
+            for live in [false, true] {
+                for c in p.compile_with(&[("LINE_EFFECT", live)]).unwrap() {
+                    let one = compile_one_pass(c.glsl.as_deref().expect("a GLSL body")).unwrap_or_else(|e| panic!("{}: {e}", p.id));
+                    assert_eq!(uniform_layout(&one.module), uniform_layout(&c.module), "{}", p.id);
+                }
+            }
         }
     }
 
