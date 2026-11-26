@@ -9,6 +9,7 @@ use winit::dpi::{PhysicalPosition, PhysicalSize};
 /// The text of the one banner a machine without Direct3D 12 shows.
 pub(super) const UNAVAILABLE: &str = "Transparency needs Direct3D 12; this machine draws every window opaque.";
 
+#[cfg(not(target_os = "macos"))]
 /// A window made for alpha: its surface, device and queue come from the second instance (`alpha`); the
 /// primary handles ride along for everything that opens from this window (egui windows, new opaque windows).
 fn init_gpu_alpha(window: Arc<Window>, primary: &Gpu, alpha: &AlphaGpu) -> Result<Gpu, String> {
@@ -441,6 +442,7 @@ fn placement_of(hwnd: isize) -> Option<transparency::Placed> {
     Some(transparency::placed(show_cmd, flags, rect, shift))
 }
 
+#[cfg(not(target_os = "macos"))]
 /// The second instance: DX12 only, DirectComposition swapchains (the only kind that offers a premultiplied
 /// alpha mode), its adapter chosen against `window`'s surface. The probe surface is dropped before the
 /// window's real one is made.
@@ -457,6 +459,17 @@ pub(super) fn make_alpha_gpu(display: &winit::event_loop::OwnedDisplayHandle, wi
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).map_err(|e| e.to_string())?;
     crate::gpu_pick::watch(&device, crate::gpu_pick::current_generation());
     Ok(GpuHandles { instance, adapter, device, queue })
+}
+
+/// macOS has no see-through instance: see-through windows are Windows only.
+#[cfg(target_os = "macos")]
+fn init_gpu_alpha(_window: Arc<Window>, _primary: &Gpu, alpha: &AlphaGpu) -> Result<Gpu, String> {
+    match *alpha {}
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn make_alpha_gpu(_display: &winit::event_loop::OwnedDisplayHandle, _window: &Arc<Window>) -> Result<AlphaGpu, String> {
+    Err(UNAVAILABLE.to_string())
 }
 
 #[cfg(test)]

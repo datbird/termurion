@@ -119,14 +119,16 @@ pub fn symbols_face() -> Vec<u8> {
     include_bytes!("../resources/fonts/TermurionSymbols.ttf").to_vec()
 }
 
-/// The GPU half of an egui window: egui-wgpu on a wgpu device, or the Metal painter on the Metal
-/// device (macOS).
+/// The GPU half of an egui window: egui-wgpu on a wgpu device (Windows, Linux), or the Metal
+/// painter on the Metal device (macOS).
 enum Canvas {
+    #[cfg(not(target_os = "macos"))]
     Wgpu(WgpuCanvas),
     #[cfg(target_os = "macos")]
     Metal(crate::metal_backend::EguiCanvas),
 }
 
+#[cfg(not(target_os = "macos"))]
 struct WgpuCanvas {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
@@ -138,6 +140,7 @@ struct WgpuCanvas {
 impl Canvas {
     fn size(&self) -> (u32, u32) {
         match self {
+            #[cfg(not(target_os = "macos"))]
             Canvas::Wgpu(w) => (w.config.width, w.config.height),
             #[cfg(target_os = "macos")]
             Canvas::Metal(m) => m.size(),
@@ -148,6 +151,7 @@ impl Canvas {
     #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     fn resize(&mut self, w: u32, h: u32, scale: f64) {
         match self {
+            #[cfg(not(target_os = "macos"))]
             Canvas::Wgpu(c) => {
                 c.config.width = w;
                 c.config.height = h;
@@ -176,6 +180,7 @@ pub struct EguiHost {
     answered: bool,
     /// `focus` was asked while the dialog was hidden: it is done when the dialog shows.
     focus_on_show: std::cell::Cell<bool>,
+    #[cfg(not(target_os = "macos"))]
     /// A persistent Validation error was written to the log (once, not every retry).
     validation_logged: bool,
 }
@@ -241,6 +246,7 @@ impl EguiHost {
         let attrs = attrs.with_window_icon(crate::presence::window_icon());
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
         let (canvas, max_side) = match gpu {
+            #[cfg(not(target_os = "macos"))]
             crate::gpu_shared::GpuShared::Wgpu { instance, adapter, device, queue } => {
                 let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
                 let caps = surface.get_capabilities(adapter);
@@ -270,7 +276,19 @@ impl EguiHost {
         let ctx = egui::Context::default();
         install_menu_fonts(&ctx);
         let state = egui_winit::State::new(ctx.clone(), egui::ViewportId::ROOT, &window, Some(window.scale_factor() as f32), None, Some(max_side));
-        Ok(EguiHost { canvas, ctx, state, window, probe: false, probed: None, dialog: None, answered: false, focus_on_show: std::cell::Cell::new(false), validation_logged: false })
+        Ok(EguiHost {
+            canvas,
+            ctx,
+            state,
+            window,
+            probe: false,
+            probed: None,
+            dialog: None,
+            answered: false,
+            focus_on_show: std::cell::Cell::new(false),
+            #[cfg(not(target_os = "macos"))]
+            validation_logged: false,
+        })
     }
 
     pub fn id(&self) -> WindowId {
@@ -475,6 +493,7 @@ impl EguiHost {
         self.state.handle_platform_output(&self.window, out.platform_output);
         let jobs = self.ctx.tessellate(out.shapes, out.pixels_per_point);
         #[cfg(target_os = "macos")]
+        #[allow(irrefutable_let_patterns)]
         if let Canvas::Metal(c) = &mut self.canvas {
             if !present {
                 c.apply(&out.textures_delta);
@@ -488,9 +507,11 @@ impl EguiHost {
             out.textures_delta.clear();
             return;
         }
+        #[cfg(not(target_os = "macos"))]
         self.paint_wgpu(&jobs, &mut out.textures_delta, out.pixels_per_point, present);
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// The frame on a wgpu canvas: textures, then the surface texture (none for a frame that is
     /// not presented), the pass and the present.
     fn paint_wgpu(&mut self, jobs: &[egui::ClippedPrimitive], textures_delta: &mut egui::TexturesDelta, pixels_per_point: f32, present: bool) {
@@ -577,6 +598,7 @@ pub enum Retry {
 /// How long a window without a surface texture waits before it asks again.
 pub const RETRY_LATER: std::time::Duration = std::time::Duration::from_millis(250);
 
+#[cfg(not(target_os = "macos"))]
 /// The retry rule for a failed `get_current_texture`.
 pub fn surface_retry(status: &wgpu::CurrentSurfaceTexture) -> Retry {
     use wgpu::CurrentSurfaceTexture as S;
@@ -592,6 +614,7 @@ pub fn retry_for_window(retry: Retry, size: (u32, u32), minimized: bool) -> Retr
     if minimized || size.0 == 0 || size.1 == 0 { Retry::Later } else { retry }
 }
 
+#[cfg(not(target_os = "macos"))]
 /// Whether to write the validation error to the log now: once per run of them, until a frame works.
 fn announce_validation(status: &wgpu::CurrentSurfaceTexture, logged: &mut bool) -> bool {
     matches!(status, wgpu::CurrentSurfaceTexture::Validation) && !std::mem::replace(logged, true)
@@ -654,6 +677,7 @@ mod tests {
         assert!(at(metal, "if !present {") < at(metal, "c.apply(") && at(metal, "c.apply(") < at(metal, "return;") && at(metal, "return;") < at(metal, "c.paint("));
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn surface_errors_retry_by_kind() {
         use wgpu::CurrentSurfaceTexture as S;
@@ -674,6 +698,7 @@ mod tests {
         assert_eq!(retry_for_window(Retry::Later, (480, 105), false), Retry::Later);
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn a_persistent_validation_error_is_logged_once() {
         use wgpu::CurrentSurfaceTexture as S;

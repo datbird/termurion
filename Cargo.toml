@@ -28,11 +28,8 @@ fancy-regex = "0.14"
 railroad = { version = "0.3", default-features = false }
 bytemuck = "1"
 egui = "0.36"
-egui-wgpu = "0.36"
 egui-winit = "0.36"
-glyphon = "0.12"
 plist = "1"
-pollster = "0.4"
 prost = "0.14"
 rfd = "0.17"
 serde = { version = "1", features = ["derive"] }
@@ -47,10 +44,16 @@ getrandom = "0.4"
 # The Python API's WebSocket framing only; Termurion does its own HTTP (src/api_http.rs).
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 uuid = { version = "1", features = ["v4"] }
-wgpu = { version = "30", features = ["glsl", "naga-ir"] }
 winit = "0.30"
 # Box and block drawing rasterizes its paths with zeno (already in the tree through swash).
 zeno = "0.3"
+
+# The GPU on Windows and Linux. macOS draws with Metal itself (src/metal_backend) and has no wgpu.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+egui-wgpu = "0.36"
+glyphon = "0.12"
+pollster = "0.4"
+wgpu = { version = "30", features = ["glsl", "naga-ir"] }
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
@@ -96,11 +99,17 @@ security-framework = "3"
 # The CFData an item update takes (the same 0.10 security-framework uses).
 core-foundation = "0.10"
 objc2-local-authentication = { version = "0.3", default-features = false, features = ["std", "block2", "LAContext", "LAError"] }
-# The Metal backend's shaders go to MSL as wgpu's do (src/metal_backend/shaders.rs); the same naga
-# wgpu uses, so one copy. Other systems get it only for the translation test (dev-dependencies).
-naga = { version = "30.0.1", features = ["wgsl-in", "msl-out"] }
-# The native Metal backend (src/metal_backend). Both are already in the tree through wgpu-hal, with
-# these features.
+# glyphon's GPU-free core: the Metal backend draws what it prepares (no wgpu backend, patch 9).
+glyphon = { version = "0.12", default-features = false }
+# The effects' GLSL and WGSL, and the Metal backend's shaders to MSL as wgpu's are
+# (src/metal_backend/shaders.rs); the naga wgpu uses elsewhere, so one copy. Other systems get it
+# through wgpu, and directly only for the translation test (dev-dependencies).
+naga = { version = "30.0.1", features = ["wgsl-in", "glsl-in", "msl-out"] }
+# The vertex formats naga's MSL vertex pulling takes (wgpu re-exported them); naga's own types
+# crate, already in the tree through naga.
+naga-types = "30.0.1"
+# The native Metal backend (src/metal_backend), with the features wgpu-hal asked for when it was
+# in the macOS build.
 objc2-metal = { version = "0.3.2", default-features = false, features = ["std", "block2", "MTLAllocation", "MTLBlitCommandEncoder", "MTLBlitPass", "MTLBuffer", "MTLCaptureManager", "MTLCaptureScope", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLComputeCommandEncoder", "MTLComputePass", "MTLComputePipeline", "MTLCounters", "MTLDepthStencil", "MTLDevice", "MTLDrawable", "MTLEvent", "MTLLibrary", "MTLPipeline", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLSampler", "MTLStageInputOutputDescriptor", "MTLTexture", "MTLTypes", "MTLVertexDescriptor", "MTLAccelerationStructure", "MTLAccelerationStructureTypes", "MTLAccelerationStructureCommandEncoder", "MTLResidencySet"] }
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "CALayer", "CAMetalLayer", "objc2-metal"] }
 

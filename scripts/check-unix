@@ -6,6 +6,7 @@
 # FILTER is one or more space separated test name filters (default: every lib test).
 # A test run with no new output for CHECK_UNIX_STALL_MINUTES (default 30, or 150 with TERMURION_TEST_BACKEND=gl,
 # where one region test can print nothing for over an hour) is a hang: it is stopped and fails.
+# The macOS step also fails when wgpu is in the macOS build (macos_build_has_no_wgpu).
 # TERMURION_RECORD_METAL=1 with --mac-only --test records the Metal tests' stored pictures (tests/fixtures/metal).
 # Usage: scripts/check-unix [--linux-only | --mac-only] [--test [FILTER]]   (flags in any order; FILTER words follow --test)
 set -uo pipefail
@@ -105,6 +106,13 @@ fi
 if [ "$do_mac" = 1 ]; then
     host="${CHECK_UNIX_MAC_HOST:-funtimes}"
     rsync -rt --delete --exclude /target/ --exclude /.git/ --exclude /.superpowers/ ./ "$host:src/termurion/" || { echo "macos: check did not run"; exit 2; }
+    # macos_build_has_no_wgpu: macOS draws with Metal only, so no wgpu crate may be in its build.
+    wgpu_paths=$(ssh "$host" 'cd src/termurion && for c in wgpu wgpu-core wgpu-hal egui-wgpu; do ~/.cargo/bin/cargo tree -e normal --target aarch64-apple-darwin -i "$c" 2>/dev/null; done') || { echo "macos: macos_build_has_no_wgpu did not run"; exit 2; }
+    if [ -n "$wgpu_paths" ]; then
+        echo "macos: macos_build_has_no_wgpu FAILED:"
+        printf '%s\n' "$wgpu_paths" | head -20 | sed 's/^/  /'
+        bad=1
+    fi
     if [ "$do_test" = 1 ]; then
         # TERMURION_RECORD_METAL=1 records the Metal tests' stored pictures there and brings them back.
         record=""; [ "${TERMURION_RECORD_METAL:-}" = 1 ] && record="TERMURION_RECORD_METAL=1 "

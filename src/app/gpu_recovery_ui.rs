@@ -5,6 +5,7 @@
 use super::*;
 use crate::gpu_pick::Action;
 
+#[cfg(not(target_os = "macos"))]
 /// Moves one window onto new handles. Leaves the window as it was, and says why, when its new
 /// surface cannot be made, so a failed attempt loses no window.
 fn rebuild_window_gpu(g: &mut Gpu, primary: &GpuHandles, alpha: Option<&AlphaGpu>) -> Result<(), String> {
@@ -93,6 +94,7 @@ impl App {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn rebuild_all_gpus(&mut self, backends: wgpu::Backends) -> Result<String, String> {
         let display = self.display_handle.clone().ok_or("no display handle")?;
         let probe = match self.gpu.as_ref() {
@@ -175,6 +177,11 @@ impl App {
     #[cfg(not(target_os = "macos"))]
     fn rebuild_all_metal(&mut self) -> Result<String, String> {
         Err("Metal is macOS only".to_string())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn rebuild_all_gpus(&mut self, _backends: gpu_pick::Backends) -> Result<String, String> {
+        Err("macOS draws with Metal only".to_string())
     }
 
     fn redraw_every_window(&self) {

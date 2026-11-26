@@ -25,6 +25,7 @@ pub(super) fn begin(win: &WindowGpu) -> bool {
         return false;
     }
     match win {
+        #[cfg(not(target_os = "macos"))]
         WindowGpu::Wgpu(_) => {
             let Some(device) = win.wgpu_device() else { return false };
             // SAFETY: wgpu requires a capture tool to be attached for this to do anything; with none it is a no-op.
@@ -34,7 +35,6 @@ pub(super) fn begin(win: &WindowGpu) -> bool {
         #[cfg(target_os = "macos")]
         WindowGpu::Metal(_) => match win.shared() {
             crate::gpu_shared::GpuShared::Metal(m) => m.start_capture(),
-            _ => false,
         },
     }
 }
@@ -43,6 +43,7 @@ pub(super) fn begin(win: &WindowGpu) -> bool {
 #[cfg(debug_assertions)]
 pub(super) fn end(win: &WindowGpu) {
     match win {
+        #[cfg(not(target_os = "macos"))]
         WindowGpu::Wgpu(_) => {
             if let Some(device) = win.wgpu_device() {
                 // SAFETY: pairs with the start made by `begin`.

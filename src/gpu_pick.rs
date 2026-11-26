@@ -6,9 +6,57 @@
 //! (`preferIntegratedGPU`, default on; `SessionView.m:862-895`) asks the low-power device, off asks
 //! the high-performance one. All of this is decided here over plain lists, so it is tested without a GPU.
 
-use wgpu::{Backend, Backends, DeviceType, PowerPreference};
+#[cfg(not(target_os = "macos"))]
+pub use wgpu::{Backend, Backends, DeviceType, PowerPreference};
+#[cfg(target_os = "macos")]
+pub use plain::{Backend, Backends, DeviceType, PowerPreference};
 
-/// The environment variable that puts one API first (`dx12`, `vulkan` or `gl`), for measuring and for
+/// wgpu's value types the pick reasons over, for macOS, where wgpu is not in the build: the same
+/// names and variants, so the lists and their tests read the same on every system.
+#[cfg(target_os = "macos")]
+mod plain {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub enum Backend {
+        Noop,
+        Vulkan,
+        Metal,
+        Dx12,
+        Gl,
+        BrowserWebGpu,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub enum DeviceType {
+        Other,
+        IntegratedGpu,
+        DiscreteGpu,
+        VirtualGpu,
+        Cpu,
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+    pub enum PowerPreference {
+        #[default]
+        None,
+        LowPower,
+        HighPerformance,
+    }
+
+    /// A set of wgpu backends, as bits.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub struct Backends(u8);
+
+    impl Backends {
+        pub const VULKAN: Backends = Backends(1);
+        pub const GL: Backends = Backends(2);
+        pub const METAL: Backends = Backends(4);
+        pub const DX12: Backends = Backends(8);
+        pub const BROWSER_WEBGPU: Backends = Backends(16);
+        pub const PRIMARY: Backends = Backends(1 | 4 | 8 | 16);
+    }
+}
+
+/// The environment variable that puts one API first (`dx12`, `vulkan` or `gl`; ignored on macOS), for measuring and for
 /// a driver that misbehaves. The others still follow as fallbacks.
 pub const FORCE_ENV: &str = "TERMURION_RENDERER";
 
@@ -21,6 +69,7 @@ pub struct Facts {
 }
 
 impl Facts {
+    #[cfg(not(target_os = "macos"))]
     pub fn of(info: &wgpu::AdapterInfo) -> Facts {
         Facts { backend: info.backend, name: info.name.clone(), kind: info.device_type }
     }
@@ -51,20 +100,21 @@ pub enum Api {
     Metal,
 }
 
-/// Whether the terminal windows draw with the native Metal backend: on macOS unless `forced` (the
-/// value of `FORCE_ENV`) is `wgpu`, the hidden switch back to wgpu's Metal backend for comparing.
-pub fn wants_metal(macos: bool, forced: Option<&str>) -> bool {
-    macos && !matches!(forced.map(|s| s.trim().to_ascii_lowercase()).as_deref(), Some("wgpu"))
-}
-
 /// `backend_order` with the native Metal backend: on macOS it is alone, with no API after it (a
-/// Metal failure is shown, never silently replaced). Elsewhere, and on macOS with `wgpu`, wgpu's
-/// order.
+/// Metal failure is shown, never silently replaced) and `forced` changes nothing (`forced_note`).
+/// Elsewhere wgpu's order.
 pub fn api_order(windows: bool, macos: bool, forced: Option<&str>) -> Vec<(Api, &'static str)> {
-    if wants_metal(macos, forced) {
+    if macos {
         return vec![(Api::Metal, "Metal")];
     }
     backend_order(windows, forced).into_iter().map(|(b, label)| (Api::Wgpu(b), label)).collect()
+}
+
+/// The host.log line for a `FORCE_ENV` value on macOS, where Metal is the only API: any value,
+/// `wgpu` (the old switch back) included, is ignored. None when it is unset or blank.
+pub fn forced_note(forced: Option<&str>) -> Option<String> {
+    let v = forced.map(str::trim).filter(|v| !v.is_empty())?;
+    Some(format!("renderer: {FORCE_ENV}={v} is ignored: macOS draws with Metal only"))
 }
 
 /// What the Metal device pick knows about one `MTLDevice` (wgpu-hal 30.0.1 `AdapterShared::expose`).
@@ -169,7 +219,7 @@ pub fn describe(list: &[Facts]) -> String {
 /// discrete card, whose Vulkan driver is incomplete). Then OpenGL is worth a look, unless an API
 /// was forced or OpenGL is already in use. Linux only (`linux`): Windows and macOS keep their API.
 pub fn look_for_integrated_on_gl(pref: PowerPreference, chosen: &Facts, forced: bool, linux: bool) -> bool {
-    linux && pref == PowerPreference::LowPower && !forced && chosen.kind != DeviceType::IntegratedGpu && chosen.backend != wgpu::Backend::Gl
+    linux && pref == PowerPreference::LowPower && !forced && chosen.kind != DeviceType::IntegratedGpu && chosen.backend != Backend::Gl
 }
 
 /// Where the OpenGL look runs at all.
@@ -234,6 +284,7 @@ pub(crate) fn report_lost(generation: u64, text: String) {
 
 /// Reports `device`'s loss (and an uncaptured error that says the device is lost) for `take_lost`.
 /// Other uncaptured errors are logged, not fatal: a dead device must not abort the program.
+#[cfg(not(target_os = "macos"))]
 pub fn watch(device: &wgpu::Device, generation: u64) {
     device.set_device_lost_callback(move |reason, message| {
         let reason = format!("{reason:?}");
@@ -269,6 +320,7 @@ pub fn error_means_lost(validation: bool, text: &str) -> bool {
 
 /// The whole text of a GPU error. A validation error's `Display` is only "Validation Error"; its
 /// description names the call and the cause.
+#[cfg(not(target_os = "macos"))]
 fn error_text(e: &wgpu::Error) -> String {
     match e {
         wgpu::Error::Validation { description, .. } => description.trim().to_string(),
@@ -466,18 +518,18 @@ mod tests {
     #[test]
     fn prefer_integrated_looks_on_opengl_when_vulkan_has_none() {
         let f = |backend, kind| Facts { backend, name: String::new(), kind };
-        let nvk = f(wgpu::Backend::Vulkan, DeviceType::DiscreteGpu);
+        let nvk = f(Backend::Vulkan, DeviceType::DiscreteGpu);
         assert!(look_for_integrated_on_gl(PowerPreference::LowPower, &nvk, false, true), "the W541: Vulkan offered only the Quadro");
         assert!(!look_for_integrated_on_gl(PowerPreference::HighPerformance, &nvk, false, true), "the setting is off");
         assert!(!look_for_integrated_on_gl(PowerPreference::LowPower, &nvk, true, true), "TERMURION_RENDERER chose the API");
-        assert!(!look_for_integrated_on_gl(PowerPreference::LowPower, &f(wgpu::Backend::Vulkan, DeviceType::IntegratedGpu), false, true), "got what it asked for");
-        assert!(!look_for_integrated_on_gl(PowerPreference::LowPower, &f(wgpu::Backend::Gl, DeviceType::Cpu), false, true), "already on OpenGL");
+        assert!(!look_for_integrated_on_gl(PowerPreference::LowPower, &f(Backend::Vulkan, DeviceType::IntegratedGpu), false, true), "got what it asked for");
+        assert!(!look_for_integrated_on_gl(PowerPreference::LowPower, &f(Backend::Gl, DeviceType::Cpu), false, true), "already on OpenGL");
         // Windows and macOS never look: DX12 or Metal stays, whatever it picked (review I7).
-        let dx = f(wgpu::Backend::Dx12, DeviceType::DiscreteGpu);
+        let dx = f(Backend::Dx12, DeviceType::DiscreteGpu);
         assert!(!look_for_integrated_on_gl(PowerPreference::LowPower, &dx, false, false));
         assert!(!look_for_integrated_on_gl(PowerPreference::LowPower, &nvk, false, false));
-        assert!(gl_has_integrated(&[f(wgpu::Backend::Gl, DeviceType::IntegratedGpu)]));
-        assert!(!gl_has_integrated(&[f(wgpu::Backend::Gl, DeviceType::Cpu)]), "llvmpipe is no integrated GPU");
+        assert!(gl_has_integrated(&[f(Backend::Gl, DeviceType::IntegratedGpu)]));
+        assert!(!gl_has_integrated(&[f(Backend::Gl, DeviceType::Cpu)]), "llvmpipe is no integrated GPU");
     }
 
     use super::*;
@@ -511,15 +563,19 @@ mod tests {
     }
 
     #[test]
-    fn metal_is_the_macos_default_and_wgpu_the_switch_back() {
+    fn macos_draws_with_metal_only_and_ignores_the_old_switch() {
         assert_eq!(api_order(false, true, None), [(Api::Metal, "Metal")], "Metal alone: nothing follows it");
-        assert_eq!(api_order(false, true, Some(" Metal ")), [(Api::Metal, "Metal")]);
-        assert_eq!(api_order(false, true, Some("gl")), [(Api::Metal, "Metal")], "only wgpu switches back");
-        assert_eq!(api_order(false, true, Some(" WGPU "))[0].0, Api::Wgpu(Backends::PRIMARY));
+        for forced in [" Metal ", "gl", " WGPU ", "vulkan", "nonsense"] {
+            assert_eq!(api_order(false, true, Some(forced)), [(Api::Metal, "Metal")], "{forced}");
+        }
         assert_eq!(api_order(false, false, Some("metal"))[0].0, Api::Wgpu(Backends::PRIMARY), "no Metal off macOS");
         assert_eq!(api_order(false, false, None)[0].0, Api::Wgpu(Backends::PRIMARY));
         assert_eq!(api_order(true, false, Some("metal")).len(), 3);
-        assert!(!wants_metal(false, None) && wants_metal(true, None) && !wants_metal(true, Some("wgpu")));
+        // Every value is told in host.log as ignored; none says nothing.
+        assert_eq!(forced_note(Some(" wgpu ")).as_deref(), Some("renderer: TERMURION_RENDERER=wgpu is ignored: macOS draws with Metal only"));
+        assert!(forced_note(Some("dx12")).is_some_and(|n| n.contains("=dx12 is ignored")));
+        assert_eq!(forced_note(None), None);
+        assert_eq!(forced_note(Some("  ")), None);
     }
 
     #[test]

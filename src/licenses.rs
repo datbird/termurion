@@ -91,6 +91,7 @@ mod tests {
             "target_os = \"macos\"" => crate::platform::OS_NAME == "macOS",
             "all(unix, not(target_os = \"macos\"))" => crate::platform::OS_NAME == "Linux",
             "any(windows, target_os = \"macos\")" => crate::platform::IS_WINDOWS || crate::platform::OS_NAME == "macOS",
+            "not(target_os = \"macos\")" => crate::platform::OS_NAME != "macOS",
             other => panic!("teach this test the target {other}"),
         };
         let targets = manifest.get("target").and_then(|t| t.as_table()).into_iter().flat_map(|t| t.iter()).filter(|(key, _)| applies(key)).filter_map(|(_, v)| v.as_table());

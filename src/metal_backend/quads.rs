@@ -12,11 +12,14 @@ use objc2_metal::{
 use super::shaders::{self, Entry, Kind};
 use crate::draw_list::QUAD_STRIDE;
 
+/// The vertex formats, as naga's MSL vertex pulling takes them.
+pub(super) use naga_types::VertexFormat;
+
 /// One vertex attribute: shader location, byte offset and format.
 pub(super) struct Attr {
     pub location: u32,
     pub offset: u32,
-    pub format: wgpu::VertexFormat,
+    pub format: VertexFormat,
 }
 
 /// One vertex buffer: its stride, whether it steps per instance, and its attributes. Buffer `i`
@@ -41,8 +44,8 @@ pub(super) struct Shader {
 
 /// The Metal vertex format wgpu-hal maps `format` to (`conv::map_vertex_format`), for the ones
 /// these pipelines use.
-fn vertex_format(format: wgpu::VertexFormat) -> MTLVertexFormat {
-    use wgpu::VertexFormat as F;
+fn vertex_format(format: VertexFormat) -> MTLVertexFormat {
+    use VertexFormat as F;
     match format {
         F::Float32 => MTLVertexFormat::Float,
         F::Float32x2 => MTLVertexFormat::Float2,
@@ -172,7 +175,7 @@ impl Blend {
 /// The quad and image shaders' screen uniform, at group 0 binding 0, seen by the vertex stage.
 pub(super) const SCREEN: [Entry; 1] = [Entry::new(0, Kind::Buffer, true, false)];
 
-const QUAD_ATTRS: [Attr; 2] = [Attr { location: 0, offset: 0, format: wgpu::VertexFormat::Float32x2 }, Attr { location: 1, offset: 8, format: wgpu::VertexFormat::Float32x4 }];
+const QUAD_ATTRS: [Attr; 2] = [Attr { location: 0, offset: 0, format: VertexFormat::Float32x2 }, Attr { location: 1, offset: 8, format: VertexFormat::Float32x4 }];
 const QUAD_BUFFERS: [Layout; 1] = [Layout { stride: QUAD_STRIDE as u32, instance: false, attrs: &QUAD_ATTRS }];
 
 /// The vertex stage slots of the screen uniform and of the sizes buffer, as the translation of a

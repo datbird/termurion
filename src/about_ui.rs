@@ -34,8 +34,9 @@ pub fn system_line() -> String {
     format!("{os} {arch}")
 }
 
-/// The renderer line, from the adapter the app already holds. The one place to change when the
-/// Metal renderer replaces wgpu on macOS.
+#[cfg(not(target_os = "macos"))]
+/// The renderer line, from the wgpu adapter the app already holds (macOS names its Metal device
+/// in `GpuShared::renderer_name`).
 pub fn renderer_line(info: &wgpu::AdapterInfo) -> String {
     let api = match info.backend {
         wgpu::Backend::Dx12 => "DirectX 12".to_string(),

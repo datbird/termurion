@@ -1,5 +1,5 @@
 //! Draws a scene Frame: fonts, shaping and `prepare` (the CPU half, building a `DrawList`) here,
-//! the GPU half in `render_wgpu`.
+//! the GPU half in `render_wgpu` (Windows and Linux) or `metal_backend` (macOS).
 
 use glyphon::{Attrs, Buffer, Color, ContentType, CustomGlyph, Family, FontSystem, Metrics, RasterizeCustomGlyphRequest, RasterizedCustomGlyph, RowArea, Shaping, Style, SwashCache, TextArea, TextBounds, Weight, Wrap};
 
@@ -7,6 +7,7 @@ use glyphon::cosmic_text::CacheKeyFlags;
 
 use crate::draw_list::{Bounds, DrawList, ImageDraw, QuadBuf, Shadow, Uploads};
 use crate::fonts;
+#[cfg(not(target_os = "macos"))]
 use crate::render_wgpu::WgpuDraw;
 use crate::scene::{Frame, Quad, Span, Spans, TextRow};
 
@@ -34,6 +35,7 @@ fn image_vertices(images: &[crate::scene::ImageQuad], v: &mut Vec<f32>) {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 /// What drawing on a `cpu_only` renderer returns.
 const NO_DEVICE: &str = "this renderer has no graphics device";
 
@@ -312,7 +314,15 @@ const SHAPE_KEEP_FRAMES: u64 = 60;
 /// and its serial.
 pub(crate) type Shaped = (Buffer, Spans, f32, f32, u16, bool, u64);
 
+/// The largest texture side a renderer with no device lets its atlas grow to: wgpu's default
+/// limit, which the Metal backend keeps too (`metal_backend::MAX_TEXTURE_SIDE`).
+#[cfg(not(target_os = "macos"))]
+const DEFAULT_MAX_SIDE: u32 = wgpu::Limits::defaults().max_texture_dimension_2d;
+#[cfg(target_os = "macos")]
+const DEFAULT_MAX_SIDE: u32 = crate::metal_backend::MAX_TEXTURE_SIDE;
+
 /// The device a renderer draws on and its wgpu backend.
+#[cfg(not(target_os = "macos"))]
 struct GpuHalf {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -320,6 +330,7 @@ struct GpuHalf {
 }
 
 pub struct Renderer {
+    #[cfg(not(target_os = "macos"))]
     /// None for `cpu_only`: such a renderer measures and prepares but never draws.
     gpu: Option<GpuHalf>,
     /// What each persistent vertex buffer holds, in `QuadBuf` order.
@@ -428,6 +439,7 @@ pub struct Renderer {
 }
 
 impl Renderer {
+    #[cfg(not(target_os = "macos"))]
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, family: &str, font_px: f32) -> Renderer {
         // The atlas is sized for the device from the start, so nothing is built twice.
         let mut r = Renderer::with_atlas_side(family, font_px, device.limits().max_texture_dimension_2d);
@@ -435,6 +447,7 @@ impl Renderer {
         r
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Draws on `device` from now on. The glyph atlas and rows start over with it (the atlas may
     /// grow to the device's largest texture), so the backend's new textures and buffers hold
     /// exactly what the CPU half thinks they do.
@@ -443,6 +456,7 @@ impl Renderer {
         self.set_backend(device, queue, format);
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// A new backend over the current (empty) glyph atlas and row renderer.
     fn set_backend(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) {
         let draw = WgpuDraw::new(device, format, &self.glyph_atlas, &self.row_text);
@@ -457,7 +471,6 @@ impl Renderer {
     #[cfg(target_os = "macos")]
     pub(crate) fn restart_for_backend(&mut self, max_side: u32) {
         self.reset_glyphs(max_side);
-        self.gpu = None;
         self.shadows = QuadBuf::ALL.map(Shadow::new);
     }
 
@@ -468,15 +481,11 @@ impl Renderer {
         (&self.glyph_atlas, &self.row_text)
     }
 
-    /// Starts the glyph atlas over in `mode` (tests: every atlas is Accurate otherwise), on the
-    /// renderer's wgpu device when it has one.
+    /// Starts the glyph atlas over in `mode` (tests: every atlas is Accurate otherwise).
     #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn set_color_mode(&mut self, mode: glyphon::ColorMode) {
         self.color_mode = mode;
-        match self.gpu.as_ref().map(|g| (g.device.clone(), g.queue.clone(), g.draw.format())) {
-            Some((device, queue, format)) => self.attach(&device, &queue, format),
-            None => self.reset_glyphs(wgpu::Limits::default().max_texture_dimension_2d),
-        }
+        self.reset_glyphs(DEFAULT_MAX_SIDE);
     }
 
     /// A new, empty glyph atlas and row renderer. Writes owed to the old device are dropped.
@@ -490,7 +499,7 @@ impl Renderer {
     /// A renderer with no device: fonts, measuring and `prepare` work, drawing does not.
     pub fn cpu_only(family: &str, font_px: f32) -> Renderer {
         // With no device the atlas may grow as far as wgpu's default limit allows.
-        Renderer::with_atlas_side(family, font_px, wgpu::Limits::default().max_texture_dimension_2d)
+        Renderer::with_atlas_side(family, font_px, DEFAULT_MAX_SIDE)
     }
 
     /// `cpu_only`, with a glyph atlas that may grow to `max_side` pixels per side.
@@ -503,6 +512,7 @@ impl Renderer {
         let glyph_atlas = glyphon::TextAtlas::new(max_side);
         let row_text = glyphon::RowRenderer::new(&glyph_atlas);
         let mut r = Renderer {
+            #[cfg(not(target_os = "macos"))]
             gpu: None,
             shadows: QuadBuf::ALL.map(Shadow::new),
             verts: Default::default(),
@@ -573,6 +583,7 @@ impl Renderer {
         r
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Makes every GPU resource again on a new device (after a device loss): the pipelines, the glyph
     /// atlas, the viewport and the image textures (re-uploaded when next drawn). Fonts, faces and
     /// settings are kept.
@@ -580,18 +591,21 @@ impl Renderer {
         self.attach(device, queue, format);
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Bytes the persistent vertex buffers uploaded so far (tests).
     #[cfg(test)]
     pub(crate) fn bytes_written(&self) -> u64 {
         self.shadows.iter().map(|v| v.written).sum()
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Staging buffers the upload path made so far (tests).
     #[cfg(test)]
     pub(crate) fn upload_buffers_made(&self) -> u64 {
         self.gpu.as_ref().map_or(0, |g| g.draw.upload_buffers_made())
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Forgets what the vertex buffers hold, so the next frame uploads every byte (tests).
     #[cfg(test)]
     pub(crate) fn forget_buffers(&mut self) {
@@ -1259,16 +1273,19 @@ impl Renderer {
         self.faces.len()
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// How many image textures were uploaded (tests).
     pub fn uploads(&self) -> usize {
         self.gpu.as_ref().map_or(0, |g| g.draw.image_uploads())
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Draws a frame into an offscreen texture and returns its pixels as RGBA, row by row.
     pub fn draw_offscreen(&mut self, frame: &Frame, w: u32, h: u32) -> Result<Vec<u8>, String> {
         self.draw_offscreen_fx(frame, None, w, h)
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Draws `frame` through the render plugin chain: the frame goes into the chain's
     /// offscreen texture, then the passes write `out`, a non-sRGB view of the target.
     pub fn draw_fx(&mut self, frame: &Frame, chain: &mut crate::render_fx_gpu::Chain, uniforms: &crate::render_fx::Uniforms, out: &wgpu::TextureView, w: u32, h: u32) -> Result<(), String> {
@@ -1276,6 +1293,7 @@ impl Renderer {
         self.draw_fx_for(frame, chain, uniforms, out, w, h, false, None)
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// `draw_fx` for the window. With `same_scene` (the frame is the one drawn last time) and the
     /// last picture still in the chain's frame texture, only the passes run: an animation frame
     /// costs the shaders, as in Ghostty, not a full redraw of the terminal. Such a frame shades
@@ -1331,12 +1349,14 @@ impl Renderer {
         self.row_text.prepared_rows()
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// The device and queue this renderer draws with (not for a `cpu_only` one).
     pub fn gpu(&self) -> (&wgpu::Device, &wgpu::Queue) {
         let g = self.gpu.as_ref().expect("a renderer made with a device");
         (&g.device, &g.queue)
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// `draw_offscreen`, optionally through a render plugin chain.
     pub fn draw_offscreen_fx(&mut self, frame: &Frame, fx: Option<(&mut crate::render_fx_gpu::Chain, &crate::render_fx::Uniforms)>, w: u32, h: u32) -> Result<Vec<u8>, String> {
         let (device, queue, format) = match &self.gpu {
@@ -1568,10 +1588,12 @@ impl Renderer {
         groups.truncate(n);
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub fn draw(&mut self, frame: &Frame, view: &wgpu::TextureView, width: u32, height: u32) -> Result<(), String> {
         self.draw_with(frame, view, None, width, height)
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// `draw`, with `raw` a view of the same target in its non-sRGB format. A fading frame needs it
     /// on an sRGB target (the target must list that format in its view formats); without it the
     /// fade runs on `view`, which is exact only on a non-sRGB target.
@@ -1894,12 +1916,16 @@ impl WidthCache {
 /// `vkDestroyInstance` ever runs while another thread creates one.
 #[cfg(test)]
 pub(crate) mod test_gpu {
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::Mutex;
+    #[cfg(not(target_os = "macos"))]
+    use std::sync::OnceLock;
 
     /// Serializes anything that makes its own instance against the shared one's creation.
     pub(crate) static LOCK: Mutex<()> = Mutex::new(());
+    #[cfg(not(target_os = "macos"))]
     static GPU: OnceLock<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue)> = OnceLock::new();
 
+    #[cfg(not(target_os = "macos"))]
     /// The shared device and queue. On GL the calling test thread also takes the GL lock (`serial_on_gl`).
     pub(crate) fn shared() -> (wgpu::Device, wgpu::Queue) {
         let (_, adapter, device, queue) = shared_all();
@@ -1907,6 +1933,7 @@ pub(crate) mod test_gpu {
         (device, queue)
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// GL has one context behind a lock that panics after a second ("most-likely a deadlock"), and
     /// drawing from several threads at once on it gives black pictures. So on GL each test thread
     /// takes this lock once, on first use, and keeps it until the test ends: tests run one at a time.
@@ -1926,6 +1953,7 @@ pub(crate) mod test_gpu {
         });
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// The shared instance and adapter with the device and queue (a probe that needs a surface).
     pub(crate) fn shared_all() -> (wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue) {
         GPU.get_or_init(|| {
@@ -1959,12 +1987,16 @@ pub(crate) mod test_gpu {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[cfg(not(target_os = "macos"))]
     use crate::test_tmp::TempDir;
     use super::*;
     use crate::layout::Rect;
     use crate::palette::rgb;
-    use crate::scene::{Quad, Span, rgba};
+    #[cfg(not(target_os = "macos"))]
+    use crate::scene::Quad;
+    use crate::scene::{Span, rgba};
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn fade_scales_the_premultiplied_target() {
         // A faded frame is the same frame with every channel (alpha too) scaled: the see-through
@@ -1985,6 +2017,7 @@ pub(crate) mod tests {
         assert_eq!(at(&mut r, 0.0), [0, 0, 0, 0]);
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn fade_on_an_srgb_target_scales_the_stored_values() {
         // The app's alpha surface is sRGB. DirectComposition reads the stored (encoded) values as
@@ -2027,8 +2060,7 @@ pub(crate) mod tests {
     #[test]
     fn cells_follow_font_metrics() {
         // R3: the cell height is the font's own (swash metrics, generous list), not round(px * 1.2).
-        let (device, queue) = device();
-        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Consolas", 16.0);
+        let mut r = font_renderer("Consolas", 16.0);
         r.set_fonts("Consolas", None, 16.0, 1.0, 1.0);
         let m = r.face_font_metrics("Consolas", 16.0).expect("Consolas is installed on the test machine");
         let (cell, base) = fonts::cell_size(m, fonts::generous("Consolas", "consolas"), 1.0, 1.0);
@@ -2059,16 +2091,37 @@ pub(crate) mod tests {
         r.set_generous_list("consolas");
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn device() -> (wgpu::Device, wgpu::Queue) {
         super::test_gpu::shared()
     }
 
+    /// macOS has no wgpu device: the tests that only measure and shape take this stand-in.
+    #[cfg(target_os = "macos")]
+    fn device() -> ((), ()) {
+        ((), ())
+    }
+
+    #[cfg(not(target_os = "macos"))]
     /// A chain as the app makes it: with no view formats on a device that has none (GL).
     fn test_chain(device: &wgpu::Device, format: wgpu::TextureFormat, compiled: Vec<crate::render_fx::Compiled>, keep_alpha: bool) -> Result<crate::render_fx_gpu::Chain, String> {
         let c = crate::render_fx_gpu::Chain::new(device, format, compiled, keep_alpha)?;
         Ok(if views_supported() { c } else { c.without_view_formats(device) })
     }
 
+    /// A renderer for a test that measures and shapes but never draws: on the shared device as
+    /// before where wgpu is, with no device on macOS (no wgpu there).
+    pub(crate) fn font_renderer(family: &str, px: f32) -> Renderer {
+        #[cfg(not(target_os = "macos"))]
+        {
+            let (device, queue) = device();
+            test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, family, px)
+        }
+        #[cfg(target_os = "macos")]
+        Renderer::cpu_only(family, px)
+    }
+
+    #[cfg(not(target_os = "macos"))]
     /// A renderer as the app makes it: told whether this device has view formats (GL has none).
     fn test_renderer(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, family: &str, px: f32) -> Renderer {
         let mut r = Renderer::new(device, queue, format, family, px);
@@ -2120,6 +2173,7 @@ pub(crate) mod tests {
         assert!(rec[..400].contains("test_gpu::LOCK"), "adapters_are_recorded must hold the GPU lock");
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn read(device: &wgpu::Device, queue: &wgpu::Queue, tex: &wgpu::Texture, w: u32, h: u32) -> Vec<u8> {
         let buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -2142,6 +2196,7 @@ pub(crate) mod tests {
         buf.slice(..).get_mapped_range().unwrap().to_vec()
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Device loss, simulated with `Device::destroy`: the loss is reported to `gpu_pick::take_lost`, and the
     /// same renderer (its fonts and faces kept) draws again on a new device after `rebuild_gpu`.
     #[test]
@@ -2188,6 +2243,7 @@ pub(crate) mod tests {
         std::mem::forget((device, queue, device2, queue2));
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Every API the build host offers, headless: the adapters each lists, the one a preference lands
     /// on (the choice logic's `honored` check against what wgpu really handed out), and the time of
     /// a 1200 x 800 offscreen frame with 40 rows of text on each (printed; compare with --nocapture).
@@ -2248,6 +2304,7 @@ pub(crate) mod tests {
         assert!(drew > 0, "no API drew a frame");
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Today's backend per adapter, and whether a default instance and a DX12 `DxgiFromVisual` one
     /// make devices in one process (13g renderer ruling). Headless: no event loop, so both
     /// instances are built without a display handle.
@@ -2296,6 +2353,7 @@ pub(crate) mod tests {
         FaceKey::new(family, None, px, h, v)
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn faces_follow_profiles() {
         let (device, queue) = device();
@@ -2334,16 +2392,19 @@ pub(crate) mod tests {
         assert!(two > one + 2.0, "the larger face is wider: {one} {two}");
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// A span of terminal text drawn by Special Font Config entry `font` (1 plus its index).
     fn tabled(text: &str, font: u16) -> Span {
         Span { font, ..masked(text, false, 0) }
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn table_key(family: &str, entries: Vec<crate::font_table::Entry>) -> FaceKey {
         let text = crate::font_table::Config::with_entries(entries).string();
         FaceKey { table: Some(std::sync::Arc::from(text.as_str())), ..key(family, 16.0, 1.0, 1.0) }
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Task 9: a face with a table draws a cell its table names from the table's font, in the
     /// entry's size, while the face's own family draws the rest; a font that is not installed
     /// draws as the face does.
@@ -2381,8 +2442,7 @@ pub(crate) mod tests {
     /// table (disjoint, nothing below U+80), and one font per resolved entry.
     #[test]
     fn a_face_carries_the_resolved_table() {
-        let (device, queue) = device();
-        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = font_renderer("Cascadia Mono", 16.0);
         let text = r#"{"entries":[{"start":57344,"count":16,"fontName":"A"},{"start":57352,"count":16,"fontName":"B"},{"start":32,"count":16,"fontName":"C"}],"version":2}"#;
         let face = r.face(&FaceKey { table: Some(std::sync::Arc::from(text)), ..key("Cascadia Mono", 16.0, 1.0, 1.0) });
         let table = r.face_table(face).expect("a table");
@@ -2395,8 +2455,7 @@ pub(crate) mod tests {
     /// draws has changed (`look_epoch`).
     #[test]
     fn a_look_setting_moves_the_look_epoch_and_a_repeat_does_not() {
-        let (device, queue) = device();
-        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = font_renderer("Cascadia Mono", 16.0);
         let e = r.look_epoch();
         r.set_contextual_alternates(!r.calt);
         assert!(r.look_epoch() > e, "contextual alternates");
@@ -2438,8 +2497,7 @@ pub(crate) mod tests {
     /// 13w Task 8: the badge is bold only while `BadgeFontIsBold` says so.
     #[test]
     fn badge_weight_follows_the_key() {
-        let (device, queue) = device();
-        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = font_renderer("Cascadia Mono", 16.0);
         r.set_badge_family("Arial");
         r.set_badge_bold(false);
         let regular = r.badge_width("bbb ddd", 40.0);
@@ -2448,6 +2506,7 @@ pub(crate) mod tests {
         assert!(regular < bold, "regular {regular} is narrower than bold {bold}");
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn bold_and_italic_switches_follow_iterm2() {
         let (device, queue) = device();
@@ -2565,6 +2624,7 @@ pub(crate) mod tests {
         assert_ne!(ligated, off, "Contextual Alternates off changes the ligatures");
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn ligature_levels_draw_per_span() {
         let (device, queue) = device();
@@ -2599,8 +2659,7 @@ pub(crate) mod tests {
 
     #[test]
     fn faces_keep_their_ids_across_a_scale_change() {
-        let (device, queue) = device();
-        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = font_renderer("Cascadia Mono", 16.0);
         let a = r.face(&key("Consolas", 16.0, 1.0, 1.0));
         let b = r.face(&key("Cascadia Mono", 18.0, 1.0, 1.25));
         let (before, count) = (r.face_cell(a), r.face_count());
@@ -2618,8 +2677,7 @@ pub(crate) mod tests {
     fn faces_carry_their_own_cell_metrics() {
         // `underline_metrics_follow_the_pane_face` and the base of `cursor_geometry_uses_the_pane_base_cell`:
         // a face reports its own spacing-free cell and underline numbers, not the default face's.
-        let (device, queue) = device();
-        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = font_renderer("Cascadia Mono", 16.0);
         r.set_fonts("Cascadia Mono", None, 16.0, 1.0, 1.0);
         let big = r.face(&key("Cascadia Mono", 32.0, 1.0, 1.0));
         let spaced = r.face(&key("Cascadia Mono", 32.0, 1.25, 1.5));
@@ -2642,9 +2700,8 @@ pub(crate) mod tests {
 
     #[test]
     fn face_lookup_does_not_scan_fonts_per_call() {
-        let (device, queue) = device();
         let (ps, family) = postscript_pair();
-        let r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, &family, 16.0);
+        let r = font_renderer(&family, 16.0);
         let before = r.resolve_scans();
         for _ in 0..1000 {
             assert_eq!(r.resolve_family(&ps), family);
@@ -2679,6 +2736,7 @@ pub(crate) mod tests {
         (ps, family)
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn renders_a_range_offscreen() {
         let (device, queue) = device();
@@ -2698,6 +2756,7 @@ pub(crate) mod tests {
         assert_eq!(at(20, 2), &[0, 0, 255, 255]);
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn text_advance_matches_the_cell_width() {
         // The cursor and backgrounds use `cell`. If glyphs advance by a different width,
@@ -2750,6 +2809,7 @@ pub(crate) mod tests {
         assert!((right - want).abs() < r.cell.0 / 2.0, "text ends at {right} px, cells end at {want} px (cell {:?})", r.cell);
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// The x of every glyph a row shaped, from the layout the renderer drew.
     fn laid_out_xs(r: &mut Renderer, device: &wgpu::Device, queue: &wgpu::Queue, text: &str) -> Vec<f32> {
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -2796,19 +2856,28 @@ pub(crate) mod tests {
     /// The x of every glyph a frame's rows drew, from the layout the renderer shaped (each
     /// buffer is drawn at its row's x).
     fn drawn_xs(r: &mut Renderer, frame: &Frame, w: u32, h: u32) -> Vec<f32> {
-        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        let tex = r.gpu().0.create_texture(&wgpu::TextureDescriptor {
-            label: None,
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = tex.create_view(&Default::default());
-        r.draw(frame, &view, w, h).unwrap();
+        // macOS: the CPU half shapes the rows the same way; the Metal tests draw them.
+        #[cfg(target_os = "macos")]
+        {
+            let (list, up) = r.prepare(frame, w, h).unwrap();
+            r.recycle(list, up);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+            let tex = r.gpu().0.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = tex.create_view(&Default::default());
+            r.draw(frame, &view, w, h).unwrap();
+        }
         let mut xs: Vec<f32> = r.buffers.iter().zip(&frame.rows).flat_map(|((b, ..), row)| b.layout_runs().flat_map(|run| run.glyphs.iter().map(|g| row.x + g.x).collect::<Vec<_>>()).collect::<Vec<_>>()).collect();
         xs.sort_by(f32::total_cmp);
         xs
@@ -2818,10 +2887,9 @@ pub(crate) mod tests {
     /// its column, and the cursor, at column * cell width, sits on the glyph of its column.
     #[test]
     fn a_proportional_face_still_follows_the_cell_grid() {
-        let (device, queue) = device();
         // Any installed proportional face (DejaVu Sans when it is there): a box with none fails
         // here instead of passing without checking anything.
-        let probe = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "DejaVu Sans", 16.0);
+        let probe = font_renderer("DejaVu Sans", 16.0);
         let face = if probe.has_family("DejaVu Sans") {
             "DejaVu Sans".to_string()
         } else {
@@ -2829,7 +2897,7 @@ pub(crate) mod tests {
             names.sort();
             names.into_iter().next().expect("this test needs one proportional font installed")
         };
-        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, &face, 16.0);
+        let mut r = font_renderer(&face, 16.0);
         assert!(!r.face_monospace(DEFAULT_FACE), "{face} is proportional");
         // The cursor goes back onto the first "m" (column 13).
         let mut screen = crate::screen::Screen::new(40, 2);
@@ -2853,8 +2921,7 @@ pub(crate) mod tests {
     /// a prose row draws to the width `prose_width` measured for its slot, not to whole cells.
     #[test]
     fn interface_text_draws_at_its_measured_width() {
-        let (device, queue) = device();
-        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "DejaVu Sans Mono", 16.0);
+        let mut r = font_renderer("DejaVu Sans Mono", 16.0);
         for (text, bold) in [("Allow? New Tab", false), ("iiil WWW mmm", true)] {
             let span = Span { text: text.into(), color: rgb(255, 255, 255), bold, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
             let row = TextRow { x: 0.0, y: 0.0, spans: vec![span].into(), clip: Rect { x: 0.0, y: 0.0, w: 600.0, h: 32.0 }, scale: 1.0, face: DEFAULT_FACE };
@@ -2875,8 +2942,17 @@ pub(crate) mod tests {
     const RTL_TEST: &str = "Termurion RTL Test";
 
     /// A renderer with the test fonts of tests/fixtures/fonts loaded.
+    #[cfg(not(target_os = "macos"))]
     fn fixture_renderer(device: &wgpu::Device, queue: &wgpu::Queue) -> Renderer {
-        let mut r = test_renderer(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb, WIDE_BOLD_TEST, 16.0);
+        with_fixture_fonts(test_renderer(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb, WIDE_BOLD_TEST, 16.0))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn fixture_renderer(_: &(), _: &()) -> Renderer {
+        with_fixture_fonts(Renderer::cpu_only(WIDE_BOLD_TEST, 16.0))
+    }
+
+    fn with_fixture_fonts(mut r: Renderer) -> Renderer {
         for data in [
             &include_bytes!("../tests/fixtures/fonts/TermurionWideBoldTest-Regular.ttf")[..],
             &include_bytes!("../tests/fixtures/fonts/TermurionWideBoldTest-Bold.ttf")[..],
@@ -2967,6 +3043,7 @@ pub(crate) mod tests {
         TextRow { x: 0.0, y: y as f32 * 24.0, spans: spans.into(), clip: Rect { x: 0.0, y: y as f32 * 24.0, w: 800.0, h: 24.0 }, scale: 1.0, face }
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Every layout glyph of every slot the last frame shaped, as text (glyph id, font, x, y,
     /// width, offsets, level, bytes, size, flags and color).
     fn every_layout_glyph(r: &Renderer) -> Vec<String> {
@@ -2979,6 +3056,7 @@ pub(crate) mod tests {
         vec![terminal_span(&format!("{n:07} "), false, false), Span { color: colors[n % 6], ..terminal_span("flood", false, false) }, terminal_span(&format!(" {words}"), false, false)]
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Task 8f, the render quality gate: with the shape cache off, on and cold, and on and warm,
     /// every row draws the same layout glyphs and the same pixels.
     #[test]
@@ -3074,11 +3152,13 @@ pub(crate) mod tests {
         assert_same_draws("across faces", &off, &[("warm", &warm)]);
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// The gate's frame: one row per 24 px band on black.
     fn gate_frame(rows: Vec<(Vec<Span>, u16)>) -> Frame {
         Frame { clear: rgba(rgb(0, 0, 0), 1.0), rows: rows.into_iter().enumerate().map(|(i, (spans, face))| slot_row(i, spans, face)).collect(), ..Default::default() }
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Draws `frame` from fresh row buffers on a texture as tall as its rows: every layout glyph
     /// and the pixels. 832 wide, not 800: a texture copy's rows are 256-byte aligned.
     fn gate_shot(r: &mut Renderer, frame: &Frame) -> (Vec<String>, Vec<u8>) {
@@ -3098,6 +3178,7 @@ pub(crate) mod tests {
         (every_layout_glyph(r), px)
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// The same layout glyphs in every slot and the same pixels as the uncached draw.
     fn assert_same_draws(pass: &str, off: &(Vec<String>, Vec<u8>), others: &[(&str, &(Vec<String>, Vec<u8>))]) {
         for (name, (glyphs, pixels)) in others {
@@ -3270,8 +3351,7 @@ pub(crate) mod tests {
     /// on its column: the cell is the regular advance, the bold run is tracked down to it.
     #[test]
     fn a_wider_bold_face_stays_on_the_cell_grid() {
-        let (device, queue) = device();
-        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "DejaVu Sans Mono", 16.0);
+        let mut r = font_renderer("DejaVu Sans Mono", 16.0);
         r.font_system.db_mut().load_font_data(include_bytes!("../tests/fixtures/fonts/TermurionWideBoldTest-Regular.ttf").to_vec());
         r.font_system.db_mut().load_font_data(include_bytes!("../tests/fixtures/fonts/TermurionWideBoldTest-Bold.ttf").to_vec());
         let family = "Termurion Wide Bold Test";
@@ -3323,8 +3403,7 @@ pub(crate) mod tests {
     /// wide). Each glyph sits at the column of the first character it covers.
     #[test]
     fn a_ligature_advances_one_cell_per_character() {
-        let (device, queue) = device();
-        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "DejaVu Sans Mono", 16.0);
+        let mut r = font_renderer("DejaVu Sans Mono", 16.0);
         r.font_system.db_mut().load_font_data(include_bytes!("../tests/fixtures/fonts/TermurionLigatureTest-Regular.ttf").to_vec());
         let family = "Termurion Ligature Test";
         let text = "a=>b===c==W";
@@ -3344,6 +3423,7 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Item (b): a font that is not installed draws in a monospace face, and on the grid.
     #[test]
     fn a_missing_font_falls_back_to_a_monospace_face_on_the_grid() {
@@ -3365,8 +3445,7 @@ pub(crate) mod tests {
     #[test]
     fn the_command_button_icons_are_in_the_icon_face() {
         use crate::cmdbuttons::Button::*;
-        let (device, queue) = device();
-        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = font_renderer("Cascadia Mono", 16.0);
         let family = r.icon_family.clone();
         for b in [Settings, Copy, Bookmark, Share, Info, Fold, Unfold] {
             let c = b.glyph();
@@ -3416,8 +3495,7 @@ pub(crate) mod tests {
         for n in [0xE8BB, 0xE765, 0xE72B, 0xE895] {
             assert!(points.contains(&n), "U+{n:04X} is in the scan");
         }
-        let (device, queue) = device();
-        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = font_renderer("Cascadia Mono", 16.0);
         let family = r.icon_family.clone();
         let mut missing = Vec::new();
         for n in points {
@@ -3436,9 +3514,8 @@ pub(crate) mod tests {
 
     #[test]
     fn postscript_names_resolve_to_installed_families() {
-        let (device, queue) = device();
         let (ps, family) = postscript_pair();
-        let r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, &family, 16.0);
+        let r = font_renderer(&family, 16.0);
         assert_eq!(r.resolve_family(&ps), family);
         assert_eq!(r.resolve_family(&family), family);
         assert_eq!(r.resolve_family(&family.to_uppercase()), family, "case does not matter");
@@ -3446,6 +3523,7 @@ pub(crate) mod tests {
         assert_eq!(r.resolve_family("MesloLGS-NF-Regular"), "MesloLGS NF");
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// The promo video's shots (promo/README.md). Each shot in the JSON file `TERMURION_PROMO`
     /// names is a full Termurion window (the real tab bar, split panes, Claude Code or a shell in
     /// each pane) drawn by the scene, the renderer and the effect chain at 60 fps, one PNG per
@@ -3740,6 +3818,7 @@ pub(crate) mod tests {
         eprintln!("PROMO shots in {}", out.display());
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// The demo video (docs/assets/render-plugins.mp4): a scripted Claude Code session drawn by
     /// Termurion's own scene, renderer and effect chain, one PNG per frame at 30 fps, into
     /// `%TEMP%\termurion-demo`. Every built-in effect types, sends (its Enter look) and gets an
@@ -3887,6 +3966,7 @@ pub(crate) mod tests {
         eprintln!("DEMO {} frames {w}x{h} in {}", n.get(), out.display());
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Every built-in effect's Enter look on Claude Code's input region, as ghostty-cursor-fx's
     /// media/effects images show it: one PNG per effect and moment into
     /// `%TEMP%\termurion-enter`. Run by hand: `--ignored render_enter_gallery`.
@@ -3959,6 +4039,7 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Every built-in effect's Enter look reaches both of Claude Code's input box lines, for two
     /// fonts, two sizes and an input box of 1, 3 and 6 lines (it grows upward as the prompt
     /// grows). The lit pixels are counted on each line's row, at the best of a few moments.
@@ -4064,6 +4145,7 @@ pub(crate) mod tests {
         (frame, (w, h), s.palette.bg)
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// The effect's frames at each of `shots` (ms, multiples of 50), with Enter at 1000 ms when
     /// `enter`. `boxed` false gives the shader no input box (iInputBox zeros).
     #[allow(clippy::too_many_arguments)]
@@ -4100,6 +4182,7 @@ pub(crate) mod tests {
         out
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Pixels in rows `ys` and columns `xs` that differ from `plain` by more than 30 in a channel.
     fn lit_in(lit: &[u8], plain: &[u8], w: u32, ys: std::ops::Range<f32>, xs: std::ops::Range<f32>) -> usize {
         let (y0, y1) = (ys.start.max(0.0).round() as usize, (ys.end.max(0.0).round() as usize).min(lit.len() / 4 / w as usize));
@@ -4112,9 +4195,11 @@ pub(crate) mod tests {
         [(c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8]
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Enter shots like `every_effect_lights_both_box_lines_on_enter`: every 150 ms after it.
     const ENTER_SHOTS: [u64; 11] = [1050, 1200, 1350, 1500, 1650, 1800, 1950, 2100, 2250, 2400, 2550];
 
+    #[cfg(not(target_os = "macos"))]
     /// Every built-in effect's Enter look runs along a shaded band's top and bottom edges (Codex,
     /// opencode after a prompt), and leaves the band's middle as it is with no box at all.
     #[test]
@@ -4149,6 +4234,7 @@ pub(crate) mod tests {
         assert!(bad.is_empty(), "band edges not lit, or its middle lit:\n{}", bad.join("\n"));
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// opencode's start screen centers its input panel at 75% of the width: the effects light its
     /// edges only between the panel's left and right edge.
     #[test]
@@ -4176,6 +4262,7 @@ pub(crate) mod tests {
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Claude Code in the right tmux pane: the lines light only between the pane's border and
     /// the window's edge, none over the other pane.
     #[test]
@@ -4203,6 +4290,7 @@ pub(crate) mod tests {
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// LINE_TINT with no signal: a band has no line ink, so each edge gets a thin line inside the
     /// band's columns, colored as lineTint colors Claude Code's lines: a grey halfway from the
     /// background to the text, tinted toward the cursor by the plugin's LINE_COLOR. LINE_EFFECT is
@@ -4267,6 +4355,7 @@ pub(crate) mod tests {
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// PROMPT_EFFECT restyles Codex's bold `›` and agy's `>` prompt mark, in every built-in that
     /// has it.
     #[test]
@@ -4293,6 +4382,7 @@ pub(crate) mod tests {
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// A prompt mark no pixel check would take for a chevron (a `λ`) is restyled by PROMPT_EFFECT
     /// in every built-in once the profile names it, and left alone under the Shell rules.
     #[test]
@@ -4331,6 +4421,7 @@ pub(crate) mod tests {
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Lightning's Enter surge runs along Claude Code's input box lines (above and below the
     /// prompt), drawn the way Termurion really draws them, for several fonts and sizes and a
     /// dark tinted background like a real profile's. The uniforms come from the frame, as the
@@ -4399,6 +4490,7 @@ pub(crate) mod tests {
         }), "{text}");
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// An animation frame of the same scene runs the passes over the picture already in the
     /// chain, but only while that picture is the window's: a screenshot, a new size or a chain
     /// whose passes write the frame texture each make the next frame draw the terminal again.
@@ -4440,18 +4532,21 @@ pub(crate) mod tests {
         assert_eq!(three.frame_kept(), !views_supported(), "a third pass writes the frame texture only on a chain with view formats");
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Whether the test device has view formats (not on GL). Kinds with `views: true` need them.
     fn views_supported() -> bool {
         let (_, adapter, _, _) = super::test_gpu::shared_all();
         crate::render_fx_gpu::view_formats_supported(&adapter)
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// On GL each test thread takes the one GL lock (see `test_gpu::serial_on_gl`).
     fn serial_on_gl() {
         let (_, adapter, _, _) = super::test_gpu::shared_all();
         super::test_gpu::serial_on_gl(&adapter);
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// True when `kind` can run here; otherwise prints why it was skipped, so a skip is never silent.
     fn runs_here(kind: ChainKind, test: &str) -> bool {
         if kind.views && !views_supported() {
@@ -4461,6 +4556,7 @@ pub(crate) mod tests {
         true
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// A window texture for the region tests: the sRGB format with its raw twin, read back.
     struct Window {
         tex: wgpu::Texture,
@@ -4469,6 +4565,7 @@ pub(crate) mod tests {
         size: (u32, u32),
     }
 
+    #[cfg(not(target_os = "macos"))]
     impl Window {
         fn new(device: &wgpu::Device, (w, h): (u32, u32)) -> Window {
             serial_on_gl();
@@ -4518,6 +4615,7 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// One way of running a chain: with or without view formats, opaque or keeping alpha.
     #[derive(Clone, Copy, Debug)]
     struct ChainKind {
@@ -4527,6 +4625,7 @@ pub(crate) mod tests {
         live_lines: bool,
     }
 
+    #[cfg(not(target_os = "macos"))]
     const CHAIN_KINDS: [ChainKind; 4] = [
         ChainKind { views: true, keep_alpha: false, live_lines: false },
         ChainKind { views: false, keep_alpha: false, live_lines: true },
@@ -4534,6 +4633,7 @@ pub(crate) mod tests {
         ChainKind { views: false, keep_alpha: true, live_lines: false },
     ];
 
+    #[cfg(not(target_os = "macos"))]
     /// The kinds this backend can run. A kind that needs view formats is left out on GL, and
     /// the skip is printed so nothing passes silently with nothing checked.
     fn kinds() -> Vec<ChainKind> {
@@ -4541,15 +4641,18 @@ pub(crate) mod tests {
         CHAIN_KINDS.into_iter().filter(|k| runs_here(*k, "region tests")).collect()
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn pick(i: usize) -> ChainKind {
         let all = kinds();
         all[i % all.len()]
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn compiled_for(p: &crate::render_fx::Plugin, kind: ChainKind) -> Vec<crate::render_fx::Compiled> {
         p.compile_with(&[("LINE_EFFECT", kind.live_lines)]).unwrap()
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn chain_of(device: &wgpu::Device, compiled: Vec<crate::render_fx::Compiled>, kind: ChainKind, terms: Option<Vec<crate::render_fx::RegionTerm>>) -> crate::render_fx_gpu::Chain {
         let mut c = crate::render_fx_gpu::Chain::new(device, wgpu::TextureFormat::Bgra8UnormSrgb, compiled, kind.keep_alpha).unwrap();
         if !kind.views {
@@ -4559,6 +4662,7 @@ pub(crate) mod tests {
         c
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// One compared frame of `region_shots`: the region chain's pixels and the full pass's for
     /// the same uniforms, with the rects asked for and whether the chain shaded only them.
     struct RegionShot {
@@ -4576,6 +4680,8 @@ pub(crate) mod tests {
     }
 
     /// How `region_shots` runs.
+    // On macOS only the Metal tests' `region_timeline` reads it, and not every field.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     #[derive(Clone, Default)]
     pub(crate) struct Plan {
         /// The events (`event_times`); without them the cursor stays still (idle).
@@ -4623,6 +4729,7 @@ pub(crate) mod tests {
     /// for `plan.hold`. Region frames are compared with the full pass for the same uniforms; a
     /// full frame that no compared frame follows is not drawn (it depends on no earlier frame).
     /// One frame of the region tests' timeline (`region_timeline`).
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub(crate) struct RegionStep {
         pub ms: u64,
         pub u: crate::render_fx::Uniforms,
@@ -4689,6 +4796,7 @@ pub(crate) mod tests {
         out
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// The region tests' timeline (`region_timeline`) drawn: frame 0 is drawn anew, every later
     /// frame is animation-only (`draw_fx_for` with the scene kept and `frame_region`, the chain
     /// told `keep_output` as the app does), except those `plan.built` draws anew with their own
@@ -4776,6 +4884,7 @@ pub(crate) mod tests {
         Frame { rows, ..frame.clone() }
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Where two pictures differ: the count and the bounding box (left, top, right, bottom).
     fn diff_box(a: &[u8], b: &[u8], w: u32) -> Option<(usize, [usize; 4])> {
         let mut n = 0;
@@ -4790,11 +4899,13 @@ pub(crate) mod tests {
         (n > 0).then_some((n, bx))
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Whether the effect restyles pixels outside its region from the picture alone (`StillLooks`).
     fn still_looks(p: &crate::render_fx::Plugin) -> bool {
         p.manifest.region.as_ref().is_some_and(|t| t.contains(&crate::render_fx::RegionTerm::StillLooks))
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn region_plugins() -> Vec<crate::render_fx::Plugin> {
         crate::render_fx::discover(None).0.into_iter().filter(|p| p.manifest.region.as_ref().is_some_and(|t| !t.contains(&crate::render_fx::RegionTerm::Full))).collect()
     }
@@ -4804,6 +4915,7 @@ pub(crate) mod tests {
     /// right of it. The shaders find both themselves.
     pub(crate) const AGENT_SCREENS: [&str; 15] = ["agy", "codex", "codex-after", "hermes", "hermes-after", "opencode", "opencode-after", "tmux-other-has-box", "tmux-split-band", "tmux-split-left", "tmux-split-right", "tmux-stacked", "tmux-three", "tmux-title-row", "shell-rules"];
 
+    #[cfg(not(target_os = "macos"))]
     /// Runs `check` for every shipped effect with a region (or only TERMURION_REGION_ONLY), one
     /// thread each: lavapipe runs one submission on few cores. Returns the shots and the misses.
     fn per_region_plugin(check: &(dyn Fn(&crate::render_fx::Plugin) -> (usize, Vec<String>) + Sync)) -> (usize, Vec<String>) {
@@ -4826,6 +4938,7 @@ pub(crate) mod tests {
         })
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Checks `shots` of one run: each region frame byte-equal to the full pass, alpha 255 on an
     /// opaque window. Returns how many frames shaded only their region.
     fn check_shots(shots: &[RegionShot], kind: ChainKind, size: (u32, u32), what: &str, bad: &mut Vec<String>) -> usize {
@@ -4842,6 +4955,7 @@ pub(crate) mod tests {
         shots.iter().filter(|s| s.region_path).count()
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Change 2: an animation-only frame that shades only the effect's region shows the same
     /// bytes as the full pass, for every shipped effect with a region, on every agent screen,
     /// through a cursor step, a 20-row jump, Enter and typing, each followed by region frames
@@ -4877,14 +4991,14 @@ pub(crate) mod tests {
     /// there, so the region must cover where the shaders search for them.
     #[test]
     fn the_shell_rules_screen_has_no_box_or_mark() {
-        let (device, queue) = device();
-        let r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let r = font_renderer("Cascadia Mono", 14.0);
         let (frame, _, _) = agent_frame(&r, "shell-rules", [255, 0, 0]);
         let fx = frame.fx.unwrap();
         assert!(fx.input_box.is_none() && fx.prompt_mark.is_none(), "{:?} {:?}", fx.input_box, fx.prompt_mark);
         assert!(fx.cursor.unwrap().rect[0] > 20.0 * r.cell.0, "the cursor sits far right of the mark");
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// The shaders still find the `shell-rules` rules and mark themselves: Neon's full pass
     /// restyles pixels outside the cursor:3 rect, where a region without the search areas
     /// would leave the plain picture.
@@ -4906,6 +5020,7 @@ pub(crate) mod tests {
         assert!(outside > 0, "the full pass left everything outside cursor:3 plain");
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// A frame drawn anew shades only its own region over the new picture: the same timeline as
     /// `region_frames_match_full_frames_for_every_shipped_plugin`, but every frame built with
     /// its rows switched to the next agent screen's and back, byte-equal to the full pass. Each
@@ -4936,6 +5051,7 @@ pub(crate) mod tests {
         assert!(bad.is_empty(), "{} misses in {runs} region frames:\n{}", bad.len(), bad.join("\n"));
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Animation-only, built, animation-only in a row: the animation frame after a built one
     /// builds on what the built frame kept, and each matches the full pass, on every chain kind.
     #[test]
@@ -4975,6 +5091,7 @@ pub(crate) mod tests {
         assert!(bad.is_empty(), "{} misses in {runs} region frames:\n{}", bad.len(), bad.join("\n"));
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// A chain of two effects (two passes, the middle one written by the fill too) shades only
     /// its region on built and animation-only frames alike, matching the full pass.
     #[test]
@@ -4999,6 +5116,7 @@ pub(crate) mod tests {
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// The region path's one pass (the window and the next kept texture written together) shows
     /// the bytes of the two passes it replaces (the effect into the kept texture, then a copy),
     /// for every shipped effect with a region: the events timeline on four screens, every other
@@ -5035,6 +5153,7 @@ pub(crate) mod tests {
         assert!(bad.is_empty(), "{} misses in {runs} frames:\n{}", bad.len(), bad.join("\n"));
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// The one pass takes at most `SHADE_RECTS` rects: a frame with 17 runs the two passes (the
     /// effect over its scissors, then the copy), 16 runs one, and either way the window gets the
     /// old way's bytes, also when the two take turns.
@@ -5072,6 +5191,7 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// A user GLSL plugin with a region whose shader uses a derivative (`fwidth`) keeps the two
     /// passes: under the one pass's per-pixel branch a quad across a rect edge has no defined
     /// derivative. Its frames are the old way's bytes on every chain kind, over odd-aligned rects.
@@ -5123,6 +5243,7 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Each frame of the region path is one render pass per shader: no copy pass after the effect,
     /// on animation-only and full frames alike. A steady frame makes nothing: no kept texture and
     /// no bind group.
@@ -5163,6 +5284,7 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// The idle animations (a breathing glow, a stray ember, a sonar ping, a glint along the
     /// box lines) come every few seconds: 6 s of a still cursor, region frames against the full
     /// pass every 100 ms, on a line box and a band.
@@ -5189,6 +5311,7 @@ pub(crate) mod tests {
         assert!(bad.is_empty(), "{} misses in {runs} region frames:\n{}", bad.len(), bad.join("\n"));
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Horizontal Spacing 200% under an underline cursor: the shaders' cellH is twice the cell
     /// width, about twice the cell height, so pads in cell heights would cut Shockwave's idle
     /// sonar ping (2.5 cellH) short. Pads in `render_fx::pad_unit` hold it.
@@ -5208,6 +5331,7 @@ pub(crate) mod tests {
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// The shaders' cellH follows the cursor, not the cell: an underline cursor on a wide
     /// character (two cells) gives cellH = 4 cell widths, about twice the cell height at the
     /// default spacing. Shockwave's sonar ping must stay inside its pads.
@@ -5225,6 +5349,7 @@ pub(crate) mod tests {
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// A block cursor on a wide character with tall rows (Vertical Spacing, the cell 2.9 times as
     /// tall as wide): the block is at least 1.4 times as tall as wide, so the shaders do not halve
     /// it and cellH = 4 cell widths, above the cell's own bound. Shockwave's ping with a 2.75 pad
@@ -5251,6 +5376,7 @@ pub(crate) mod tests {
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// The compare catches a region that is too small: Neon's breathing halo reaches past a
     /// region of the bare cursor.
     #[test]
@@ -5267,6 +5393,7 @@ pub(crate) mod tests {
         assert!(!bad.is_empty(), "a region of the bare cursor passed");
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// The frame's own bytes through a chain (an identity pass), read like the region shots.
     fn plain_through_chain(r: &mut Renderer, frame: &Frame, size: (u32, u32)) -> Vec<u8> {
         let (device, queue) = device();
@@ -5278,6 +5405,7 @@ pub(crate) mod tests {
         win.read(&device, &queue)
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Review focus 3: the cursor jumps 20 rows between region frames. The plugins' own regions
     /// make that frame full (`full_after_change`), so their terms run here without it: the jump
     /// frame shades this frame's region united with last frame's. Around the old cursor it shows
@@ -5321,6 +5449,7 @@ pub(crate) mod tests {
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Review focus 4: after a new window size the next animation-only frame runs the full pass
     /// (its rects are ignored) and the kept output is made again at the new size.
     #[test]
@@ -5362,6 +5491,7 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// A full frame no region frame can follow (`keep_output(false)`) writes the window as the
     /// full pass does and leaves nothing kept, so the next frame's rects are ignored.
     #[test]
@@ -5394,6 +5524,7 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// A frame with a new picture shades only the region for a bundled effect, but runs the full
     /// pass for the same effect loaded from the user's folder: only the bundled ones are proven
     /// to look the same that way (the region pixel tests).
@@ -5439,6 +5570,7 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// An opaque window (keep_alpha false) keeps every alpha byte at 255 on region frames, with
     /// and without view formats, over a transparent clear.
     #[test]
@@ -5469,6 +5601,7 @@ pub(crate) mod tests {
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Render plugins: the frame goes through each pass in order, with no vertical flip and no
     /// sRGB round trip (a copy pass gives back the frame's own bytes).
     #[test]
@@ -5513,6 +5646,7 @@ pub(crate) mod tests {
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// A frame and chains for the bind group and uniform tests: (renderer, frame, a Lightning
     /// pass list's compile, uniforms with a cursor).
     fn fx_bench() -> (wgpu::Device, wgpu::Queue, Frame, crate::render_fx::Uniforms) {
@@ -5527,22 +5661,26 @@ pub(crate) mod tests {
         (device, queue, frame, u)
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// The with-views leg needs a second view of a texture, which GL cannot make; there only the
     /// plain-texture leg (what the app runs on GL) exists.
     fn view_legs() -> Vec<bool> {
         if views_supported() { vec![true, false] } else { vec![false] }
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// A Lightning chain for a device with or without view formats.
     fn lightning_chain(device: &wgpu::Device, format: wgpu::TextureFormat, views: bool) -> crate::render_fx_gpu::Chain {
         let c = test_chain(device, format, lightning().compile().unwrap(), false).unwrap();
         if views { c } else { c.without_view_formats(device) }
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn lightning() -> crate::render_fx::Plugin {
         crate::render_fx::discover(None).0.into_iter().find(|p| p.id.contains("lightning")).expect("the Lightning plugin")
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn chain_keeps_its_bind_groups_between_frames() {
         serial_on_gl();
@@ -5567,6 +5705,7 @@ pub(crate) mod tests {
         r.set_view_formats(true);
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn unchanged_uniforms_are_not_written() {
         serial_on_gl();
@@ -5588,6 +5727,7 @@ pub(crate) mod tests {
         assert_eq!(chain.uniform_writes(), with_layout * 2, "a new time writes every pass with a layout");
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// A frame of the same scene whose passes pack the bytes they packed last time shows what
     /// the window shows: the chain says so (`skip_if_still`), and a changed `time`, a new size
     /// or a picture a screenshot drew into the frame texture says no.
@@ -5629,6 +5769,7 @@ pub(crate) mod tests {
         assert_eq!(chain.skips(), 2);
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Ten animation frames through one chain, with its kept bind groups and skipped writes,
     /// give the bytes a fresh chain gives each frame.
     #[test]
@@ -5661,6 +5802,7 @@ pub(crate) mod tests {
         r.set_view_formats(true);
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// OpenGL has no second view of a texture, so the chain copies the frame into plain textures
     /// and back (`without_view_formats`). Every built-in effect must give the same pixels both
     /// ways, so an effect looks the same on OpenGL as on Vulkan, Metal and DirectX.
@@ -5712,6 +5854,7 @@ pub(crate) mod tests {
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn draws_quads_and_text_offscreen() {
         let (device, queue) = device();
@@ -5762,6 +5905,7 @@ pub(crate) mod tests {
         assert!(white, "no text pixels drawn");
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn underlines_break_around_glyph_ink() {
         let (device, queue) = device();
@@ -5805,6 +5949,7 @@ pub(crate) mod tests {
         assert_eq!(mid, vec![255, 0, 0]);
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// A stroke gaps around the glyphs of its own line: every piece of the line counts (a
     /// non-ASCII character splits a line into rows), and a badge's rows, drawn behind the text,
     /// never cut a pane's underline.
@@ -5848,6 +5993,7 @@ pub(crate) mod tests {
         Span { text: text.into(), color: rgb(255, 255, 255), bold, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: bold, ligatures: 0, mask, font: 0 }
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Draws one row of `spans` in `face` at (4, 4) on black and reads the target back.
     fn shoot(r: &mut Renderer, device: &wgpu::Device, queue: &wgpu::Queue, face: u16, spans: Vec<Span>, (w, h): (u32, u32)) -> Vec<u8> {
         let tex = target(device, w, h);
@@ -5858,6 +6004,7 @@ pub(crate) mod tests {
         read(device, queue, &tex, w, h)
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// The distinct red levels of a readback, sorted.
     fn levels(px: &[u8]) -> Vec<u8> {
         let mut v: Vec<u8> = px.chunks(4).map(|p| p[0]).collect();
@@ -5866,6 +6013,7 @@ pub(crate) mod tests {
         v
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Step 1 of 13n Task 5 (the live check, headless: an offscreen draw, no window): does text
     /// come out smoothed today, and does an Aliased span draw exactly two alpha levels with the
     /// vendored glyphon filter in place? Run with `-- --nocapture` for the ledger line.
@@ -5891,6 +6039,7 @@ pub(crate) mod tests {
         assert!(levels(&thin).len() > 2 && sum(&thin) < sum(&plain), "thin {} plain {}", sum(&thin), sum(&plain));
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// The 13m-o review ruling: a glyph atlas that grows re-rasterizes every cached glyph, and
     /// the re-rasterized masks must go through the filter too. glyphon evicts the glyphs not in
     /// use before it grows, so the aliased and thin "W"s are in the growth frame itself: they are
@@ -5982,6 +6131,7 @@ pub(crate) mod tests {
         panic!("the table never filled");
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Lines of three fractional-width cells meet with no gap, and the second draw (a new scale
     /// and a new size) is a new mask, not the first one scaled.
     #[test]
@@ -6011,6 +6161,7 @@ pub(crate) mod tests {
         assert_eq!((red(28, 5), red(5, 19)), (0, 0));
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// A glyph's clip trims it: a popup that cut a cell leaves the rest drawn and the rest dark.
     #[test]
     fn box_glyph_clip_trims_the_mask() {
@@ -6029,6 +6180,7 @@ pub(crate) mod tests {
         assert_eq!(row, want);
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// A box mask re-rasterized after the atlas grew is the mask it was before (glyphon panics when
     /// a re-rasterization differs in size, and a stale mask would show as a broken line).
     #[test]
@@ -6074,8 +6226,7 @@ pub(crate) mod tests {
     /// on a Retina-class scale, else 0) and by one pixel when not (`iTermTextDrawingHelper.m:2340`).
     #[test]
     fn double_strike_follows_the_anti_alias_setting() {
-        let (device, queue) = device();
-        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = font_renderer("Cascadia Mono", 16.0);
         let Some(family) = family_without_bold(&r) else {
             println!("skip: every installed family has a bold face");
             return;
@@ -6112,8 +6263,7 @@ pub(crate) mod tests {
     /// of another profile's Special Exceptions or switches.
     #[test]
     fn the_face_cap_never_borrows_another_profiles_switches() {
-        let (device, queue) = device();
-        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = font_renderer("Cascadia Mono", 16.0);
         let a = r.face(&key("Cascadia Mono", 20.0, 1.0, 1.0));
         let table = std::sync::Arc::<str>::from(r#"{"entries":[{"start":57344,"count":16,"fontName":"Consolas"}],"version":2}"#);
         let with_table = r.face(&FaceKey { table: Some(table.clone()), ..key("Cascadia Mono", 30.0, 1.0, 1.0) });
@@ -6130,6 +6280,7 @@ pub(crate) mod tests {
         assert!(r.capped);
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn scrolled_rows_are_not_shaped_again() {
         let (device, queue) = device();
@@ -6150,6 +6301,7 @@ pub(crate) mod tests {
         assert!(fresh.draw_offscreen(&frame_of(1), 400, 400).unwrap() == scrolled, "reused rows draw the same pixels as shaped ones");
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn identical_rows_in_one_frame_both_draw() {
         let (device, queue) = device();
@@ -6170,8 +6322,7 @@ pub(crate) mod tests {
     /// runs follow every frame row, so the slots after it are not reshaped when a split appears.
     #[test]
     fn split_levels_keeps_every_frame_row_in_its_slot() {
-        let (device, queue) = device();
-        let r = test_renderer(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let r = font_renderer("Cascadia Mono", 16.0);
         let level = |text: &str, ligatures: u8| Span { ligatures, ..masked(text, false, 0) };
         let row = |y: f32, spans: Vec<Span>| TextRow { x: 10.0, y, spans: spans.into(), clip: Rect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 }, scale: 1.0, face: DEFAULT_FACE };
         let rows = vec![row(0.0, vec![level("ab", 0), level("->", 2)]), row(20.0, vec![level("cd", 0)]), row(40.0, vec![level("e", 0), level("=>", 2), level("f", 0)])];
@@ -6185,6 +6336,7 @@ pub(crate) mod tests {
         assert_eq!(extras, vec![(10.0 + 2.0 * cw, 0.0, "->"), (10.0 + cw, 40.0, "=>"), (10.0 + 3.0 * cw, 40.0, "f")], "the later runs sit at their cells, in row order");
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn target(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Texture {
         device.create_texture(&wgpu::TextureDescriptor {
             label: None,
@@ -6198,6 +6350,7 @@ pub(crate) mod tests {
         })
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn picture(key: u64) -> crate::scene::ImageQuad {
         // Two pixels: red, then blue.
         let px = vec![255, 0, 0, 255, 0, 0, 255, 255];
@@ -6211,6 +6364,7 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn draws_an_image_offscreen() {
         let (device, queue) = device();
@@ -6226,6 +6380,7 @@ pub(crate) mod tests {
         assert!(at(29, 8)[2] > 200 && at(29, 8)[0] < 50, "{:?}", at(29, 8));
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn textures_upload_once() {
         let (device, queue) = device();
@@ -6238,6 +6393,7 @@ pub(crate) mod tests {
         assert_eq!(r.uploads(), 100);
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn oversized_images_are_skipped() {
         let (device, queue) = device();

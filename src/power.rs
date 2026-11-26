@@ -54,32 +54,32 @@ impl Poll {
 }
 
 /// `SessionView.m:862-895`: Prefer integrated takes the low-power device, else the system default.
-pub fn adapter_preference(prefer_integrated: bool) -> wgpu::PowerPreference {
+pub fn adapter_preference(prefer_integrated: bool) -> crate::gpu_pick::PowerPreference {
     crate::gpu_pick::preference(prefer_integrated)
 }
 
 /// The GPU sheet enables "Prefer integrated" only when an integrated and a discrete GPU exist
 /// (`iTermAdvancedGPUSettingsViewController.m:25-34`).
-pub fn both_gpu_kinds(kinds: &[wgpu::DeviceType]) -> bool {
-    kinds.contains(&wgpu::DeviceType::IntegratedGpu) && kinds.contains(&wgpu::DeviceType::DiscreteGpu)
+pub fn both_gpu_kinds(kinds: &[crate::gpu_pick::DeviceType]) -> bool {
+    kinds.contains(&crate::gpu_pick::DeviceType::IntegratedGpu) && kinds.contains(&crate::gpu_pick::DeviceType::DiscreteGpu)
 }
 
 /// The first answer is kept (iTerm2's `dispatch_once`).
-pub fn chosen_preference_in(cell: &OnceLock<wgpu::PowerPreference>, prefer_integrated: bool) -> wgpu::PowerPreference {
+pub fn chosen_preference_in(cell: &OnceLock<crate::gpu_pick::PowerPreference>, prefer_integrated: bool) -> crate::gpu_pick::PowerPreference {
     *cell.get_or_init(|| adapter_preference(prefer_integrated))
 }
 
-static CHOSEN: OnceLock<wgpu::PowerPreference> = OnceLock::new();
+static CHOSEN: OnceLock<crate::gpu_pick::PowerPreference> = OnceLock::new();
 
 /// The preference for this run, fixed by the first caller (the first window's `init_gpu`).
-pub fn chosen_preference(prefer_integrated: bool) -> wgpu::PowerPreference {
+pub fn chosen_preference(prefer_integrated: bool) -> crate::gpu_pick::PowerPreference {
     chosen_preference_in(&CHOSEN, prefer_integrated)
 }
 
 /// The preference the first window used; later requests (the see-through instance) read it so
 /// every window lands on one adapter. The system default before any window exists.
-pub fn chosen() -> wgpu::PowerPreference {
-    CHOSEN.get().copied().unwrap_or(wgpu::PowerPreference::None)
+pub fn chosen() -> crate::gpu_pick::PowerPreference {
+    CHOSEN.get().copied().unwrap_or(crate::gpu_pick::PowerPreference::None)
 }
 
 static BOTH_KINDS: AtomicBool = AtomicBool::new(false);
@@ -124,7 +124,7 @@ pub fn opt_out_of_power_throttling() -> Result<(), String> {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
-    use wgpu::DeviceType::{Cpu, DiscreteGpu, IntegratedGpu};
+    use crate::gpu_pick::DeviceType::{Cpu, DiscreteGpu, IntegratedGpu};
 
     /// Review Focus 3: the AC line and battery saver come from `SYSTEM_POWER_STATUS`; iTerm2's
     /// Low Power Mode is the OS switch, not the battery.
@@ -143,8 +143,8 @@ mod tests {
     /// the sheet's row is live only with both kinds.
     #[test]
     fn adapter_preference_follows_iterm2() {
-        assert_eq!(adapter_preference(true), wgpu::PowerPreference::LowPower);
-        assert_eq!(adapter_preference(false), wgpu::PowerPreference::HighPerformance);
+        assert_eq!(adapter_preference(true), crate::gpu_pick::PowerPreference::LowPower);
+        assert_eq!(adapter_preference(false), crate::gpu_pick::PowerPreference::HighPerformance);
         assert!(both_gpu_kinds(&[IntegratedGpu, DiscreteGpu]));
         assert!(!both_gpu_kinds(&[DiscreteGpu]));
         assert!(!both_gpu_kinds(&[IntegratedGpu, Cpu]));
@@ -155,10 +155,10 @@ mod tests {
     #[test]
     fn preference_is_fixed_on_the_first_call() {
         let first = chosen_preference_in(&std::sync::OnceLock::new(), true);
-        assert_eq!(first, wgpu::PowerPreference::LowPower);
+        assert_eq!(first, crate::gpu_pick::PowerPreference::LowPower);
         let cell = std::sync::OnceLock::new();
-        assert_eq!(chosen_preference_in(&cell, false), wgpu::PowerPreference::HighPerformance);
-        assert_eq!(chosen_preference_in(&cell, true), wgpu::PowerPreference::HighPerformance);
+        assert_eq!(chosen_preference_in(&cell, false), crate::gpu_pick::PowerPreference::HighPerformance);
+        assert_eq!(chosen_preference_in(&cell, true), crate::gpu_pick::PowerPreference::HighPerformance);
     }
 
     /// Final review 6: the power line is read lazily and at most once a second.

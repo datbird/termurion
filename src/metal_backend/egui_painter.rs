@@ -32,9 +32,9 @@ const VERTEX_SIZE: usize = 20;
 const _: () = assert!(std::mem::size_of::<egui::epaint::Vertex>() == VERTEX_SIZE);
 
 const ATTRS: [Attr; 3] = [
-    Attr { location: 0, offset: 0, format: wgpu::VertexFormat::Float32x2 },
-    Attr { location: 1, offset: 8, format: wgpu::VertexFormat::Float32x2 },
-    Attr { location: 2, offset: 16, format: wgpu::VertexFormat::Uint32 },
+    Attr { location: 0, offset: 0, format: super::quads::VertexFormat::Float32x2 },
+    Attr { location: 1, offset: 8, format: super::quads::VertexFormat::Float32x2 },
+    Attr { location: 2, offset: 16, format: super::quads::VertexFormat::Uint32 },
 ];
 const BUFFERS: [Layout; 1] = [Layout { stride: VERTEX_SIZE as u32, instance: false, attrs: &ATTRS }];
 /// Group 0: the locals, seen by both stages. Group 1: the texture and its sampler.

@@ -46,14 +46,14 @@ impl TextPipeline {
 
 /// `GlyphToRender`, as glyphon's `Cache` lays it out.
 const GLYPH_ATTRS: [Attr; 6] = [
-    Attr { location: 0, offset: 0, format: wgpu::VertexFormat::Sint32x2 },
-    Attr { location: 1, offset: 8, format: wgpu::VertexFormat::Uint32 },
-    Attr { location: 2, offset: 12, format: wgpu::VertexFormat::Uint32 },
-    Attr { location: 3, offset: 16, format: wgpu::VertexFormat::Uint32 },
-    Attr { location: 4, offset: 20, format: wgpu::VertexFormat::Uint32 },
-    Attr { location: 5, offset: 24, format: wgpu::VertexFormat::Float32 },
+    Attr { location: 0, offset: 0, format: super::quads::VertexFormat::Sint32x2 },
+    Attr { location: 1, offset: 8, format: super::quads::VertexFormat::Uint32 },
+    Attr { location: 2, offset: 12, format: super::quads::VertexFormat::Uint32 },
+    Attr { location: 3, offset: 16, format: super::quads::VertexFormat::Uint32 },
+    Attr { location: 4, offset: 20, format: super::quads::VertexFormat::Uint32 },
+    Attr { location: 5, offset: 24, format: super::quads::VertexFormat::Float32 },
 ];
-const ROW_ID_ATTRS: [Attr; 1] = [Attr { location: 6, offset: 0, format: wgpu::VertexFormat::Uint32 }];
+const ROW_ID_ATTRS: [Attr; 1] = [Attr { location: 6, offset: 0, format: super::quads::VertexFormat::Uint32 }];
 const GLYPH_BUFFERS: [Layout; 1] = [Layout { stride: GLYPH_SIZE as u32, instance: true, attrs: &GLYPH_ATTRS }];
 /// The instances, then their row ids.
 const ROW_BUFFERS: [Layout; 2] = [Layout { stride: GLYPH_SIZE as u32, instance: true, attrs: &GLYPH_ATTRS }, Layout { stride: ROW_ID_SIZE as u32, instance: true, attrs: &ROW_ID_ATTRS }];

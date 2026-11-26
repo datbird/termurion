@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 
 use crate::fx_profile::DoneRule;
 
+// macOS has naga as its own dependency; elsewhere it is wgpu's.
+#[cfg(not(target_os = "macos"))]
 use wgpu::naga;
 
 /// Ghostty's uniform block and `iChannel0`, ready for naga.

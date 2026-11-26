@@ -54,7 +54,7 @@ pub struct MetalShared {
 impl MetalShared {
     /// The device wgpu would pick for `pref` (`gpu_pick::metal_order`), falling back to the system
     /// default when the list is empty.
-    pub fn new(pref: wgpu::PowerPreference) -> Result<MetalShared, String> {
+    pub fn new(pref: crate::gpu_pick::PowerPreference) -> Result<MetalShared, String> {
         let devices = devices();
         let facts: Vec<crate::gpu_pick::MetalFacts> = devices.iter().map(|d| facts_of(d)).collect();
         let pick = crate::gpu_pick::metal_order(&facts, pref).first().map(|&i| devices[i].clone());
@@ -67,22 +67,9 @@ impl MetalShared {
         self.device.name().to_string()
     }
 
-    /// The device described as wgpu describes an adapter (About, Copy Performance Stats, the log).
-    pub fn adapter_info(&self) -> wgpu::AdapterInfo {
-        wgpu::AdapterInfo {
-            name: self.name(),
-            vendor: 0,
-            device: 0,
-            device_type: facts_of(&self.device).kind(),
-            device_pci_bus_id: String::new(),
-            driver: String::new(),
-            driver_info: String::new(),
-            backend: wgpu::Backend::Metal,
-            subgroup_min_size: 0,
-            subgroup_max_size: 0,
-            transient_saves_memory: None,
-            limit_bucket: None,
-        }
+    /// The device as the adapter list describes one (About, Copy Performance Stats, the log).
+    pub fn facts(&self) -> crate::gpu_pick::Facts {
+        crate::gpu_pick::Facts { backend: crate::gpu_pick::Backend::Metal, name: self.name(), kind: facts_of(&self.device).kind() }
     }
 
     /// Starts a graphics debugger capture of the device (Xcode's), as wgpu-hal's
@@ -135,7 +122,7 @@ fn facts_of(d: &ProtocolObject<dyn MTLDevice>) -> crate::gpu_pick::MetalFacts {
 /// The system's Metal devices as the adapter list host.log and "Prefer integrated GPU" read.
 #[cfg(target_os = "macos")]
 pub fn adapter_facts() -> Vec<crate::gpu_pick::Facts> {
-    devices().iter().map(|d| crate::gpu_pick::Facts { backend: wgpu::Backend::Metal, name: d.name().to_string(), kind: facts_of(d).kind() }).collect()
+    devices().iter().map(|d| crate::gpu_pick::Facts { backend: crate::gpu_pick::Backend::Metal, name: d.name().to_string(), kind: facts_of(d).kind() }).collect()
 }
 
 /// Reports a failed command buffer: a removed device or a revoked one is a loss (the app's
@@ -180,12 +167,12 @@ pub(crate) fn command_failed(generation: u64, code: isize, text: &str) {
     }
 }
 
-/// One Metal device per test process, as `render::test_gpu` keeps one wgpu device.
+/// One Metal device per test process: every Metal test draws on it.
 #[cfg(all(test, target_os = "macos"))]
 pub fn test_device() -> &'static MetalShared {
     static DEVICE: std::sync::OnceLock<MetalShared> = std::sync::OnceLock::new();
-    // High performance, as the shared wgpu test device asks.
-    DEVICE.get_or_init(|| MetalShared::new(wgpu::PowerPreference::HighPerformance).expect("a Metal device"))
+    // High performance, as the shared wgpu test device asks elsewhere.
+    DEVICE.get_or_init(|| MetalShared::new(crate::gpu_pick::PowerPreference::HighPerformance).expect("a Metal device"))
 }
 
 /// A Metal buffer, or None when the device has no room (or a test made it fail).

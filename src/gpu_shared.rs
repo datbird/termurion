@@ -6,6 +6,7 @@
 /// handle, so a clone is cheap and shares the same device.
 #[derive(Clone)]
 pub enum GpuShared {
+    #[cfg(not(target_os = "macos"))]
     Wgpu { instance: wgpu::Instance, adapter: wgpu::Adapter, device: wgpu::Device, queue: wgpu::Queue },
     /// The native Metal device the terminal windows draw on (macOS).
     #[cfg(target_os = "macos")]
@@ -14,6 +15,7 @@ pub enum GpuShared {
 
 impl GpuShared {
     /// The four wgpu objects of a wgpu GPU; an error for any other.
+    #[cfg(not(target_os = "macos"))]
     pub fn wgpu(&self) -> Result<(&wgpu::Instance, &wgpu::Adapter, &wgpu::Device, &wgpu::Queue), String> {
         match self {
             GpuShared::Wgpu { instance, adapter, device, queue } => Ok((instance, adapter, device, queue)),
@@ -25,6 +27,7 @@ impl GpuShared {
     /// The renderer line About shows: the API and the GPU.
     pub fn renderer_name(&self) -> String {
         match self {
+            #[cfg(not(target_os = "macos"))]
             GpuShared::Wgpu { adapter, .. } => crate::about_ui::renderer_line(&adapter.get_info()),
             #[cfg(target_os = "macos")]
             GpuShared::Metal(m) => format!("Metal, {}", m.name()),

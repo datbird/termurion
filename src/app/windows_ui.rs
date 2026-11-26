@@ -1283,6 +1283,7 @@ pub(super) fn init_gpu_shared(window: Arc<Window>, from: &Gpu) -> Result<Gpu, St
 pub(super) fn init_gpu_from(window: Arc<Window>, from: &crate::gpu_shared::GpuShared) -> Result<Gpu, String> {
     let px = FONT_PX * window.scale_factor() as f32;
     let win = match from {
+        #[cfg(not(target_os = "macos"))]
         crate::gpu_shared::GpuShared::Wgpu { .. } => {
             let on = crate::gpu_window::GpuHandles::of(from)?;
             crate::gpu_window::WgpuWindow::open_new(window.clone(), &on, &on, false, &super::first_font(), px)?

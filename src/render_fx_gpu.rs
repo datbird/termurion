@@ -1,10 +1,14 @@
 //! Render plugins on the GPU: the frame is drawn into an offscreen texture, then each plugin
 //! shader runs as a full-screen triangle that reads the previous result as `iChannel0`. The last
-//! pass writes the window. wgpu only, so the same on every platform.
+//! pass writes the window. The chain is wgpu's (Windows and Linux); the full-screen triangle, the
+//! copy shader, `Shade` and `upload_range` are shared with the Metal chain, so they build on macOS too.
 
+#[cfg(not(target_os = "macos"))]
 use std::borrow::Cow;
 
-use crate::render_fx::{Compiled, Layout, PxRect, RegionTerm, Uniforms, uniform_layout};
+#[cfg(not(target_os = "macos"))]
+use crate::render_fx::{Compiled, Layout, RegionTerm, Uniforms, uniform_layout};
+use crate::render_fx::PxRect;
 
 /// A full-screen triangle; the fragment shaders read `@builtin(position)` (gl_FragCoord).
 pub(crate) const VERTEX: &str = "
@@ -16,6 +20,7 @@ fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
 }
 ";
 
+#[cfg(not(target_os = "macos"))]
 /// Where the card cannot view one texture in two formats (OpenGL): the frame's sRGB texture is
 /// read back to linear by the sampler, so this pass stores it sRGB-encoded in a plain texture,
 /// the same bytes the raw view would have shown the shaders.
@@ -41,6 +46,7 @@ fn fs_main(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
 }
 ";
 
+#[cfg(not(target_os = "macos"))]
 /// The other way, into the window's sRGB view: the stored values are decoded to linear here and
 /// the card encodes them again on the write, so the window gets the bytes the chain made.
 const ENCODE: &str = "
@@ -56,6 +62,7 @@ fn fs_main(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
 }
 ";
 
+#[cfg(not(target_os = "macos"))]
 /// Whether the card can view a texture (and the window) in a second format. OpenGL cannot; the
 /// effects then run with `Chain::without_view_formats`.
 pub fn view_formats_supported(adapter: &wgpu::Adapter) -> bool {
@@ -63,6 +70,7 @@ pub fn view_formats_supported(adapter: &wgpu::Adapter) -> bool {
     f.contains(wgpu::DownlevelFlags::VIEW_FORMATS) && f.contains(wgpu::DownlevelFlags::SURFACE_VIEW_FORMATS)
 }
 
+#[cfg(not(target_os = "macos"))]
 /// The two copy passes of a chain that has no second view (`Chain::without_view_formats`).
 struct Blits {
     layout: wgpu::BindGroupLayout,
@@ -70,12 +78,14 @@ struct Blits {
     encode: wgpu::RenderPipeline,
 }
 
+#[cfg(not(target_os = "macos"))]
 struct Pass {
     pipeline: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
     layout: Option<Layout>,
 }
 
+#[cfg(not(target_os = "macos"))]
 /// One offscreen texture with its two views: `srgb` for the renderer to draw into and `raw`
 /// (the same bytes, no sRGB conversion) for the shaders to read and write, so sampled colors
 /// stay in the same sRGB-encoded space as the color uniforms.
@@ -85,6 +95,7 @@ struct Target {
     raw: wgpu::TextureView,
 }
 
+#[cfg(not(target_os = "macos"))]
 /// Without view formats: the frame in the window's format, and two plain textures the passes
 /// read and write (the first holds the decoded frame).
 struct Plain {
@@ -94,6 +105,7 @@ struct Plain {
     raw: [wgpu::TextureView; 2],
 }
 
+#[cfg(not(target_os = "macos"))]
 pub struct Chain {
     passes: Vec<Pass>,
     bind_layout: wgpu::BindGroupLayout,
@@ -154,6 +166,7 @@ pub struct Chain {
     one_tried: bool,
 }
 
+#[cfg(not(target_os = "macos"))]
 /// The region path's last pass as one: full screen, it shades the rects and copies last frame's
 /// kept texel elsewhere, writing the window and the other kept texture (`render_fx::wrap_glsl_for`).
 struct OnePass {
@@ -164,6 +177,7 @@ struct OnePass {
     held: Option<[u8; SHADE_BYTES]>,
 }
 
+#[cfg(not(target_os = "macos"))]
 /// The one-pass shader's `TermurionShade` block: 16 uvec4 rects, then the count (std140).
 const SHADE_BYTES: usize = crate::render_fx::SHADE_RECTS * 16 + 16;
 
@@ -178,6 +192,7 @@ pub enum Shade<'a> {
     Fresh(&'a [PxRect]),
 }
 
+#[cfg(not(target_os = "macos"))]
 /// The chain's kept output (raw format, window size) and the copy that puts it in the window.
 /// With the one pass it is a pair: a pass cannot read and write one texture, so each frame reads
 /// `views[cur]` and writes the other.
@@ -194,11 +209,13 @@ struct Kept {
     one: Vec<wgpu::BindGroup>,
 }
 
+#[cfg(not(target_os = "macos"))]
 /// The format the passes write: the window's, without the sRGB suffix.
 pub fn raw_format(format: wgpu::TextureFormat) -> wgpu::TextureFormat {
     format.remove_srgb_suffix()
 }
 
+#[cfg(not(target_os = "macos"))]
 impl Chain {
     /// Builds a pipeline per shader. Fails with the first shader the device rejects. On an
     /// opaque window (`keep_alpha` false) the last pass writes color only and the window stays
@@ -886,11 +903,13 @@ impl Chain {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 /// A color attachment cleared to black and stored.
 fn cleared(view: &wgpu::TextureView) -> Option<wgpu::RenderPassColorAttachment<'_>> {
     Some(wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })
 }
 
+#[cfg(not(target_os = "macos"))]
 /// The kept output's copy into the window's raw view (`COPY`).
 fn copy_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat, write_mask: wgpu::ColorWrites) -> (wgpu::BindGroupLayout, wgpu::RenderPipeline) {
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -906,6 +925,7 @@ fn copy_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat, write_mask:
     (layout, pipeline)
 }
 
+#[cfg(not(target_os = "macos"))]
 /// `copy_pipeline` for a layout already made.
 fn copy_pipeline_with(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, format: wgpu::TextureFormat, write_mask: wgpu::ColorWrites) -> wgpu::RenderPipeline {
     let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("render_fx kept"), bind_group_layouts: &[Some(layout)], ..Default::default() });
@@ -924,6 +944,7 @@ fn copy_pipeline_with(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, for
     })
 }
 
+#[cfg(not(target_os = "macos"))]
 /// The result of an error scope. On native wgpu it is ready at once; a few polls cover a
 /// backend that answers late, and a scope that never answers counts as no error.
 fn ready<F: std::future::Future<Output = Option<wgpu::Error>>>(device: &wgpu::Device, f: F) -> Option<wgpu::Error> {
@@ -954,6 +975,7 @@ pub(crate) fn upload_range(span: &std::ops::Range<usize>, packed: &[u8], last: &
 #[cfg(test)]
 mod upload_tests {
     use super::*;
+    use crate::render_fx::Uniforms;
 
     #[test]
     fn a_clock_only_change_uploads_the_span_and_anything_else_the_whole_buffer() {

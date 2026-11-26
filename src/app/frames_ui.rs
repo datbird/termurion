@@ -164,7 +164,7 @@ impl App {
     /// the adapter and backend this window draws on.
     pub(super) fn gpu_renderer_availability(&mut self) {
         use crate::perf_stats as ps;
-        let info = self.gpu.as_ref().map(|g| g.win.adapter_info());
+        let info = self.gpu.as_ref().map(|g| g.win.facts());
         let backend = info.as_ref().map(|i| format!("{:?}", i.backend));
         let text = ps::gpu_text(info.as_ref().zip(backend.as_deref()).map(|(i, b)| (i.name.as_str(), b)));
         let ask = super::scripts_alerts::ask(ps::GPU_TITLE, &text, &[crate::api_auth::OK], None, crate::warnings::Kind::Persistent, super::scripts_alerts::Then::Nothing);

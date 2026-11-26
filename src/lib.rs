@@ -359,6 +359,8 @@ mod render_pixel_tests;
 pub mod render_fx;
 pub mod render_fx_builtin;
 pub mod render_fx_gpu;
+// macOS draws with Metal (metal_backend); wgpu is not in its build.
+#[cfg(not(target_os = "macos"))]
 pub mod render_wgpu;
 
 pub mod app;

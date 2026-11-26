@@ -16,7 +16,7 @@ use crate::draw_list::{ImageDraw, IMAGE_STRIDE};
 /// A texture no frame drew for this many frames is dropped.
 const TEXTURE_KEEP: u64 = 120;
 
-const IMAGE_ATTRS: [Attr; 2] = [Attr { location: 0, offset: 0, format: wgpu::VertexFormat::Float32x2 }, Attr { location: 1, offset: 8, format: wgpu::VertexFormat::Float32x2 }];
+const IMAGE_ATTRS: [Attr; 2] = [Attr { location: 0, offset: 0, format: super::quads::VertexFormat::Float32x2 }, Attr { location: 1, offset: 8, format: super::quads::VertexFormat::Float32x2 }];
 const IMAGE_BUFFERS: [Layout; 1] = [Layout { stride: IMAGE_STRIDE as u32, instance: false, attrs: &IMAGE_ATTRS }];
 
 /// The picture's texture and sampler, group 1, seen by the fragment stage.

@@ -416,10 +416,17 @@ enum Drag {
     Title { pane: PaneId, from: (f32, f32) },
 }
 
-use crate::gpu_window::{FxFrame, GpuHandles, RenderError, WgpuWindow, WindowGpu};
+use crate::gpu_window::{FxFrame, RenderError, WindowGpu};
+#[cfg(not(target_os = "macos"))]
+use crate::gpu_window::{GpuHandles, WgpuWindow};
 
 /// The second instance (DX12 with DirectComposition swapchains) that serves only windows that need alpha.
+#[cfg(not(target_os = "macos"))]
 type AlphaGpu = GpuHandles;
+/// macOS has no see-through instance (DirectComposition is Windows only): none is ever made.
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
+enum AlphaGpu {}
 
 struct Gpu {
     /// The surface, renderer and effect chain, behind one backend object.
@@ -7732,7 +7739,10 @@ impl App {
             // The menu bar and any open menu go over the terminal, on the same frame.
             let menu = self.menu_bar.as_ref().map(|b| &b.menu).filter(|_| bar_on);
             let bar = &mut gpu.bar;
+            #[cfg(not(target_os = "macos"))]
             let mut paint = |o: &crate::gpu_window::Overlay<'_>| bar.draw(&menu_bar_ui::BarFrame { device: o.device, queue: o.queue, target: o.target, format: o.format, size: o.size, scale: bar_scale, dark: bar_dark }, menu);
+            #[cfg(target_os = "macos")]
+            let mut paint = |o: &crate::gpu_window::Overlay<'_>| bar.draw(&menu_bar_ui::BarFrame { _frame: std::marker::PhantomData, size: o.size, scale: bar_scale, dark: bar_dark }, menu);
             #[cfg(debug_assertions)]
             let capturing = gpu_capture::begin(&gpu.win);
             gpu.win.set_timing(timing);
@@ -9026,14 +9036,17 @@ fn log_adapters_once(list: &[gpu_pick::Facts]) {
 /// The first window's GPU: Metal on macOS; elsewhere DirectX 12, then Vulkan, then OpenGL, each only when the one before it
 /// made no adapter, surface or device (the reason goes to host.log). `power_preference` is iTerm2's
 /// "Prefer integrated to discrete GPU".
-fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop, power_preference: wgpu::PowerPreference) -> Result<Gpu, String> {
-    let display = event_loop.owned_display_handle();
+fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop, power_preference: gpu_pick::PowerPreference) -> Result<Gpu, String> {
     let forced = std::env::var(gpu_pick::FORCE_ENV).ok();
-    // On macOS Metal is the only API tried: a failure is shown and the app ends, with no
-    // fallback to wgpu (`TERMURION_RENDERER=wgpu` asks for wgpu instead).
+    // On macOS Metal is the only API: a failure is shown and the app ends, with nothing to fall
+    // back to. `TERMURION_RENDERER` changes nothing there and says so in host.log.
     #[cfg(target_os = "macos")]
-    if gpu_pick::wants_metal(true, forced.as_deref()) {
-        return match init_metal(window, power_preference) {
+    {
+        let _ = event_loop;
+        if let Some(note) = gpu_pick::forced_note(forced.as_deref()) {
+            crate::host_base::log(&note);
+        }
+        match init_metal(window, power_preference) {
             Ok(gpu) => Ok(gpu),
             Err(e) => {
                 crate::host_base::log(&format!("renderer: Metal unavailable: {e}"));
@@ -9041,34 +9054,39 @@ fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop, power_preference:
                 teardown_process();
                 std::process::exit(1);
             }
-        };
-    }
-    let mut failures: Vec<String> = Vec::new();
-    for (backends, label) in gpu_pick::backend_order(crate::platform::IS_WINDOWS, forced.as_deref()) {
-        match init_gpu_on(window.clone(), &display, power_preference, backends) {
-            Ok(gpu) => {
-                let gpu = match integrated_on_gl(gpu, &window, &display, power_preference, forced.is_some()) {
-                    Ok(g) => g,
-                    Err(e) => {
-                        crate::host_base::log(&format!("renderer: {label} unavailable: {e}"));
-                        failures.push(format!("{label}: {e}"));
-                        continue;
-                    }
-                };
-                if !failures.is_empty() {
-                    crate::host_base::log(&format!("renderer: fell back to {label} because {}", failures.join("; ")));
-                }
-                return Ok(gpu);
-            }
-            Err(e) => {
-                crate::host_base::log(&format!("renderer: {label} unavailable: {e}"));
-                failures.push(format!("{label}: {e}"));
-            }
         }
     }
-    Err(failures.join("; "))
+    #[cfg(not(target_os = "macos"))]
+    {
+        let display = event_loop.owned_display_handle();
+        let mut failures: Vec<String> = Vec::new();
+        for (backends, label) in gpu_pick::backend_order(crate::platform::IS_WINDOWS, forced.as_deref()) {
+            match init_gpu_on(window.clone(), &display, power_preference, backends) {
+                Ok(gpu) => {
+                    let gpu = match integrated_on_gl(gpu, &window, &display, power_preference, forced.is_some()) {
+                        Ok(g) => g,
+                        Err(e) => {
+                            crate::host_base::log(&format!("renderer: {label} unavailable: {e}"));
+                            failures.push(format!("{label}: {e}"));
+                            continue;
+                        }
+                    };
+                    if !failures.is_empty() {
+                        crate::host_base::log(&format!("renderer: fell back to {label} because {}", failures.join("; ")));
+                    }
+                    return Ok(gpu);
+                }
+                Err(e) => {
+                    crate::host_base::log(&format!("renderer: {label} unavailable: {e}"));
+                    failures.push(format!("{label}: {e}"));
+                }
+            }
+        }
+        Err(failures.join("; "))
+    }
 }
 
+#[cfg(not(target_os = "macos"))]
 /// "Prefer integrated" got a discrete GPU because the API in use listed no integrated one: when
 /// OpenGL lists it, the window moves there (`gpu_pick::look_for_integrated_on_gl`). The first
 /// GPU is dropped before the second is made, so the window never has two swap chains.
@@ -9091,6 +9109,7 @@ fn integrated_on_gl(gpu: Gpu, window: &Arc<Window>, display: &winit::event_loop:
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 /// Whether `chosen` should give way to OpenGL's integrated GPU: Linux only, the preference on,
 /// and OpenGL listing one. Start-up and the device-loss recovery ask the same question.
 fn wants_gl_move(chosen: &gpu_pick::Facts, display: &winit::event_loop::OwnedDisplayHandle, pref: wgpu::PowerPreference, forced: bool) -> bool {
@@ -9103,6 +9122,7 @@ fn wants_gl_move(chosen: &gpu_pick::Facts, display: &winit::event_loop::OwnedDis
     gpu_pick::gl_has_integrated(&gl)
 }
 
+#[cfg(not(target_os = "macos"))]
 /// The wgpu backend set holding one backend.
 fn gpu_backends_of(b: wgpu::Backend) -> wgpu::Backends {
     match b {
@@ -9114,6 +9134,7 @@ fn gpu_backends_of(b: wgpu::Backend) -> wgpu::Backends {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 /// One API's instance, adapter, device and queue for `window`, with the unconfigured surface it was
 /// matched against and the adapters the instance lists.
 fn make_handles(window: &Arc<Window>, display: &winit::event_loop::OwnedDisplayHandle, power_preference: wgpu::PowerPreference, backends: wgpu::Backends) -> Result<(GpuHandles, wgpu::Surface<'static>, Vec<gpu_pick::Facts>), String> {
@@ -9141,6 +9162,7 @@ fn make_handles(window: &Arc<Window>, display: &winit::event_loop::OwnedDisplayH
     Ok((GpuHandles { instance, adapter, device, queue }, surface, facts))
 }
 
+#[cfg(not(target_os = "macos"))]
 fn init_gpu_on(window: Arc<Window>, display: &winit::event_loop::OwnedDisplayHandle, power_preference: wgpu::PowerPreference, backends: wgpu::Backends) -> Result<Gpu, String> {
     gpu_pick::next_generation();
     let (handles, surface, facts) = make_handles(&window, display, power_preference, backends)?;
@@ -9156,14 +9178,14 @@ fn init_gpu_on(window: Arc<Window>, display: &winit::event_loop::OwnedDisplayHan
 
 /// The first terminal window on the native Metal backend: a new device for the GPU preference.
 #[cfg(target_os = "macos")]
-fn init_metal(window: Arc<Window>, power_preference: wgpu::PowerPreference) -> Result<Gpu, String> {
+fn init_metal(window: Arc<Window>, power_preference: gpu_pick::PowerPreference) -> Result<Gpu, String> {
     gpu_pick::next_generation();
     // Listed as the wgpu start lists its adapters: host.log, and "Prefer integrated GPU" is offered
     // only where both kinds exist.
     let facts = crate::metal_backend::adapter_facts();
     log_adapters_once(&facts);
     let shared = crate::metal_backend::MetalShared::new(power_preference)?;
-    let chosen = gpu_pick::Facts::of(&shared.adapter_info());
+    let chosen = shared.facts();
     static LOGGED: std::sync::Once = std::sync::Once::new();
     LOGGED.call_once(|| crate::host_base::log(&format!("renderer: native Metal on {} ({})", chosen.name, gpu_pick::why(power_preference, &facts, &chosen))));
     let win = crate::metal_backend::MetalWindow::open(window.clone(), &shared, &first_font(), FONT_PX * window.scale_factor() as f32)?;

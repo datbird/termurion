@@ -3,7 +3,9 @@
 //! `TERMURION_TEST_BACKEND=gl`).
 
 use crate::render::tests::agent_frame;
-use crate::render::{test_gpu, Renderer};
+#[cfg(not(target_os = "macos"))]
+use crate::render::test_gpu;
+use crate::render::Renderer;
 use crate::scene::Frame;
 
 pub(crate) struct PixelCase {
@@ -24,6 +26,7 @@ const PX: f32 = 14.0;
 const FLOOD_FRAMES: usize = 300;
 
 /// A renderer as the tests make it, on the shared device.
+#[cfg(not(target_os = "macos"))]
 fn fresh(view_formats: bool) -> Renderer {
     let (device, queue) = test_gpu::shared();
     let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, FACE, PX);
@@ -88,6 +91,7 @@ pub(crate) fn pixel_cases(r: &Renderer) -> Vec<PixelCase> {
     out
 }
 
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn pixels(r: &mut Renderer, c: &PixelCase) -> Vec<u8> {
     r.draw_offscreen(&c.frame, c.size.0, c.size.1).unwrap_or_else(|e| panic!("{}: the draw failed: {e}", c.name))
 }
@@ -111,10 +115,12 @@ pub(crate) fn assert_same(name: &str, a: &[u8], b: &[u8], w: u32) {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn is_flood(c: &PixelCase) -> bool {
     c.name.starts_with("cjk_flood")
 }
 
+#[cfg(not(target_os = "macos"))]
 /// Whether this device can draw with `view_formats` on (GL cannot: no VIEW_FORMATS downlevel flag).
 fn can_run(view_formats: bool) -> bool {
     let (_, adapter, _, _) = test_gpu::shared_all();
@@ -125,6 +131,7 @@ fn can_run(view_formats: bool) -> bool {
     ok
 }
 
+#[cfg(not(target_os = "macos"))]
 fn drawn_after_others(view_formats: bool) {
     let probe = fresh(view_formats);
     // Every other flood frame is the same kind of draw as the next: a sample keeps this quick.
@@ -138,6 +145,7 @@ fn drawn_after_others(view_formats: bool) {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn scroll_matches_fresh(view_formats: bool) {
     let mut scrolling = fresh(view_formats);
     let cases: Vec<PixelCase> = pixel_cases(&scrolling).into_iter().filter(is_flood).collect();
@@ -150,6 +158,7 @@ fn scroll_matches_fresh(view_formats: bool) {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn every_case_draws_the_same_after_other_frames() {
     for on in [true, false] {
@@ -159,6 +168,7 @@ fn every_case_draws_the_same_after_other_frames() {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn the_scroll_matches_fresh_draws() {
     for on in [true, false] {
@@ -182,6 +192,7 @@ fn assert_same_names_the_first_difference() {
 // The row path (Task 13): rows drawn through glyphon's `RowRenderer` must match the full path,
 // which prepares every row through `TextRenderer` each frame.
 
+#[cfg(not(target_os = "macos"))]
 /// A renderer on the row path (`on`) or the full path.
 fn rows(view_formats: bool, on: bool) -> Renderer {
     let mut r = fresh(view_formats);
@@ -189,20 +200,24 @@ fn rows(view_formats: bool, on: bool) -> Renderer {
     r
 }
 
+#[cfg(not(target_os = "macos"))]
 /// Draws `c` on both renderers and asserts the pictures are the same.
 fn same(on: &mut Renderer, off: &mut Renderer, c: &PixelCase, view_formats: bool) {
     let name = format!("{} (view formats {view_formats})", c.name);
     assert_same(&name, &pixels(on, c), &pixels(off, c), c.size.0);
 }
 
+#[cfg(not(target_os = "macos"))]
 fn span(text: &str) -> crate::scene::Span {
     crate::scene::Span { text: text.into(), color: crate::palette::rgb(230, 230, 230), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn row(text: &str, x: f32, y: f32, clip: crate::layout::Rect, scale: f32) -> crate::scene::TextRow {
     crate::scene::TextRow { x, y, spans: vec![span(text)].into(), clip, scale, face: crate::render::DEFAULT_FACE }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn text_frame(rows: Vec<crate::scene::TextRow>) -> Frame {
     Frame { clear: [0.0, 0.0, 0.0, 1.0], fade: 1.0, rows, ..Default::default() }
 }
@@ -220,6 +235,7 @@ fn grid_size(r: &Renderer, cols: f32, lines: f32) -> (u32, u32) {
     ((cols * r.cell.0).ceil() as u32, (lines * r.cell.1).ceil() as u32)
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn row_instances_match_the_full_path_on_every_case() {
     for vf in [true, false] {
@@ -235,6 +251,7 @@ fn row_instances_match_the_full_path_on_every_case() {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn scrolled_rows_reuse_their_instances() {
     let mut r = rows(false, true);
@@ -255,6 +272,7 @@ fn scrolled_rows_reuse_their_instances() {
     assert!(grown <= 2, "scrolling one line prepared {grown} rows");
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn fractional_tops_match_the_full_path() {
     use crate::layout::Rect;
@@ -284,6 +302,7 @@ fn fractional_tops_match_the_full_path() {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn atlas_growth_and_eviction_mid_run_match() {
     for vf in [true, false] {
@@ -304,6 +323,7 @@ fn atlas_growth_and_eviction_mid_run_match() {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn the_switch_turns_the_row_path_off() {
     let mut r = rows(false, false);
@@ -322,6 +342,7 @@ fn the_switch_turns_the_row_path_off() {
     assert_eq!(r.atlas().held(), 0);
 }
 
+#[cfg(not(target_os = "macos"))]
 /// TextRenderer skips a row whose line box misses its bounds, even where a glyph overhangs into
 /// them; the row path must skip it too.
 #[test]
@@ -351,6 +372,7 @@ fn rows_whose_line_misses_their_bounds_draw_nothing() {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 /// Frame to frame changes a pane goes through, each on the row path against the full path.
 #[test]
 fn row_instances_follow_every_kind_of_change() {
@@ -398,6 +420,7 @@ fn row_instances_follow_every_kind_of_change() {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn draw_prefs_turns_the_row_path_off() {
     let probe = fresh(false);
@@ -414,6 +437,7 @@ fn draw_prefs_turns_the_row_path_off() {
     assert!(r.row_prepares() > 0);
 }
 
+#[cfg(not(target_os = "macos"))]
 /// A font change must reshape the badge and toolbelt rows, not keep the old text.
 #[test]
 fn a_badge_or_toolbelt_font_change_reshapes_the_rows() {
@@ -443,6 +467,7 @@ fn a_badge_or_toolbelt_font_change_reshapes_the_rows() {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 /// Box glyphs cached on the atlas, then rows that grow it: growth re-uploads the box glyphs, so
 /// the row path needs the box rasterizer (it panicked without it).
 #[test]
@@ -476,6 +501,7 @@ fn quad_frame(n: usize, first: [f32; 4]) -> Frame {
     Frame { clear: [0.0, 0.0, 0.0, 1.0], fade: 1.0, quads, ..Default::default() }
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn persistent_buffers_write_only_what_changed() {
     let mut r = fresh(false);
@@ -491,6 +517,7 @@ fn persistent_buffers_write_only_what_changed() {
     assert!(r.bytes_written() > first);
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn a_bigger_list_grows_the_buffer() {
     for vf in [true, false] {
@@ -509,6 +536,7 @@ fn a_bigger_list_grows_the_buffer() {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn persistent_buffers_match_the_full_path() {
     for vf in [true, false] {
@@ -524,6 +552,7 @@ fn persistent_buffers_match_the_full_path() {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 /// Claude Code's bottom area redrawn each frame, a new line above it every other frame: after a
 /// warm-up the upload path makes no GPU buffer (each `Queue::write_buffer` made one).
 #[test]
@@ -555,6 +584,7 @@ fn streaming_frames_make_no_upload_buffers() {
     assert_eq!(r.upload_buffers_made(), warm, "streaming frames made new upload buffers");
 }
 
+#[cfg(not(target_os = "macos"))]
 /// The CPU half needs no device: a renderer made without one prepares every baseline frame,
 /// glyphs included (the atlas changes and the rows' instances).
 #[test]
@@ -641,6 +671,7 @@ fn a_steady_frame_reuses_the_list_storage() {
 }
 
 
+#[cfg(not(target_os = "macos"))]
 /// A frame whose text cannot fit fails, but what it prepared before failing (a row's slot, its
 /// glyphs in the atlas) still reaches the GPU: the next frame reuses that row and must draw it.
 #[test]

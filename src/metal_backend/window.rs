@@ -427,7 +427,7 @@ impl MetalWindow {
     /// textures, the layer set to the new device, the glyph atlas, rows and spare lists started
     /// over with them. On an error the window starts over again at its next frame.
     pub fn rebuild(&mut self, shared: &GpuShared, _alpha: Option<&GpuShared>) -> Result<(), String> {
-        let GpuShared::Metal(m) = shared else { return Err("a Metal window needs a Metal device".to_string()) };
+        let GpuShared::Metal(m) = shared;
         self.shared = m.clone();
         self.generation = crate::gpu_pick::current_generation();
         // As on wgpu: the effects are built again by the app (`fx_sync`) for the new device.
@@ -458,8 +458,8 @@ impl MetalWindow {
         GpuShared::Metal(self.shared.clone())
     }
 
-    pub fn adapter_info(&self) -> wgpu::AdapterInfo {
-        self.shared.adapter_info()
+    pub fn facts(&self) -> crate::gpu_pick::Facts {
+        self.shared.facts()
     }
 
     pub fn renderer(&self) -> &Renderer {

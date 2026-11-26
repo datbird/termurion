@@ -738,8 +738,7 @@ mod tests {
 
     #[test]
     fn pane_cell_is_warm_before_the_first_frame() {
-        let (device, queue) = crate::render::test_gpu::shared();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let mut r = crate::render::tests::font_renderer("Cascadia Mono", 16.0);
         let mut faces = PaneFaces::default();
         let default = FaceKey::new("Cascadia Mono", None, 16.0, 1.0, 1.0);
         let big = FaceKey::new("Cascadia Mono", None, 32.0, 1.0, 1.0);

@@ -9,6 +9,7 @@ use crate::menu_overlay::{Consumed, Overlay};
 pub(super) struct BarUi {
     overlay: Overlay,
     ctx: egui::Context,
+    #[cfg(not(target_os = "macos"))]
     renderer: Option<egui_wgpu::Renderer>,
     dark: Option<bool>,
     /// A pop-up asked for, drawn by the next frame that gets to the surface.
@@ -19,16 +20,29 @@ impl Default for BarUi {
     fn default() -> Self {
         let ctx = egui::Context::default();
         crate::egui_host::install_menu_fonts(&ctx);
-        BarUi { overlay: Overlay::new(), ctx, renderer: None, dark: None, pending: None }
+        BarUi {
+            overlay: Overlay::new(),
+            ctx,
+            #[cfg(not(target_os = "macos"))]
+            renderer: None,
+            dark: None,
+            pending: None,
+        }
     }
 }
 
-/// What a frame hands the overlay.
+/// What a frame hands the overlay. macOS has no in-window bar, so nothing to draw on there.
 pub(super) struct BarFrame<'a> {
+    #[cfg(not(target_os = "macos"))]
     pub device: &'a wgpu::Device,
+    #[cfg(not(target_os = "macos"))]
     pub queue: &'a wgpu::Queue,
+    #[cfg(not(target_os = "macos"))]
     pub target: &'a wgpu::TextureView,
+    #[cfg(not(target_os = "macos"))]
     pub format: wgpu::TextureFormat,
+    #[cfg(target_os = "macos")]
+    pub _frame: std::marker::PhantomData<&'a ()>,
     pub size: (u32, u32),
     pub scale: f32,
     pub dark: bool,
@@ -64,7 +78,14 @@ impl BarUi {
             }
         }
         let chosen = self.overlay.paint(&self.ctx, bar);
-        let Some(mut out) = self.overlay.take_output() else { return chosen };
+        let Some(out) = self.overlay.take_output() else { return chosen };
+        self.paint_output(frame, out);
+        chosen
+    }
+
+    /// The overlay's egui output over the frame, after the terminal.
+    #[cfg(not(target_os = "macos"))]
+    fn paint_output(&mut self, frame: &BarFrame, mut out: egui::FullOutput) {
         let renderer = self.renderer.get_or_insert_with(|| egui_wgpu::Renderer::new(frame.device, frame.format, egui_wgpu::RendererOptions::default()));
         let jobs = self.ctx.tessellate(std::mem::take(&mut out.shapes), out.pixels_per_point);
         let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: [frame.size.0, frame.size.1], pixels_per_point: out.pixels_per_point };
@@ -93,7 +114,12 @@ impl BarUi {
             renderer.free_texture(id);
         }
         out.textures_delta.clear();
-        chosen
+    }
+
+    /// macOS draws no bar in the window: the output goes, its texture changes with it.
+    #[cfg(target_os = "macos")]
+    fn paint_output(&mut self, _frame: &BarFrame, mut out: egui::FullOutput) {
+        out.textures_delta.clear();
     }
 }
 

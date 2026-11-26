@@ -2,17 +2,23 @@
 //! the frame loop's acquire, draw and present. The app asks it for frames and never touches a
 //! surface or a texture, so a second backend adds one arm here.
 
+#[cfg(not(target_os = "macos"))]
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_os = "macos"))]
+use std::time::Instant;
 
+#[cfg(not(target_os = "macos"))]
 use winit::window::Window;
 
 use crate::gpu_shared::GpuShared;
 use crate::render::Renderer;
 use crate::render_fx::{Compiled, FrameRegion, RegionTerms, Uniforms};
+#[cfg(not(target_os = "macos"))]
 use crate::render_fx_gpu::{self, Chain};
 use crate::scene::Frame;
 
+#[cfg(not(target_os = "macos"))]
 /// One wgpu instance with its adapter, device and queue.
 #[derive(Clone)]
 pub struct GpuHandles {
@@ -22,6 +28,7 @@ pub struct GpuHandles {
     pub queue: wgpu::Queue,
 }
 
+#[cfg(not(target_os = "macos"))]
 impl GpuHandles {
     pub fn shared(&self) -> GpuShared {
         GpuShared::Wgpu { instance: self.instance.clone(), adapter: self.adapter.clone(), device: self.device.clone(), queue: self.queue.clone() }
@@ -81,6 +88,7 @@ pub struct Acquire {
 }
 
 /// What the in-window menu bar draws on, over the frame and before the present (Linux).
+#[cfg(not(target_os = "macos"))]
 pub struct Overlay<'a> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
@@ -89,17 +97,26 @@ pub struct Overlay<'a> {
     pub size: (u32, u32),
 }
 
+/// macOS has no in-window bar (the menu is the system's): nothing to draw on.
+#[cfg(target_os = "macos")]
+pub struct Overlay<'a> {
+    pub size: (u32, u32),
+    _frame: std::marker::PhantomData<&'a ()>,
+}
+
 /// Draws over a frame and answers the menu item chosen.
 pub type OverlayDraw<'a> = &'a mut dyn FnMut(&Overlay<'_>) -> Option<String>;
 
 /// A terminal window's GPU backend.
 pub enum WindowGpu {
+    #[cfg(not(target_os = "macos"))]
     Wgpu(WgpuWindow),
-    /// The native Metal backend (the macOS default; `TERMURION_RENDERER=wgpu` asks for wgpu).
+    /// The native Metal backend: the only one on macOS.
     #[cfg(target_os = "macos")]
     Metal(crate::metal_backend::MetalWindow),
 }
 
+#[cfg(not(target_os = "macos"))]
 /// The wgpu backend of one window.
 pub struct WgpuWindow {
     /// None for an offscreen window (tests): it captures but never presents.
@@ -126,6 +143,7 @@ pub struct WgpuWindow {
     offscreen: Option<wgpu::Texture>,
 }
 
+#[cfg(not(target_os = "macos"))]
 /// What a frame draws into.
 enum Target {
     Surface(wgpu::SurfaceTexture),
@@ -133,6 +151,7 @@ enum Target {
     Offscreen(wgpu::Texture),
 }
 
+#[cfg(not(target_os = "macos"))]
 impl Target {
     fn texture(&self) -> &wgpu::Texture {
         match self {
@@ -143,11 +162,13 @@ impl Target {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 /// The format a surface draws in: the first sRGB one it offers, else its first.
 fn pick_format(caps: &wgpu::SurfaceCapabilities) -> Option<wgpu::TextureFormat> {
     caps.formats.iter().copied().find(|f| f.is_srgb()).or_else(|| caps.formats.first().copied())
 }
 
+#[cfg(not(target_os = "macos"))]
 impl WgpuWindow {
     /// A window's surface on `on` (the handles it draws with), configured at the window's size, and
     /// a renderer on the same device. `primary` is what windows opened from it share. A window on the
@@ -456,6 +477,7 @@ impl WindowGpu {
     /// The surface's size in pixels.
     pub fn size(&self) -> (u32, u32) {
         match self {
+            #[cfg(not(target_os = "macos"))]
             WindowGpu::Wgpu(w) => (w.config.width, w.config.height),
             #[cfg(target_os = "macos")]
             WindowGpu::Metal(w) => w.size(),
@@ -467,6 +489,7 @@ impl WindowGpu {
     #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     pub fn resize(&mut self, w: u32, h: u32, scale: f64) {
         match self {
+            #[cfg(not(target_os = "macos"))]
             WindowGpu::Wgpu(g) => {
                 g.config.width = w;
                 g.config.height = h;
@@ -481,6 +504,7 @@ impl WindowGpu {
     /// it, and presents.
     pub fn render(&mut self, frame: &Frame, fx: Option<FxFrame<'_>>, overlay: Option<OverlayDraw<'_>>) -> Result<Drawn, RenderError> {
         match self {
+            #[cfg(not(target_os = "macos"))]
             WindowGpu::Wgpu(w) => w.render(frame, fx, overlay),
             #[cfg(target_os = "macos")]
             WindowGpu::Metal(w) => w.render(frame, fx, overlay),
@@ -490,6 +514,7 @@ impl WindowGpu {
     /// Draws `frame` into an offscreen image of `w` by `h` and returns its RGBA pixels.
     pub fn capture(&mut self, frame: &Frame, fx: Option<FxFrame<'_>>, w: u32, h: u32) -> Result<Vec<u8>, String> {
         match self {
+            #[cfg(not(target_os = "macos"))]
             WindowGpu::Wgpu(g) => g.capture(frame, fx, w, h),
             #[cfg(target_os = "macos")]
             WindowGpu::Metal(g) => g.capture(frame, fx, w, h),
@@ -500,6 +525,7 @@ impl WindowGpu {
     /// An empty list still readies the surface for the passes.
     pub fn set_effect(&mut self, compiled: Option<Vec<Compiled>>, terms: RegionTerms) -> Result<(), String> {
         match self {
+            #[cfg(not(target_os = "macos"))]
             WindowGpu::Wgpu(w) => w.set_effect(compiled, terms),
             #[cfg(target_os = "macos")]
             WindowGpu::Metal(w) => w.set_effect(compiled, terms),
@@ -510,6 +536,7 @@ impl WindowGpu {
     /// (`Chain::skip_if_still`). False with no chain.
     pub fn skip_if_still(&mut self, u: &Uniforms, eligible: bool) -> bool {
         match self {
+            #[cfg(not(target_os = "macos"))]
             WindowGpu::Wgpu(w) => {
                 let size = (w.config.width, w.config.height);
                 w.chain.as_mut().is_some_and(|c| c.skip_if_still(u, size, eligible))
@@ -524,6 +551,7 @@ impl WindowGpu {
     /// window drawn on it. On an error the window is left as it was.
     pub fn rebuild(&mut self, shared: &GpuShared, alpha: Option<&GpuShared>) -> Result<(), String> {
         match self {
+            #[cfg(not(target_os = "macos"))]
             WindowGpu::Wgpu(w) => w.rebuild(shared, alpha),
             #[cfg(target_os = "macos")]
             WindowGpu::Metal(w) => w.rebuild(shared, alpha),
@@ -533,6 +561,7 @@ impl WindowGpu {
     /// Makes the surface again after it was lost, then configures it (the old one when that fails).
     pub fn remake_surface(&mut self) -> Result<(), String> {
         match self {
+            #[cfg(not(target_os = "macos"))]
             WindowGpu::Wgpu(w) => {
                 let made = match &w.window {
                     Some(window) => w.on().instance.create_surface(window.clone()).map_err(|e| e.to_string()),
@@ -549,8 +578,10 @@ impl WindowGpu {
 
     /// Makes the surface see-through or opaque. True when it changed (the caller invalidates
     /// what it kept).
+    #[cfg_attr(target_os = "macos", allow(unused_variables))]
     pub fn set_transparent(&mut self, transparent: bool) -> bool {
         match self {
+            #[cfg(not(target_os = "macos"))]
             WindowGpu::Wgpu(w) => {
                 if w.keeps_alpha() == transparent {
                     return false;
@@ -574,6 +605,7 @@ impl WindowGpu {
     /// The surface keeps the shaders' alpha (a see-through window).
     pub fn keeps_alpha(&self) -> bool {
         match self {
+            #[cfg(not(target_os = "macos"))]
             WindowGpu::Wgpu(w) => w.keeps_alpha(),
             #[cfg(target_os = "macos")]
             WindowGpu::Metal(_) => false,
@@ -583,6 +615,7 @@ impl WindowGpu {
     /// The window draws on the see-through instance.
     pub fn has_alpha(&self) -> bool {
         match self {
+            #[cfg(not(target_os = "macos"))]
             WindowGpu::Wgpu(w) => w.alpha.is_some(),
             #[cfg(target_os = "macos")]
             WindowGpu::Metal(_) => false,
@@ -592,6 +625,7 @@ impl WindowGpu {
     /// Measures the draw and the present of the frames to come (`Drawn::draw`, `Drawn::present`).
     pub fn set_timing(&mut self, on: bool) {
         match self {
+            #[cfg(not(target_os = "macos"))]
             WindowGpu::Wgpu(w) => w.timing = on,
             #[cfg(target_os = "macos")]
             WindowGpu::Metal(w) => w.set_timing(on),
@@ -601,6 +635,7 @@ impl WindowGpu {
     /// How the last drawable request went.
     pub fn last_acquire(&self) -> Acquire {
         match self {
+            #[cfg(not(target_os = "macos"))]
             WindowGpu::Wgpu(w) => w.acquire,
             #[cfg(target_os = "macos")]
             WindowGpu::Metal(w) => w.last_acquire(),
@@ -610,42 +645,55 @@ impl WindowGpu {
     /// The handles every window opened from this one shares.
     pub fn shared(&self) -> GpuShared {
         match self {
+            #[cfg(not(target_os = "macos"))]
             WindowGpu::Wgpu(w) => w.primary.shared(),
             #[cfg(target_os = "macos")]
             WindowGpu::Metal(w) => w.shared(),
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// The adapter the window's surface draws on.
     pub fn adapter_info(&self) -> wgpu::AdapterInfo {
         match self {
+            #[cfg(not(target_os = "macos"))]
             WindowGpu::Wgpu(w) => w.on().adapter.get_info(),
-            #[cfg(target_os = "macos")]
-            WindowGpu::Metal(w) => w.adapter_info(),
         }
     }
 
     /// The largest texture side the shared device allows.
     pub fn max_texture_side(&self) -> u32 {
         match self {
+            #[cfg(not(target_os = "macos"))]
             WindowGpu::Wgpu(w) => w.primary.device.limits().max_texture_dimension_2d,
             #[cfg(target_os = "macos")]
             WindowGpu::Metal(_) => crate::metal_backend::MAX_TEXTURE_SIDE,
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// The device the window draws on, for the debug build's frame capture.
     #[cfg(debug_assertions)]
     pub fn wgpu_device(&self) -> Option<&wgpu::Device> {
         match self {
+            #[cfg(not(target_os = "macos"))]
             WindowGpu::Wgpu(w) => Some(&w.on().device),
+        }
+    }
+
+    /// The adapter the window's surface draws on, as the GPU pick lists it.
+    pub fn facts(&self) -> crate::gpu_pick::Facts {
+        match self {
+            #[cfg(not(target_os = "macos"))]
+            WindowGpu::Wgpu(w) => crate::gpu_pick::Facts::of(&w.on().adapter.get_info()),
             #[cfg(target_os = "macos")]
-            WindowGpu::Metal(_) => None,
+            WindowGpu::Metal(w) => w.facts(),
         }
     }
 
     pub fn renderer(&self) -> &Renderer {
         match self {
+            #[cfg(not(target_os = "macos"))]
             WindowGpu::Wgpu(w) => &w.renderer,
             #[cfg(target_os = "macos")]
             WindowGpu::Metal(w) => w.renderer(),
@@ -654,6 +702,7 @@ impl WindowGpu {
 
     pub fn renderer_mut(&mut self) -> &mut Renderer {
         match self {
+            #[cfg(not(target_os = "macos"))]
             WindowGpu::Wgpu(w) => &mut w.renderer,
             #[cfg(target_os = "macos")]
             WindowGpu::Metal(w) => w.renderer_mut(),
@@ -663,8 +712,10 @@ impl WindowGpu {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[cfg_attr(target_os = "macos", allow(unused_imports))]
     use super::*;
 
+    #[cfg(not(target_os = "macos"))]
     /// A frame with some text and quads.
     fn frame(w: u32, h: u32) -> Frame {
         let mut s = crate::screen::Screen::new(40, 6);
@@ -676,12 +727,14 @@ pub(crate) mod tests {
         f
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn renderer(on: &GpuHandles) -> Renderer {
         let mut r = Renderer::new(&on.device, &on.queue, wgpu::TextureFormat::Bgra8UnormSrgb, "monospace", 16.0);
         r.set_view_formats(render_fx_gpu::view_formats_supported(&on.adapter));
         r
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// A texture's pixels as RGBA, row by row (BGRA targets swapped), as `draw_offscreen` reads them.
     pub(crate) fn read_back(on: &GpuHandles, tex: &wgpu::Texture) -> Vec<u8> {
         let (w, h) = (tex.width(), tex.height());
@@ -708,23 +761,28 @@ pub(crate) mod tests {
         out
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub(crate) fn handles() -> GpuHandles {
         let (instance, adapter, device, queue) = crate::render::test_gpu::shared_all();
         crate::render::test_gpu::serial_on_gl(&adapter);
         GpuHandles { instance, adapter, device, queue }
     }
 
+    #[cfg(not(target_os = "macos"))]
     const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
 
+    #[cfg(not(target_os = "macos"))]
     /// The wgpu window inside (these tests make only wgpu ones).
     fn wgpu_of(win: &WindowGpu) -> &WgpuWindow {
         match win {
+            #[cfg(not(target_os = "macos"))]
             WindowGpu::Wgpu(w) => w,
             #[cfg(target_os = "macos")]
             WindowGpu::Metal(_) => panic!("a wgpu window"),
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Draws through `render` (views, the effect's out view, the fade's raw view) and reads it back.
     fn rendered(on: &GpuHandles, win: &mut WindowGpu, f: &Frame, fx: Option<FxFrame<'_>>) -> Vec<u8> {
         let drawn = win.render(f, fx, None).expect("an offscreen window always draws");
@@ -732,6 +790,7 @@ pub(crate) mod tests {
         read_back(on, wgpu_of(win).offscreen_texture())
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn uniforms_at(ms: u64, size: (u32, u32)) -> Uniforms {
         let mut u = Uniforms::default();
         let t0 = Instant::now();
@@ -741,6 +800,7 @@ pub(crate) mod tests {
         u
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Frames drawn through the window's `render` equal the renderer's own offscreen draw (the
     /// old app path drew with the same calls): plain, fading through the raw view, and
     /// through an effect, a fresh frame and then an animation-only one that reuses the kept picture.
@@ -770,6 +830,7 @@ pub(crate) mod tests {
         assert!(inner.chain.as_ref().unwrap().frame_kept(), "the animation-only frame reused the kept picture");
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Every baseline and agent pixel case drawn through `render` equals the renderer's own draw,
     /// each at its own size (the window resized to it).
     #[test]
@@ -793,6 +854,7 @@ pub(crate) mod tests {
         assert!(n > 10, "{n} cases");
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// A capture through the effect leaves the live chain as it was: the next frame with the same
     /// uniforms is still left out, as in a window that never captured, and the pictures agree.
     #[test]
@@ -820,6 +882,7 @@ pub(crate) mod tests {
         assert_eq!(kept(&a), kept(&b));
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// A window with no drawable reports the request like any other.
     #[test]
     fn a_window_without_a_surface_counts_a_dropped_frame() {

@@ -175,6 +175,7 @@ pub fn radius_warning(blur: bool, radius: f64) -> bool {
     blur && radius > LARGE_RADIUS_LIMIT
 }
 
+#[cfg(not(target_os = "macos"))]
 /// The surface alpha mode: premultiplied when something is see-through and the surface offers it,
 /// opaque when nothing is; otherwise the first mode offered.
 pub fn pick_alpha_mode(modes: &[wgpu::CompositeAlphaMode], transparent: bool) -> wgpu::CompositeAlphaMode {
@@ -433,6 +434,15 @@ mod tests {
         assert_eq!(premultiplied([200, 100, 50], 0.0), [0.0; 4]);
     }
 
+    /// The alpha half of `alpha_mode_follows_need`, which needs wgpu's alpha modes (not on macOS).
+    #[test]
+    fn some_pane_below_one_needs_alpha() {
+        assert!(needs_alpha(&[1.0, 0.7]));
+        assert!(!needs_alpha(&[1.0]));
+        assert!(!needs_alpha(&[]));
+    }
+
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn alpha_mode_follows_need() {
         use wgpu::CompositeAlphaMode as M;
