@@ -1,0 +1,8 @@
+0	settings 0	1960x1440	ea242f174dae42c9
+1	settings 1	1960x1440	ee71736aeab54615
+2	settings 2	1960x1440	9240d0ced77cf119
+3	prompt 0	480x220	e416df1b0d5fda0d
+4	prompt 1	480x220	072fab5af9f9f7f6
+5	popover 0	480x270	9a326d00f720e75c
+6	popover 1	480x270	42a66cc5fc2eecf7
+7	popover 2	480x270	a5e4955c805b84c4

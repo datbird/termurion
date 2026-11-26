@@ -1,0 +1,4 @@
+0	["broken"] errors	text	e4b9118b3fe0bdfb
+1	["broken"]	843x510	c002e5dca754b397
+2	["broken", "aurora"] errors	text	74f035ae83646960
+3	["broken", "aurora"]	843x510	d8a22ce7ccae142d

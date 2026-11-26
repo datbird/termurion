@@ -1,0 +1,125 @@
+0	ripple 0 ms	843x510	673568a47a778d85
+1	ripple 0 ms state	text	d9ab580c6345a84a
+2	ripple 50 ms	843x510	17b58c8e338287e2
+3	ripple 50 ms state	text	7e1f10f36041e40f
+4	ripple 100 ms	843x510	a13bd60d7c21f6ac
+5	ripple 100 ms state	text	7e1f10f36041e40f
+6	ripple 150 ms	843x510	b0b20c17894a043e
+7	ripple 150 ms state	text	7e1f10f36041e40f
+8	ripple 200 ms	843x510	a0a7ca6026be5b7c
+9	ripple 200 ms state	text	7e1f10f36041e40f
+10	ripple 250 ms	843x510	c600bc27f9c68c58
+11	ripple 250 ms state	text	7e1f10f36041e40f
+12	ripple 300 ms	843x510	aa51876a6882893d
+13	ripple 300 ms state	text	7e1f10f36041e40f
+14	ripple 350 ms	843x510	486f45152d52dd5c
+15	ripple 350 ms state	text	7e1f10f36041e40f
+16	ripple 400 ms	843x510	f92fa278fcd58e21
+17	ripple 400 ms state	text	7e1f10f36041e40f
+18	ripple 450 ms	843x510	d05902d7f563f4ec
+19	ripple 450 ms state	text	7e1f10f36041e40f
+20	ripple 500 ms	843x510	3f41fe0c25d983e4
+21	ripple 500 ms state	text	7e1f10f36041e40f
+22	ripple 550 ms	843x510	3a0fa005f49d5b99
+23	ripple 550 ms state	text	7e1f10f36041e40f
+24	ripple 600 ms	843x510	b36501a6a7c60afa
+25	ripple 600 ms state	text	7e1f10f36041e40f
+26	ripple 650 ms	843x510	4b311658b36f61dd
+27	ripple 650 ms state	text	7e1f10f36041e40f
+28	ripple 700 ms	843x510	c22cdf5e056f845f
+29	ripple 700 ms state	text	7e1f10f36041e40f
+30	ripple 750 ms	843x510	ad541a276701b116
+31	ripple 750 ms state	text	7e1f10f36041e40f
+32	ripple 800 ms	843x510	b2381b77332033d7
+33	ripple 800 ms state	text	7e1f10f36041e40f
+34	ripple 850 ms	843x510	6d634bacab64f9a0
+35	ripple 850 ms state	text	7e1f10f36041e40f
+36	ripple 900 ms	843x510	1056d30af3cf2a91
+37	ripple 900 ms state	text	7e1f10f36041e40f
+38	ripple 950 ms	843x510	082573c73bb22cb4
+39	ripple 950 ms state	text	7e1f10f36041e40f
+40	ripple 1000 ms	843x510	d5a6e480dcc5c6f9
+41	ripple 1000 ms state	text	7e1f10f36041e40f
+42	ripple 1050 ms	843x510	783294098e7768b6
+43	ripple 1050 ms state	text	7e1f10f36041e40f
+44	ripple 1100 ms	843x510	f4793f582251aa24
+45	ripple 1100 ms state	text	7e1f10f36041e40f
+46	ripple 1150 ms	843x510	9098c04b8479800b
+47	ripple 1150 ms state	text	7e1f10f36041e40f
+48	ripple 1200 ms	843x510	d234e28b8a631282
+49	ripple 1200 ms state	text	7e1f10f36041e40f
+50	ripple 1250 ms	843x510	da48b2b356b7a08c
+51	ripple 1250 ms state	text	7e1f10f36041e40f
+52	ripple 1300 ms	843x510	70f9df0b960fdc82
+53	ripple 1300 ms state	text	7e1f10f36041e40f
+54	ripple 1350 ms	843x510	fc974e9a55cb9950
+55	ripple 1350 ms state	text	7e1f10f36041e40f
+56	ripple 1400 ms	843x510	4d1696a9e770ce79
+57	ripple 1400 ms state	text	7e1f10f36041e40f
+58	ripple 1450 ms	843x510	2bc58997aa3c2290
+59	ripple 1450 ms state	text	7e1f10f36041e40f
+60	ripple 1500 ms	843x510	0880deec4473dd3a
+61	ripple 1500 ms state	text	7e1f10f36041e40f
+62	ripple 1550 ms	843x510	c38ac9db19d29231
+63	ripple 1550 ms state	text	7e1f10f36041e40f
+64	ripple 1600 ms	843x510	09aa4c3f4456431e
+65	ripple 1600 ms state	text	7e1f10f36041e40f
+66	ripple 1650 ms	843x510	370372cf4d9840fa
+67	ripple 1650 ms state	text	7e1f10f36041e40f
+68	ripple 1700 ms	843x510	16d10654c4b8054b
+69	ripple 1700 ms state	text	7e1f10f36041e40f
+70	ripple 1750 ms	843x510	efa849838d2402b3
+71	ripple 1750 ms state	text	7e1f10f36041e40f
+72	ripple 1800 ms	843x510	1433c54db37656fd
+73	ripple 1800 ms state	text	7e1f10f36041e40f
+74	ripple 1850 ms	843x510	9fbb1c7de90300a1
+75	ripple 1850 ms state	text	7e1f10f36041e40f
+76	ripple 1900 ms	843x510	f54ac9533006ecc9
+77	ripple 1900 ms state	text	7e1f10f36041e40f
+78	ripple 1950 ms	843x510	4cc28aab869eb6e0
+79	ripple 1950 ms state	text	7e1f10f36041e40f
+80	ripple 2000 ms	843x510	6978c07c2dc881ca
+81	ripple 2000 ms state	text	7e1f10f36041e40f
+82	ripple 2050 ms	843x510	e6a4f68b001dd303
+83	ripple 2050 ms state	text	7e1f10f36041e40f
+84	ripple 2100 ms	843x510	59a9b9ba26bf4896
+85	ripple 2100 ms state	text	7e1f10f36041e40f
+86	ripple 2150 ms	843x510	c87a6e99608557d5
+87	ripple 2150 ms state	text	7e1f10f36041e40f
+88	ripple 2200 ms	843x510	512a4375dbc8bea4
+89	ripple 2200 ms state	text	7e1f10f36041e40f
+90	ripple 2250 ms	843x510	7b95c8c21a1f6266
+91	ripple 2250 ms state	text	7e1f10f36041e40f
+92	ripple 2300 ms	843x510	ff408e2135ba12e5
+93	ripple 2300 ms state	text	7e1f10f36041e40f
+94	ripple 2350 ms	843x510	298e50412da9ddc2
+95	ripple 2350 ms state	text	7e1f10f36041e40f
+96	ripple 2400 ms	843x510	efd1cf5f49c48da6
+97	ripple 2400 ms state	text	7e1f10f36041e40f
+98	ripple 2450 ms	843x510	986ed79c50ba3a79
+99	ripple 2450 ms state	text	7e1f10f36041e40f
+100	ripple 2500 ms	843x510	5e41a1bbac86791e
+101	ripple 2500 ms state	text	7e1f10f36041e40f
+102	ripple 2550 ms	843x510	b014bcf6fe23d6e6
+103	ripple 2550 ms state	text	7e1f10f36041e40f
+104	ripple 2600 ms	843x510	bf76e34e88c4f1d1
+105	ripple 2600 ms state	text	7e1f10f36041e40f
+106	ripple 2650 ms	843x510	b26d1fccfeed4eda
+107	ripple 2650 ms state	text	7e1f10f36041e40f
+108	ripple 2700 ms	843x510	0d0dc08bca8a73ca
+109	ripple 2700 ms state	text	7e1f10f36041e40f
+110	ripple 2750 ms	843x510	1fec20f06340ec81
+111	ripple 2750 ms state	text	7e1f10f36041e40f
+112	ripple 2800 ms	843x510	aec729ad7be95b13
+113	ripple 2800 ms state	text	7e1f10f36041e40f
+114	ripple 2850 ms	843x510	a9e75d2f43a15564
+115	ripple 2850 ms state	text	7e1f10f36041e40f
+116	ripple 2900 ms	843x510	41bb07202575faa7
+117	ripple 2900 ms state	text	7e1f10f36041e40f
+118	ripple 2950 ms	843x510	29e945707bbbd47f
+119	ripple 2950 ms state	text	7e1f10f36041e40f
+120	ripple 3000 ms	843x510	11ed8da469cbfad1
+121	ripple 3000 ms state	text	7e1f10f36041e40f
+122	ripple 3050 ms	843x510	f7ddbdee00cce104
+123	ripple 3050 ms state	text	7e1f10f36041e40f
+124	ripple counts	text	5c69e0320d1929cb

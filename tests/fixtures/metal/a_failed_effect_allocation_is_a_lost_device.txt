@@ -1,0 +1,20 @@
+0	neon after a lost frame 0 ms	843x510	ec71a6f31aa0be7a
+1	neon after a lost frame 0 ms state	text	d9ab580c6345a84a
+2	neon after a lost frame 50 ms	843x510	f64c5fd8a6709add
+3	neon after a lost frame 50 ms state	text	d9ab580c6345a84a
+4	neon after a lost frame 100 ms	843x510	62cbf7f97393aeb1
+5	neon after a lost frame 100 ms state	text	d9ab580c6345a84a
+6	neon after a lost frame 150 ms	843x510	0d0fb16a683b860e
+7	neon after a lost frame 150 ms state	text	d9ab580c6345a84a
+8	neon after a lost frame 200 ms	843x510	3e1497247ccff7f1
+9	neon after a lost frame 200 ms state	text	d9ab580c6345a84a
+10	neon after a lost frame 250 ms	843x510	ab5800b435fa6918
+11	neon after a lost frame 250 ms state	text	d9ab580c6345a84a
+12	neon after a lost frame 300 ms	843x510	f933b7ff464f51fa
+13	neon after a lost frame 300 ms state	text	d9ab580c6345a84a
+14	neon after a lost frame 350 ms	843x510	bd15f0d1382cbca4
+15	neon after a lost frame 350 ms state	text	d9ab580c6345a84a
+16	neon after a lost frame 400 ms	843x510	9a7e68493252c578
+17	neon after a lost frame 400 ms state	text	d9ab580c6345a84a
+18	neon after a lost frame counts	text	bbab57e6a6f4215a
+19	capture after a failed one	843x510	ec71a6f31aa0be7a

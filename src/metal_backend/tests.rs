@@ -82,11 +82,46 @@ fn largest_step(a: &[u8], b: &[u8]) -> u8 {
 /// named in the task report. Empty: every case is byte-equal.
 const ONE_STEP_ALLOWED: &[&str] = &[];
 
-fn compare(name: &str, wgpu: &[u8], metal: &[u8], w: u32, near: &mut Vec<String>) {
-    match largest_step(wgpu, metal) {
+fn compare(name: &str, wgpu: &[u8], metal: &[u8], w: u32, check: &mut Check) {
+    same_or_near(name, wgpu, metal, w, &mut check.near);
+    check.pixels(name, metal, w);
+}
+
+fn same_or_near(name: &str, want: &[u8], got: &[u8], w: u32, near: &mut Vec<String>) {
+    match largest_step(want, got) {
         0 => {}
         1 if ONE_STEP_ALLOWED.contains(&name) => near.push(name.to_string()),
-        _ => crate::render_pixel_tests::assert_same(name, wgpu, metal, w),
+        _ => crate::render_pixel_tests::assert_same(name, want, got, w),
+    }
+}
+
+/// What a test checks Metal against: its stored tape (`reference`), under the same rule.
+struct Check {
+    tape: super::reference::Tape,
+    near: Vec<String>,
+}
+
+impl Check {
+    fn new(test: &str) -> Check {
+        Check { tape: super::reference::Tape::open(test), near: Vec::new() }
+    }
+
+    /// Metal's picture, `w` wide, against the stored one.
+    fn pixels(&mut self, name: &str, metal: &[u8], w: u32) {
+        let h = (metal.len() / 4) as u32 / w.max(1);
+        if let Some(want) = self.tape.take(super::reference::Entry::Pixels { name: name.to_string(), w, h, rgba: metal.to_vec() }) {
+            same_or_near(&format!("{name} (stored)"), &want, metal, w, &mut self.near);
+        }
+    }
+
+    /// A value the test compares (chain state, error texts), against the stored one.
+    fn text(&mut self, name: &str, text: String) {
+        self.tape.take(super::reference::Entry::Text { name: name.to_string(), text });
+    }
+
+    fn finish(self) {
+        report_near(&self.near);
+        self.tape.finish();
     }
 }
 
@@ -94,7 +129,7 @@ fn compare(name: &str, wgpu: &[u8], metal: &[u8], w: u32, near: &mut Vec<String>
 fn metal_matches_wgpu_on_quads_and_images() {
     let (on, mut wgpu) = wgpu_window(SIZE);
     let mut metal = metal_window(SIZE);
-    let mut near = Vec::new();
+    let mut check = Check::new("metal_matches_wgpu_on_quads_and_images");
     let cases = cases();
     assert!(cases.len() > 10, "{} cases", cases.len());
     for (name, frame) in &cases {
@@ -102,7 +137,7 @@ fn metal_matches_wgpu_on_quads_and_images() {
         // Screenshots: the texture with its second (non-sRGB) view.
         let a = wgpu.capture(frame, None, w, h).unwrap();
         let b = metal.capture(frame, None, w, h).unwrap();
-        compare(&format!("{name} capture"), &a, &b, w, &mut near);
+        compare(&format!("{name} capture"), &a, &b, w, &mut check);
         // The window's own frame: no second view, so a fade runs on the sRGB view.
         wgpu.render(frame, None, None).unwrap().kept.unwrap();
         let a = match &wgpu {
@@ -111,9 +146,9 @@ fn metal_matches_wgpu_on_quads_and_images() {
         };
         metal.render(frame, None, None).unwrap().kept.unwrap();
         let b = super::readback::read_rgba(&test_device().queue, metal.offscreen_texture(), w, h).unwrap();
-        compare(&format!("{name} render"), &a, &b, w, &mut near);
+        compare(&format!("{name} render"), &a, &b, w, &mut check);
     }
-    report_near(&near);
+    check.finish();
 }
 
 /// A new scale reaches the layer at once, and the next frame draws at the new size with the new
@@ -202,13 +237,13 @@ fn text_pair(rows: bool) -> (crate::gpu_window::GpuHandles, WindowGpu, MetalWind
 
 /// Draws `cases` in order on both windows, the state carried from case to case, and compares
 /// every screenshot. Cases of the windows' own size are also drawn through `render`.
-fn match_in_order(on: &crate::gpu_window::GpuHandles, wgpu: &mut WindowGpu, metal: &mut MetalWindow, cases: &[crate::render_pixel_tests::PixelCase], tag: &str, near: &mut Vec<String>) {
+fn match_in_order(on: &crate::gpu_window::GpuHandles, wgpu: &mut WindowGpu, metal: &mut MetalWindow, cases: &[crate::render_pixel_tests::PixelCase], tag: &str, check: &mut Check) {
     for c in cases {
         let (w, h) = c.size;
         let name = format!("{} ({tag})", c.name);
         let a = wgpu.capture(&c.frame, None, w, h).unwrap_or_else(|e| panic!("{name}: wgpu: {e}"));
         let b = metal.capture(&c.frame, None, w, h).unwrap_or_else(|e| panic!("{name}: Metal: {e}"));
-        compare(&format!("{name} capture"), &a, &b, w, near);
+        compare(&format!("{name} capture"), &a, &b, w, check);
         if c.size != SIZE {
             continue;
         }
@@ -221,7 +256,7 @@ fn match_in_order(on: &crate::gpu_window::GpuHandles, wgpu: &mut WindowGpu, meta
         // The window's own queue: after a rebuild it is not the test device's.
         let crate::gpu_shared::GpuShared::Metal(m) = metal.shared() else { unreachable!() };
         let b = super::readback::read_rgba(&m.queue, metal.offscreen_texture(), w, h).unwrap();
-        compare(&format!("{name} render"), &a, &b, w, near);
+        compare(&format!("{name} render"), &a, &b, w, check);
     }
 }
 
@@ -236,7 +271,7 @@ fn report_near(near: &[String]) {
 /// and on the full path, drawn in order on one window each.
 #[test]
 fn metal_matches_wgpu_on_every_pixel_case() {
-    let mut near = Vec::new();
+    let mut check = Check::new("metal_matches_wgpu_on_every_pixel_case");
     for rows in [true, false] {
         let (on, mut wgpu, mut metal) = text_pair(rows);
         let cases = crate::render_pixel_tests::pixel_cases(wgpu.renderer());
@@ -247,30 +282,30 @@ fn metal_matches_wgpu_on_every_pixel_case() {
         let mut probe = metal_window(c.size);
         probe.renderer_mut().set_row_instances(rows);
         assert_ne!(probe.capture(&c.frame, None, c.size.0, c.size.1).unwrap(), probe.capture(&bare, None, c.size.0, c.size.1).unwrap(), "{}: Metal drew no text", c.name);
-        match_in_order(&on, &mut wgpu, &mut metal, &cases, if rows { "rows" } else { "full" }, &mut near);
+        match_in_order(&on, &mut wgpu, &mut metal, &cases, if rows { "rows" } else { "full" }, &mut check);
         if rows {
             assert!(metal.renderer().row_prepares() > 0, "the row path drew no rows");
         }
     }
-    report_near(&near);
+    check.finish();
 }
 
 /// The flood with the atlas capped at 512: it grows from 256 once mid run, then evicts, and the
 /// Metal textures follow every grow and upload.
 #[test]
 fn metal_matches_wgpu_through_atlas_growth() {
-    let mut near = Vec::new();
+    let mut check = Check::new("metal_matches_wgpu_through_atlas_growth");
     for rows in [true, false] {
         let (on, mut wgpu, mut metal) = text_pair(rows);
         wgpu.renderer_mut().atlas().set_max_size(512);
         metal.renderer_mut().atlas().set_max_size(512);
         let cases: Vec<_> = crate::render_pixel_tests::pixel_cases(wgpu.renderer()).into_iter().filter(|c| c.name.starts_with("cjk_flood")).collect();
         let (grown, evicted) = (metal.renderer_mut().atlas().generation(), metal.renderer_mut().atlas().evictions());
-        match_in_order(&on, &mut wgpu, &mut metal, &cases, if rows { "rows, capped" } else { "full, capped" }, &mut near);
+        match_in_order(&on, &mut wgpu, &mut metal, &cases, if rows { "rows, capped" } else { "full, capped" }, &mut check);
         assert!(metal.renderer_mut().atlas().generation() != grown, "the capped flood never grew the atlas");
         assert!(metal.renderer_mut().atlas().evictions() > evicted, "the capped flood never evicted");
     }
-    report_near(&near);
+    check.finish();
 }
 
 /// A pane of `s` filling `size`, drawn with `r`'s cell.
@@ -294,18 +329,18 @@ fn metal_matches_wgpu_on_scrolled_rows() {
         let end = if n < 19 { "\r\n" } else { "" };
         s.feed(format!("line {n:02} of the scroll test{end}").as_bytes());
     }
-    let mut near = Vec::new();
+    let mut check = Check::new("metal_matches_wgpu_on_scrolled_rows");
     let first = screen_case("twenty rows".into(), metal.renderer(), &s, size);
-    match_in_order(&on, &mut wgpu, &mut metal, &[first], "scroll", &mut near);
+    match_in_order(&on, &mut wgpu, &mut metal, &[first], "scroll", &mut check);
     for n in 20..32 {
         let before = metal.renderer().row_prepares();
         s.feed(format!("\r\nline {n:02} of the scroll test").as_bytes());
         let c = screen_case(format!("scrolled to line {n}"), metal.renderer(), &s, size);
-        match_in_order(&on, &mut wgpu, &mut metal, &[c], "scroll", &mut near);
+        match_in_order(&on, &mut wgpu, &mut metal, &[c], "scroll", &mut check);
         let prepared = metal.renderer().row_prepares() - before;
         assert!(prepared <= 2, "scrolling one line prepared {prepared} rows");
     }
-    report_near(&near);
+    check.finish();
 }
 
 /// A frame whose text cannot fit fails, but what it prepared first (a row's slot, its glyphs)
@@ -332,6 +367,9 @@ fn a_failed_prepare_loses_no_write_on_metal() {
     let (_, mut wgpu) = wgpu_window(size);
     let want = wgpu.capture(&frame(vec![kept]), None, size.0, size.1).unwrap();
     crate::render_pixel_tests::assert_same("after a failed frame", &want, &got, size.0);
+    let mut check = Check::new("a_failed_prepare_loses_no_write_on_metal");
+    check.pixels("after a failed frame", &got, size.0);
+    check.finish();
 }
 
 /// A window moved onto a new device starts its atlas and rows over with it, and draws text as a
@@ -340,14 +378,14 @@ fn a_failed_prepare_loses_no_write_on_metal() {
 fn text_draws_the_same_after_a_rebuild() {
     let (on, mut wgpu, mut metal) = text_pair(true);
     let cases: Vec<_> = crate::render_pixel_tests::pixel_cases(wgpu.renderer()).into_iter().filter(|c| !c.name.starts_with("cjk_flood") || c.name.ends_with("0")).collect();
-    let mut near = Vec::new();
-    match_in_order(&on, &mut wgpu, &mut metal, &cases[..cases.len() / 2], "before", &mut near);
+    let mut check = Check::new("text_draws_the_same_after_a_rebuild");
+    match_in_order(&on, &mut wgpu, &mut metal, &cases[..cases.len() / 2], "before", &mut check);
     let fresh = super::MetalShared::new(wgpu::PowerPreference::HighPerformance).unwrap();
     metal.rebuild(&crate::gpu_shared::GpuShared::Metal(fresh), None).unwrap();
     assert_eq!((metal.renderer_mut().atlas().generation(), metal.renderer().row_prepares()), (0, 0), "the atlas and rows started over");
     let (on, mut wgpu) = wgpu_window(SIZE);
-    match_in_order(&on, &mut wgpu, &mut metal, &cases, "after", &mut near);
-    report_near(&near);
+    match_in_order(&on, &mut wgpu, &mut metal, &cases, "after", &mut check);
+    check.finish();
 }
 
 /// Steady text frames (the same screen with one line changing) make no Metal buffer, texture or
@@ -387,9 +425,9 @@ fn metal_matches_wgpu_in_web_color_mode() {
     let mut accurate = metal_window(flood.size);
     assert_ne!(metal.capture(&flood.frame, None, flood.size.0, flood.size.1).unwrap(), accurate.capture(&flood.frame, None, flood.size.0, flood.size.1).unwrap(), "Web mode drew as Accurate");
     metal.set_color_mode(glyphon::ColorMode::Web);
-    let mut near = Vec::new();
-    match_in_order(&on, &mut wgpu, &mut metal, &cases, "web", &mut near);
-    report_near(&near);
+    let mut check = Check::new("metal_matches_wgpu_in_web_color_mode");
+    match_in_order(&on, &mut wgpu, &mut metal, &cases, "web", &mut check);
+    check.finish();
 }
 
 /// A Metal allocation that fails mid-frame (a grown atlas or row buffer, a staging chunk, a quad
@@ -412,6 +450,7 @@ fn a_failed_metal_allocation_starts_both_sides_over() {
     assert_eq!(cases[6].frame.rows, cases[7].frame.rows);
     let mut metal = metal_window(size);
     let mut lost = Vec::new();
+    let mut check = Check::new("a_failed_metal_allocation_starts_both_sides_over");
     for (i, c) in cases.iter().enumerate() {
         // The first frame's first allocation (its staging chunk), the quad frame's first (the
         // grown buffer), and the picture frame's texture.
@@ -442,7 +481,9 @@ fn a_failed_metal_allocation_starts_both_sides_over() {
         super::fail_textures(0);
         let got = super::readback::read_rgba(&test_device().queue, metal.offscreen_texture(), size.0, size.1).unwrap();
         crate::render_pixel_tests::assert_same(&c.name, &want, &got, size.0);
+        check.pixels(&c.name, &got, size.0);
     }
+    check.finish();
     assert_eq!(lost, [cases[0].name.as_str(), "many quads", "a picture"]);
     assert!(crate::gpu_pick::take_lost().is_none());
 }
@@ -528,6 +569,9 @@ fn a_failed_capture_texture_is_only_an_error() {
     metal.render(&c.frame, None, None).unwrap().kept.unwrap();
     let got = super::readback::read_rgba(&test_device().queue, metal.offscreen_texture(), c.size.0, c.size.1).unwrap();
     crate::render_pixel_tests::assert_same(&c.name, &wgpu.capture(&c.frame, None, c.size.0, c.size.1).unwrap(), &got, c.size.0);
+    let mut check = Check::new("a_failed_capture_texture_is_only_an_error");
+    check.pixels(&c.name, &got, c.size.0);
+    check.finish();
 }
 
 /// The window's layer follows its root layer's bounds and scale, as wgpu's raw-window-metal layer
@@ -596,7 +640,7 @@ fn effect_pair(size: (u32, u32), compiled: &[crate::render_fx::Compiled], terms:
 /// kept unless the frame is built, `keep_output` from its own region, a frame the chain can leave
 /// out left out) and compares every frame and the chains' state after it. The scene switches to
 /// `changed` and back on each built frame. Returns how many frames shaded only their region.
-fn match_effect_frames(on: &crate::gpu_window::GpuHandles, wgpu: &mut WindowGpu, metal: &mut MetalWindow, frame: &Frame, changed: Option<&Frame>, steps: &[crate::render::tests::RegionStep], name: &str, near: &mut Vec<String>) -> usize {
+fn match_effect_frames(on: &crate::gpu_window::GpuHandles, wgpu: &mut WindowGpu, metal: &mut MetalWindow, frame: &Frame, changed: Option<&Frame>, steps: &[crate::render::tests::RegionStep], name: &str, check: &mut Check) -> usize {
     let mut showing = frame;
     let mut regions = 0;
     for st in steps {
@@ -607,17 +651,20 @@ fn match_effect_frames(on: &crate::gpu_window::GpuHandles, wgpu: &mut WindowGpu,
         let still = wgpu.skip_if_still(&st.u, !st.built);
         assert_eq!(still, metal.skip_if_still(&st.u, !st.built), "{name} {} ms: the chains disagree on a still frame", st.ms);
         if still {
+            check.text(&format!("{name} {} ms still", st.ms), "still".into());
             continue;
         }
         wgpu.render(showing, Some(fx()), None).unwrap().kept.unwrap();
         metal.render(showing, Some(fx()), None).unwrap().kept.unwrap();
-        compare(&format!("{name} {} ms", st.ms), &wgpu_pixels(on, wgpu), &metal_pixels(metal), metal.size().0, near);
+        compare(&format!("{name} {} ms", st.ms), &wgpu_pixels(on, wgpu), &metal_pixels(metal), metal.size().0, check);
         let (a, b) = (wgpu_chain(wgpu), metal.chain().expect("a Metal chain"));
         assert_eq!((a.shaded_region(), a.frame_kept()), (b.shaded_region(), b.frame_kept()), "{name} {} ms: shaded region, frame kept", st.ms);
+        check.text(&format!("{name} {} ms state", st.ms), format!("shaded region {}, frame kept {}", b.shaded_region(), b.frame_kept()));
         regions += usize::from(b.shaded_region());
     }
     let (a, b) = (wgpu_chain(wgpu), metal.chain().unwrap());
     assert_eq!((a.uniform_writes(), a.kept_made(), a.skips()), (b.uniform_writes(), b.kept_made(), b.skips()), "{name}: uniform writes, kept outputs made, skips");
+    check.text(&format!("{name} counts"), format!("uniform writes {}, kept outputs made {}, skips {}", b.uniform_writes(), b.kept_made(), b.skips()));
     regions
 }
 
@@ -632,7 +679,7 @@ fn metal_effects_match_wgpu_for_every_plugin() {
     let plugins: Vec<_> = crate::render_fx::discover(None).0.into_iter().filter(|p| p.builtin()).collect();
     assert_eq!(plugins.len(), 13);
     let probe = metal_window(SIZE);
-    let mut near = Vec::new();
+    let mut check = Check::new("metal_effects_match_wgpu_for_every_plugin");
     let mut regions = 0;
     for (i, p) in plugins.iter().enumerate() {
         let live_lines = i % 2 == 1;
@@ -648,18 +695,18 @@ fn metal_effects_match_wgpu_for_every_plugin() {
             let steps = region_timeline(probe.renderer().cell, terms.as_deref().expect("a region"), &frame, size, bg, preset, live_lines, &plan);
             let (on, mut wgpu, mut metal) = effect_pair(size, &compiled, terms.clone());
             let name = format!("{} {screen}{}", p.id, if k == 0 { "" } else { " built" });
-            regions += match_effect_frames(&on, &mut wgpu, &mut metal, &frame, Some(&changed), &steps, &name, &mut near);
+            regions += match_effect_frames(&on, &mut wgpu, &mut metal, &frame, Some(&changed), &steps, &name, &mut check);
             // A screenshot shows the effect as the screen does: one taken while an event's look
             // runs full screen.
             let st = steps.iter().find(|st| st.ms > 0 && st.both.with_last.is_none()).unwrap_or(steps.last().unwrap());
             let fx = || Some(crate::gpu_window::FxFrame { uniforms: &st.u, region: None, same_scene: false, keep_output: false });
             let shot = metal.capture(&frame, fx(), size.0, size.1).unwrap();
-            compare(&format!("{name} capture"), &wgpu.capture(&frame, fx(), size.0, size.1).unwrap(), &shot, size.0, &mut near);
+            compare(&format!("{name} capture"), &wgpu.capture(&frame, fx(), size.0, size.1).unwrap(), &shot, size.0, &mut check);
             assert_ne!(shot, metal.capture(&frame, None, size.0, size.1).unwrap(), "{name}: the effect changed nothing");
         }
     }
     assert!(regions > 0, "no frame shaded only its region");
-    report_near(&near);
+    check.finish();
 }
 
 /// Effect frames that only animate make no Metal buffer, texture, view or staging chunk once the
@@ -752,11 +799,12 @@ fn a_bad_plugin_reports_the_same_error_on_metal() {
     let (frame, size, bg) = crate::render::tests::agent_frame(probe.renderer(), "codex", [255, 128, 0]);
     let (on, mut wgpu) = wgpu_window(size);
     let mut metal = WindowGpu::Metal(metal_window(size));
-    let mut near = Vec::new();
+    let mut check = Check::new("a_bad_plugin_reports_the_same_error_on_metal");
     for wanted in [&["broken"][..], &["broken", "aurora"][..]] {
         let (a, a_active, terms) = sync_effects(&mut wgpu, wanted, &dir);
         let (b, b_active, _) = sync_effects(&mut metal, wanted, &dir);
         assert_eq!(a, b, "{wanted:?}: the errors differ");
+        check.text(&format!("{wanted:?} errors"), format!("{b:?}, active {b_active}"));
         assert_eq!(a.len(), 1, "{a:?}");
         assert!(a[0].starts_with("Broken (broken.glsl):\nline 7: "), "{}", a[0]);
         assert_eq!((a_active, b_active), (wanted.len() > 1, wanted.len() > 1));
@@ -774,11 +822,11 @@ fn a_bad_plugin_reports_the_same_error_on_metal() {
         wgpu.render(&frame, fx(), None).unwrap().kept.unwrap();
         metal.render(&frame, fx(), None).unwrap().kept.unwrap();
         let got = metal_pixels(metal_of(&metal));
-        compare(&format!("{wanted:?}"), &wgpu_pixels(&on, &wgpu), &got, size.0, &mut near);
+        compare(&format!("{wanted:?}"), &wgpu_pixels(&on, &wgpu), &got, size.0, &mut check);
         let plain = metal.capture(&frame, None, size.0, size.1).unwrap();
         assert_eq!(got == plain, !a_active, "{wanted:?}: an effect ran {}", a_active);
     }
-    report_near(&near);
+    check.finish();
 }
 
 const USER_WGSL: &str = "
@@ -814,10 +862,10 @@ fn a_user_wgsl_plugin_runs_on_metal() {
     assert!(a.is_empty() && b.is_empty() && active, "{a:?} {b:?}");
     let steps = region_timeline(probe.renderer().cell, terms.as_deref().unwrap(), &frame, size, bg, [200, 80, 255], false, &Plan { events: true, hold: 300, every: 50, ..Default::default() });
     let WindowGpu::Metal(mut m) = metal else { unreachable!() };
-    let mut near = Vec::new();
-    match_effect_frames(&on, &mut wgpu, &mut m, &frame, None, &steps, "ripple", &mut near);
+    let mut check = Check::new("a_user_wgsl_plugin_runs_on_metal");
+    match_effect_frames(&on, &mut wgpu, &mut m, &frame, None, &steps, "ripple", &mut check);
     assert_ne!(metal_pixels(&m), m.capture(&frame, None, size.0, size.1).unwrap(), "the effect changed nothing");
-    report_near(&near);
+    check.finish();
 }
 
 /// An effect texture that cannot be made mid-frame follows the allocation rule: the frame is
@@ -847,8 +895,8 @@ fn a_failed_effect_allocation_is_a_lost_device() {
     metal.rebuild(&crate::gpu_shared::GpuShared::Metal(test_device().clone()), None).unwrap();
     assert!(metal.chain().is_none(), "a rebuilt window builds its effect again");
     metal.set_effect(Some(compiled.clone()), terms.clone()).unwrap();
-    let mut near = Vec::new();
-    match_effect_frames(&on, &mut wgpu, &mut metal, &frame, None, &steps, "neon after a lost frame", &mut near);
+    let mut check = Check::new("a_failed_effect_allocation_is_a_lost_device");
+    match_effect_frames(&on, &mut wgpu, &mut metal, &frame, None, &steps, "neon after a lost frame", &mut check);
     // A screenshot's own chain: only an error, and the live chain draws on.
     let mut fresh = metal_window(size);
     fresh.set_effect(Some(compiled), terms).unwrap();
@@ -860,8 +908,8 @@ fn a_failed_effect_allocation_is_a_lost_device() {
     assert!(crate::gpu_pick::take_lost().is_none(), "a failed screenshot was reported as a lost device");
     assert!(fresh.stale().is_none());
     let shot = fresh.capture(&frame, fx(), size.0, size.1).unwrap();
-    compare("capture after a failed one", &wgpu.capture(&frame, fx(), size.0, size.1).unwrap(), &shot, size.0, &mut near);
-    report_near(&near);
+    compare("capture after a failed one", &wgpu.capture(&frame, fx(), size.0, size.1).unwrap(), &shot, size.0, &mut check);
+    check.finish();
 }
 
 /// One egui frame, tessellated once: what both painters get.
@@ -1045,7 +1093,7 @@ fn metal_egui_into(painter: &mut super::EguiPainter, f: &EguiFrame, t: &objc2::r
 fn metal_egui_matches_wgpu() {
     let on = handles();
     assert_eq!(on.adapter.get_info().backend, wgpu::Backend::Metal);
-    let mut near = Vec::new();
+    let mut check = Check::new("metal_egui_matches_wgpu");
     let popover = popover_frames();
     assert!(popover.iter().any(|f| f.deltas.free.len() == 1), "the dropped picture is freed");
     for frames in [settings_frames(), prompt_frames(), popover] {
@@ -1056,12 +1104,12 @@ fn metal_egui_matches_wgpu() {
             let a = wgpu_egui(&on, &mut renderer, f);
             let b = metal_egui(&mut painter, f).unwrap_or_else(|e| panic!("{}: {e}", f.name));
             assert!(a.chunks(4).any(|p| p[..3] != [0, 0, 0]), "{}: a black picture", f.name);
-            compare(&f.name, &a, &b, f.size[0], &mut near);
+            compare(&f.name, &a, &b, f.size[0], &mut check);
         }
         // The first frame uploads the font atlas whole; the later ones grew it in place.
         assert!(frames[0].deltas.set.values().flatten().any(|d| d.pos.is_none()));
     }
-    report_near(&near);
+    check.finish();
 }
 
 /// With no terminal window open, the app keeps the device the last one drew on (`prefs_gpu`):
@@ -1111,13 +1159,16 @@ fn screenshot_matches_wgpu() {
     let last = s.term().grid().history_size() + s.term().grid().screen_lines() - 1;
     let max_rows = ((8192.0 / cell.1).floor() as usize).clamp(1, 1000);
     assert!(last + 1 > max_rows, "one batch only: {} lines, {max_rows} a batch", last + 1);
+    let mut check = Check::new("screenshot_matches_wgpu");
     for (first, cursor) in [(0, true), (last - 30, false)] {
         let (w, h, a) = crate::app::draw_lines(&mut wgpu, &look, &s, first, last, cursor).unwrap();
         let (w2, h2, b) = crate::app::draw_lines(&mut metal, &look, &s, first, last, cursor).unwrap();
         assert_eq!((w, h), (w2, h2));
         assert_eq!(a.len(), (w * h * 4) as usize);
         crate::render_pixel_tests::assert_same(&format!("screenshot from line {first}"), &a, &b, w);
+        check.pixels(&format!("screenshot from line {first}"), &b, w);
     }
+    check.finish();
 }
 
 /// An unchanged egui frame on Metal makes nothing: the vertex and index buffers, the textures and
@@ -1171,12 +1222,13 @@ fn a_failed_egui_allocation_is_a_lost_device() {
     assert!(crate::gpu_pick::take_lost().is_some());
     wgpu_egui(&on, &mut renderer, &frames[1]);
     // Both frames' changes go through with the next one, which then matches egui-wgpu's.
-    let mut near = Vec::new();
+    let mut check = Check::new("a_failed_egui_allocation_is_a_lost_device");
     let want = wgpu_egui(&on, &mut renderer, &frames[2]);
     let got = metal_egui(&mut painter, &frames[2]).unwrap();
     assert_eq!(painter.pending(), 0);
-    compare("after the failures", &want, &got, frames[2].size[0], &mut near);
-    assert!(near.is_empty());
+    compare("after the failures", &want, &got, frames[2].size[0], &mut check);
+    assert!(check.near.is_empty());
+    check.finish();
     assert!(crate::gpu_pick::take_lost().is_none());
 }
 

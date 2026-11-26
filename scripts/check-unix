@@ -6,6 +6,7 @@
 # FILTER is one or more space separated test name filters (default: every lib test).
 # A test run with no new output for CHECK_UNIX_STALL_MINUTES (default 30, or 150 with TERMURION_TEST_BACKEND=gl,
 # where one region test can print nothing for over an hour) is a hang: it is stopped and fails.
+# TERMURION_RECORD_METAL=1 with --mac-only --test records the Metal tests' stored pictures (tests/fixtures/metal).
 # Usage: scripts/check-unix [--linux-only | --mac-only] [--test [FILTER]]   (flags in any order; FILTER words follow --test)
 set -uo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
@@ -105,7 +106,13 @@ if [ "$do_mac" = 1 ]; then
     host="${CHECK_UNIX_MAC_HOST:-funtimes}"
     rsync -rt --delete --exclude /target/ --exclude /.git/ --exclude /.superpowers/ ./ "$host:src/termurion/" || { echo "macos: check did not run"; exit 2; }
     if [ "$do_test" = 1 ]; then
-        test_report macos ssh "$host" "cd src/termurion && ~/.cargo/bin/cargo test --lib -- $(for w in $filter; do printf "%q " "$w"; done)"
+        # TERMURION_RECORD_METAL=1 records the Metal tests' stored pictures there and brings them back.
+        record=""; [ "${TERMURION_RECORD_METAL:-}" = 1 ] && record="TERMURION_RECORD_METAL=1 "
+        test_report macos ssh "$host" "cd src/termurion && $record~/.cargo/bin/cargo test --lib -- $(for w in $filter; do printf "%q " "$w"; done)"
+        if [ -n "$record" ]; then
+            mkdir -p tests/fixtures/metal
+            rsync -rt "$host:src/termurion/tests/fixtures/metal/" tests/fixtures/metal/ || { echo "macos: the recorded tapes did not come back"; bad=1; }
+        fi
     else
         report macos ssh "$host" 'cd src/termurion && ~/.cargo/bin/cargo check --all-targets --message-format short'
     fi

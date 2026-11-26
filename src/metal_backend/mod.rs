@@ -15,6 +15,8 @@ mod images;
 mod quads;
 #[cfg(target_os = "macos")]
 pub mod readback;
+#[cfg(all(test, target_os = "macos"))]
+mod reference;
 #[cfg(target_os = "macos")]
 mod surface;
 #[cfg(all(test, target_os = "macos"))]
