@@ -182,14 +182,6 @@ fn a_lost_device_is_reported() {
     assert_eq!(&px[0..4], &[0, 255, 0, 255]);
 }
 
-/// Effects wait for Task 11: a window asked for one says so.
-#[test]
-fn an_effect_says_the_metal_renderer_has_none_yet() {
-    let mut win = metal_window(SIZE);
-    let effect = crate::render_fx::discover(None).0.into_iter().next().expect("a shipped effect");
-    assert_eq!(win.set_effect(Some(effect.compile().unwrap()), None).unwrap_err(), super::window::NO_EFFECTS_YET);
-}
-
 /// The loss reports are process-wide, so tests that take them run one at a time under
 /// `test_gpu::LOCK`. The shared wgpu device is made first: its making takes the same lock, so a
 /// test holding the lock while another makes the device would wait on it forever.
@@ -567,4 +559,315 @@ fn steady_frames_make_no_staging_buffers() {
     }
     // A chunk is free again once its command buffer completed; a frame or two may still hold one.
     assert!(win.staging_made() <= 3, "{} staging buffers for 30 frames", win.staging_made());
+}
+
+/// The wgpu window's pixels as its last `render` left them.
+fn wgpu_pixels(on: &crate::gpu_window::GpuHandles, win: &WindowGpu) -> Vec<u8> {
+    match win {
+        WindowGpu::Wgpu(w) => read_back(on, w.offscreen_texture()),
+        WindowGpu::Metal(_) => unreachable!(),
+    }
+}
+
+/// The Metal window's pixels as its last `render` left them.
+fn metal_pixels(m: &MetalWindow) -> Vec<u8> {
+    let crate::gpu_shared::GpuShared::Metal(shared) = m.shared() else { unreachable!() };
+    let t = m.offscreen_texture();
+    super::readback::read_rgba(&shared.queue, t, t.width() as u32, t.height() as u32).unwrap()
+}
+
+fn wgpu_chain(win: &WindowGpu) -> &crate::render_fx_gpu::Chain {
+    match win {
+        WindowGpu::Wgpu(w) => w.chain().expect("an effect chain"),
+        WindowGpu::Metal(_) => unreachable!(),
+    }
+}
+
+/// Both windows at `size`, each with `compiled` as its effect over `terms`.
+fn effect_pair(size: (u32, u32), compiled: &[crate::render_fx::Compiled], terms: crate::render_fx::RegionTerms) -> (crate::gpu_window::GpuHandles, WindowGpu, MetalWindow) {
+    let (on, mut wgpu) = wgpu_window(size);
+    let mut metal = metal_window(size);
+    wgpu.set_effect(Some(compiled.to_vec()), terms.clone()).unwrap();
+    metal.set_effect(Some(compiled.to_vec()), terms).unwrap();
+    (on, wgpu, metal)
+}
+
+/// Draws `steps` on both windows as the app does (`render` with the frame's region, the scene
+/// kept unless the frame is built, `keep_output` from its own region, a frame the chain can leave
+/// out left out) and compares every frame and the chains' state after it. The scene switches to
+/// `changed` and back on each built frame. Returns how many frames shaded only their region.
+fn match_effect_frames(on: &crate::gpu_window::GpuHandles, wgpu: &mut WindowGpu, metal: &mut MetalWindow, frame: &Frame, changed: Option<&Frame>, steps: &[crate::render::tests::RegionStep], name: &str, near: &mut Vec<String>) -> usize {
+    let mut showing = frame;
+    let mut regions = 0;
+    for st in steps {
+        if st.switch {
+            showing = if std::ptr::eq(showing, frame) { changed.unwrap_or(frame) } else { frame };
+        }
+        let fx = || crate::gpu_window::FxFrame { uniforms: &st.u, region: Some(&st.both), same_scene: !st.built, keep_output: st.both.own.is_some() };
+        let still = wgpu.skip_if_still(&st.u, !st.built);
+        assert_eq!(still, metal.skip_if_still(&st.u, !st.built), "{name} {} ms: the chains disagree on a still frame", st.ms);
+        if still {
+            continue;
+        }
+        wgpu.render(showing, Some(fx()), None).unwrap().kept.unwrap();
+        metal.render(showing, Some(fx()), None).unwrap().kept.unwrap();
+        compare(&format!("{name} {} ms", st.ms), &wgpu_pixels(on, wgpu), &metal_pixels(metal), metal.size().0, near);
+        let (a, b) = (wgpu_chain(wgpu), metal.chain().expect("a Metal chain"));
+        assert_eq!((a.shaded_region(), a.frame_kept()), (b.shaded_region(), b.frame_kept()), "{name} {} ms: shaded region, frame kept", st.ms);
+        regions += usize::from(b.shaded_region());
+    }
+    let (a, b) = (wgpu_chain(wgpu), metal.chain().unwrap());
+    assert_eq!((a.uniform_writes(), a.kept_made(), a.skips()), (b.uniform_writes(), b.kept_made(), b.skips()), "{name}: uniform writes, kept outputs made, skips");
+    regions
+}
+
+/// Every shipped plugin on Metal and on wgpu's Metal backend, through the region tests' timeline
+/// (`region_timeline`): the events timeline on one agent screen, and the same with every third
+/// frame drawn anew over the next screen's rows on another, Live Lines on for every other plugin.
+/// Every frame is byte-equal, the chains shade the same region frames, and a screenshot through
+/// the effect (each window's own capture chain) is equal too and differs from the plain picture.
+#[test]
+fn metal_effects_match_wgpu_for_every_plugin() {
+    use crate::render::tests::{agent_frame, preset_of, region_timeline, with_rows_of, Plan, AGENT_SCREENS};
+    let plugins: Vec<_> = crate::render_fx::discover(None).0.into_iter().filter(|p| p.builtin()).collect();
+    assert_eq!(plugins.len(), 13);
+    let probe = metal_window(SIZE);
+    let mut near = Vec::new();
+    let mut regions = 0;
+    for (i, p) in plugins.iter().enumerate() {
+        let live_lines = i % 2 == 1;
+        let compiled = p.compile_with(&[("LINE_EFFECT", live_lines)]).unwrap();
+        let terms = crate::render_fx::chain_region(&[&p.manifest]);
+        let preset = preset_of(p);
+        let screens = [AGENT_SCREENS[i % AGENT_SCREENS.len()], AGENT_SCREENS[(i + 7) % AGENT_SCREENS.len()]];
+        for (k, screen) in screens.iter().enumerate() {
+            let (frame, size, bg) = agent_frame(probe.renderer(), screen, preset);
+            let next = agent_frame(probe.renderer(), AGENT_SCREENS[(i + 8) % AGENT_SCREENS.len()], preset).0;
+            let changed = with_rows_of(&frame, &next, probe.renderer().cell.1);
+            let plan = if k == 0 { Plan { events: true, hold: 1000, every: 50, ..Default::default() } } else { Plan { events: true, hold: 500, every: 50, built: 3, ..Default::default() } };
+            let steps = region_timeline(probe.renderer().cell, terms.as_deref().expect("a region"), &frame, size, bg, preset, live_lines, &plan);
+            let (on, mut wgpu, mut metal) = effect_pair(size, &compiled, terms.clone());
+            let name = format!("{} {screen}{}", p.id, if k == 0 { "" } else { " built" });
+            regions += match_effect_frames(&on, &mut wgpu, &mut metal, &frame, Some(&changed), &steps, &name, &mut near);
+            // A screenshot shows the effect as the screen does: one taken while an event's look
+            // runs full screen.
+            let st = steps.iter().find(|st| st.ms > 0 && st.both.with_last.is_none()).unwrap_or(steps.last().unwrap());
+            let fx = || Some(crate::gpu_window::FxFrame { uniforms: &st.u, region: None, same_scene: false, keep_output: false });
+            let shot = metal.capture(&frame, fx(), size.0, size.1).unwrap();
+            compare(&format!("{name} capture"), &wgpu.capture(&frame, fx(), size.0, size.1).unwrap(), &shot, size.0, &mut near);
+            assert_ne!(shot, metal.capture(&frame, None, size.0, size.1).unwrap(), "{name}: the effect changed nothing");
+        }
+    }
+    assert!(regions > 0, "no frame shaded only its region");
+    report_near(&near);
+}
+
+/// Effect frames that only animate make no Metal buffer, texture or staging chunk once the first
+/// frames sized them: the chain reuses its textures, uniform buffers and staging.
+#[test]
+fn steady_effect_frames_make_no_metal_objects() {
+    use crate::render::tests::{agent_frame, preset_of, region_timeline, Plan};
+    let p = crate::render_fx::discover(None).0.into_iter().find(|p| p.id == "lightning").expect("lightning");
+    let probe = metal_window(SIZE);
+    let preset = preset_of(&p);
+    let (frame, size, bg) = agent_frame(probe.renderer(), "codex", preset);
+    let terms = crate::render_fx::chain_region(&[&p.manifest]);
+    let mut metal = metal_window(size);
+    metal.set_effect(Some(p.compile().unwrap()), terms.clone()).unwrap();
+    let steps = region_timeline(probe.renderer().cell, terms.as_deref().unwrap(), &frame, size, bg, preset, false, &Plan { hold: 2000, ..Default::default() });
+    let made = |m: &MetalWindow| (m.chain().unwrap().objects_made(), m.staging_made(), m.text_objects_made());
+    let mut after = None;
+    for (n, st) in steps.iter().enumerate() {
+        let fx = crate::gpu_window::FxFrame { uniforms: &st.u, region: Some(&st.both), same_scene: !st.built, keep_output: st.both.own.is_some() };
+        metal.render(&frame, Some(fx), None).unwrap().kept.unwrap();
+        if n == 2 {
+            after = Some(made(&metal));
+        }
+    }
+    assert!(steps.len() > 30);
+    assert_eq!(made(&metal), after.unwrap(), "animation frames made Metal objects");
+    assert!(metal.chain().unwrap().uniform_writes() as usize >= steps.len(), "every frame wrote its clock");
+}
+
+/// User plugin folders, each (id, files as name and text), in a temp folder of their own.
+fn user_plugins(tag: &str, plugins: &[(&str, &[(&str, &str)])]) -> crate::test_tmp::TempDir {
+    let dir = crate::test_tmp::TempDir::new(tag);
+    for (id, files) in plugins {
+        std::fs::create_dir_all(dir.file(id)).unwrap();
+        for (name, text) in *files {
+            std::fs::write(dir.file(id).join(name), text).unwrap();
+        }
+    }
+    dir
+}
+
+/// `App::fx_sync` for one window: each wanted plugin compiled, the chain built from the ones
+/// that did, and every failure in the banner's words. Returns the errors, whether the effect runs
+/// and its region terms.
+fn sync_effects(win: &mut WindowGpu, wanted: &[&str], user: &std::path::Path) -> (Vec<String>, bool, crate::render_fx::RegionTerms) {
+    let (plugins, _) = crate::render_fx::discover(Some(user));
+    let (mut shaders, mut errors, mut manifests) = (Vec::new(), Vec::new(), Vec::new());
+    for id in wanted {
+        let Some(p) = plugins.iter().find(|p| p.id == *id) else {
+            errors.push(format!("{id}: no such effect"));
+            continue;
+        };
+        match p.compile_with(&[]) {
+            Ok(list) => {
+                shaders.extend(list);
+                manifests.push(&p.manifest);
+            }
+            Err(e) => errors.push(e),
+        }
+    }
+    let any = !shaders.is_empty();
+    let terms = if any { crate::render_fx::chain_region(&manifests) } else { None };
+    let active = match win.set_effect(Some(shaders), terms.clone()) {
+        Ok(()) => any,
+        Err(e) => {
+            errors.push(format!("the graphics card refused an effect: {e}"));
+            false
+        }
+    };
+    (errors, active, terms)
+}
+
+fn metal_of(win: &WindowGpu) -> &MetalWindow {
+    match win {
+        WindowGpu::Metal(m) => m,
+        WindowGpu::Wgpu(_) => unreachable!(),
+    }
+}
+
+const BROKEN_GLSL: &str = "// A user's effect with a mistake on line 7.
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    vec4 c = texture(iChannel0, uv);
+    float glow = 0.5 + 0.5 * sin(iTime);
+    c.rgb *= glow;
+    c.rgb += no_such_value;
+    fragColor = c;
+}
+";
+
+/// A user GLSL plugin with an error on line 7 reports the same text and line on both backends,
+/// and the window keeps drawing: alone it leaves no effect (the plain picture), beside a good
+/// plugin the good one still runs, equal on both.
+#[test]
+fn a_bad_plugin_reports_the_same_error_on_metal() {
+    let dir = user_plugins("bad", &[("broken", &[("plugin.toml", "name = \"Broken\"\nshaders = [\"broken.glsl\"]\nanimation = \"always\"\n"), ("broken.glsl", BROKEN_GLSL)])]);
+    let probe = metal_window(SIZE);
+    let (frame, size, bg) = crate::render::tests::agent_frame(probe.renderer(), "codex", [255, 128, 0]);
+    let (on, mut wgpu) = wgpu_window(size);
+    let mut metal = WindowGpu::Metal(metal_window(size));
+    let mut near = Vec::new();
+    for wanted in [&["broken"][..], &["broken", "aurora"][..]] {
+        let (a, a_active, terms) = sync_effects(&mut wgpu, wanted, &dir);
+        let (b, b_active, _) = sync_effects(&mut metal, wanted, &dir);
+        assert_eq!(a, b, "{wanted:?}: the errors differ");
+        assert_eq!(a.len(), 1, "{a:?}");
+        assert!(a[0].starts_with("Broken (broken.glsl):\nline 7: "), "{}", a[0]);
+        assert_eq!((a_active, b_active), (wanted.len() > 1, wanted.len() > 1));
+        let u = {
+            let mut u = crate::render_fx::Uniforms::default();
+            let mut clock = crate::render_fx::Clock::default();
+            let t0 = std::time::Instant::now();
+            clock.frame(&mut u, t0, size, frame.fx.as_ref().and_then(|f| f.cursor), true);
+            clock.frame(&mut u, t0 + std::time::Duration::from_millis(400), size, frame.fx.as_ref().and_then(|f| f.cursor), true);
+            u.background = [bg.r as f32 / 255.0, bg.g as f32 / 255.0, bg.b as f32 / 255.0];
+            u
+        };
+        // As the app: the effect frame only while one runs.
+        let fx = || a_active.then(|| crate::gpu_window::FxFrame { uniforms: &u, region: None, same_scene: false, keep_output: terms.is_some() });
+        wgpu.render(&frame, fx(), None).unwrap().kept.unwrap();
+        metal.render(&frame, fx(), None).unwrap().kept.unwrap();
+        let got = metal_pixels(metal_of(&metal));
+        compare(&format!("{wanted:?}"), &wgpu_pixels(&on, &wgpu), &got, size.0, &mut near);
+        let plain = metal.capture(&frame, None, size.0, size.1).unwrap();
+        assert_eq!(got == plain, !a_active, "{wanted:?}: an effect ran {}", a_active);
+    }
+    report_near(&near);
+}
+
+const USER_WGSL: &str = "
+struct Globals {
+    iResolution: vec3<f32>,
+    iTime: f32,
+}
+@group(0) @binding(0) var screen: texture_2d<f32>;
+@group(0) @binding(1) var<uniform> g: Globals;
+@group(0) @binding(2) var smp: sampler;
+
+@fragment
+fn fs_main(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    let uv = p.xy / g.iResolution.xy;
+    let c = textureSampleLevel(screen, smp, uv + vec2<f32>(0.003 * sin(g.iTime * 3.0 + uv.y * 40.0), 0.0), 0.0);
+    let wave = 0.5 + 0.5 * sin(g.iTime * 2.0 + uv.x * 12.0);
+    return vec4<f32>(mix(c.rgb, vec3<f32>(1.0) - c.rgb, 0.35 * wave), 0.25);
+}
+";
+
+/// A user WGSL plugin (its own uniform struct, the same bindings) runs on Metal as on wgpu, over
+/// the region timeline: every frame byte-equal, and the effect shows.
+#[test]
+fn a_user_wgsl_plugin_runs_on_metal() {
+    use crate::render::tests::{agent_frame, region_timeline, Plan};
+    let dir = user_plugins("wgsl", &[("ripple", &[("plugin.toml", "name = \"Ripple\"\nshaders = [\"ripple.wgsl\"]\nanimation = \"always\"\nregion = [\"cursor:3\"]\n"), ("ripple.wgsl", USER_WGSL)])]);
+    let probe = metal_window(SIZE);
+    let (frame, size, bg) = agent_frame(probe.renderer(), "hermes", [200, 80, 255]);
+    let (on, mut wgpu) = wgpu_window(size);
+    let mut metal = WindowGpu::Metal(metal_window(size));
+    let (a, active, terms) = sync_effects(&mut wgpu, &["ripple"], &dir);
+    let (b, ..) = sync_effects(&mut metal, &["ripple"], &dir);
+    assert!(a.is_empty() && b.is_empty() && active, "{a:?} {b:?}");
+    let steps = region_timeline(probe.renderer().cell, terms.as_deref().unwrap(), &frame, size, bg, [200, 80, 255], false, &Plan { events: true, hold: 300, every: 50, ..Default::default() });
+    let WindowGpu::Metal(mut m) = metal else { unreachable!() };
+    let mut near = Vec::new();
+    match_effect_frames(&on, &mut wgpu, &mut m, &frame, None, &steps, "ripple", &mut near);
+    assert_ne!(metal_pixels(&m), m.capture(&frame, None, size.0, size.1).unwrap(), "the effect changed nothing");
+    report_near(&near);
+}
+
+/// An effect texture that cannot be made mid-frame follows the allocation rule: the frame is
+/// skipped and reported as a lost device; once rebuilt (and the effect built again, as the app
+/// does) the window draws as wgpu does. A screenshot chain's texture failing is only an error.
+#[test]
+fn a_failed_effect_allocation_is_a_lost_device() {
+    use crate::render::tests::{agent_frame, preset_of, region_timeline, Plan};
+    let _one = loss_reports();
+    let _ = crate::gpu_pick::take_lost();
+    let p = crate::render_fx::discover(None).0.into_iter().find(|p| p.id == "neon").expect("neon");
+    let probe = metal_window(SIZE);
+    let preset = preset_of(&p);
+    let (frame, size, bg) = agent_frame(probe.renderer(), "opencode", preset);
+    let compiled = p.compile().unwrap();
+    let terms = crate::render_fx::chain_region(&[&p.manifest]);
+    let (on, mut wgpu, mut metal) = effect_pair(size, &compiled, terms.clone());
+    let steps = region_timeline(probe.renderer().cell, terms.as_deref().unwrap(), &frame, size, bg, preset, false, &Plan { hold: 400, ..Default::default() });
+    let st = &steps[0];
+    let fx = || Some(crate::gpu_window::FxFrame { uniforms: &st.u, region: Some(&st.both), same_scene: false, keep_output: st.both.own.is_some() });
+    // The frame's first texture is the chain's frame texture.
+    super::fail_textures(1);
+    assert_eq!(metal.render(&frame, fx(), None).unwrap_err(), crate::gpu_window::RenderError::Skip);
+    super::fail_textures(0);
+    let why = crate::gpu_pick::take_lost().expect("reported as a lost device");
+    assert!(why.starts_with("Metal: ") && why.contains("effect"), "{why}");
+    metal.rebuild(&crate::gpu_shared::GpuShared::Metal(test_device().clone()), None).unwrap();
+    assert!(metal.chain().is_none(), "a rebuilt window builds its effect again");
+    metal.set_effect(Some(compiled.clone()), terms.clone()).unwrap();
+    let mut near = Vec::new();
+    match_effect_frames(&on, &mut wgpu, &mut metal, &frame, None, &steps, "neon after a lost frame", &mut near);
+    // A screenshot's own chain: only an error, and the live chain draws on.
+    let mut fresh = metal_window(size);
+    fresh.set_effect(Some(compiled), terms).unwrap();
+    // The screenshot's own texture first, then the capture chain's frame texture.
+    super::fail_textures_after(1, 1);
+    let e = fresh.capture(&frame, fx(), size.0, size.1).expect_err("the capture chain's texture was made");
+    assert!(e.contains("effect texture"), "failed for another reason: {e}");
+    super::fail_textures(0);
+    assert!(crate::gpu_pick::take_lost().is_none(), "a failed screenshot was reported as a lost device");
+    assert!(fresh.stale().is_none());
+    let shot = fresh.capture(&frame, fx(), size.0, size.1).unwrap();
+    compare("capture after a failed one", &wgpu.capture(&frame, fx(), size.0, size.1).unwrap(), &shot, size.0, &mut near);
+    report_near(&near);
 }

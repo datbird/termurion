@@ -208,6 +208,12 @@ impl MetalDraw {
         Ok(())
     }
 
+    /// A staging chunk of at least `len` bytes, held by `cb` until it completes (the effect
+    /// chain's uniform writes).
+    pub(super) fn staging_chunk(&mut self, device: &ProtocolObject<dyn MTLDevice>, cb: &ProtocolObject<dyn MTLCommandBuffer>, len: usize) -> Result<Buffer, String> {
+        self.staging.take(device, cb, len)
+    }
+
     /// Staging chunks made so far (tests).
     #[cfg(test)]
     pub(super) fn staging_made(&self) -> u64 {

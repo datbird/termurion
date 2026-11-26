@@ -4,6 +4,8 @@
 pub mod shaders;
 
 #[cfg(target_os = "macos")]
+mod chain;
+#[cfg(target_os = "macos")]
 mod draw;
 #[cfg(target_os = "macos")]
 mod images;
@@ -206,33 +208,44 @@ pub(crate) fn new_texture(device: &ProtocolObject<dyn MTLDevice>, desc: &objc2_m
     device.newTextureWithDescriptor(desc)
 }
 
-// How many more allocations of this test thread fail: any kind, then textures only.
+// How many more allocations of this test thread fail: any kind; then textures only, after how
+// many textures are made first.
 #[cfg(all(test, target_os = "macos"))]
-thread_local!(static FAILS: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((0, 0)) });
+thread_local!(static FAILS: std::cell::Cell<(u32, u32, u32)> = const { std::cell::Cell::new((0, 0, 0)) });
 
 /// Makes the next `n` buffers or textures this thread asks for fail (tests).
 #[cfg(all(test, target_os = "macos"))]
 pub fn fail_allocations(n: u32) {
-    FAILS.with(|f| f.set((n, f.get().1)));
+    FAILS.with(|f| f.set((n, f.get().1, f.get().2)));
 }
 
 /// Makes the next `n` textures this thread asks for fail; buffers are still made (tests).
 #[cfg(all(test, target_os = "macos"))]
 pub fn fail_textures(n: u32) {
-    FAILS.with(|f| f.set((f.get().0, n)));
+    fail_textures_after(0, n);
+}
+
+/// `fail_textures`, once `made` more textures were made (tests).
+#[cfg(all(test, target_os = "macos"))]
+pub fn fail_textures_after(made: u32, n: u32) {
+    FAILS.with(|f| f.set((f.get().0, n, made)));
 }
 
 #[cfg(target_os = "macos")]
 fn fails_now(texture: bool) -> bool {
     #[cfg(test)]
     return FAILS.with(|f| {
-        let (any, textures) = f.get();
+        let (any, textures, skip) = f.get();
         if any > 0 {
-            f.set((any - 1, textures));
+            f.set((any - 1, textures, skip));
             return true;
         }
         if texture && textures > 0 {
-            f.set((any, textures - 1));
+            if skip > 0 {
+                f.set((any, textures, skip - 1));
+                return false;
+            }
+            f.set((any, textures - 1, 0));
             return true;
         }
         false

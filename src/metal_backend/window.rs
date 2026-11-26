@@ -9,6 +9,7 @@ use objc2::runtime::ProtocolObject;
 use objc2_metal::{MTLCommandBuffer, MTLDevice, MTLDrawable, MTLStorageMode, MTLTexture, MTLTextureDescriptor, MTLTextureUsage};
 use winit::window::Window;
 
+use super::chain::MetalChain;
 use super::draw::{raw_format, MetalDraw};
 use super::text::TextStart;
 use super::surface::{Next, Surface, FORMAT};
@@ -16,11 +17,9 @@ use super::{MetalShared, MAX_TEXTURE_SIDE};
 use crate::gpu_shared::GpuShared;
 use crate::gpu_window::{Acquire, Drawn, FxFrame, OverlayDraw, RenderError};
 use crate::render::Renderer;
-use crate::render_fx::{Compiled, RegionTerms, Uniforms};
+use crate::render_fx::{Compiled, FrameRegion, RegionTerms, Uniforms};
+use crate::render_fx_gpu::Shade;
 use crate::scene::Frame;
-
-/// What a window with an effect says until the Metal backend runs effects.
-pub const NO_EFFECTS_YET: &str = "the Metal renderer does not run effects yet";
 
 type Texture = Retained<ProtocolObject<dyn MTLTexture>>;
 
@@ -32,6 +31,12 @@ pub struct MetalWindow {
     scale: f64,
     renderer: Renderer,
     draw: MetalDraw,
+    /// The render plugin chain (`set_effect`); None when no effect runs.
+    chain: Option<MetalChain>,
+    /// The shaders and terms `chain` was built from, for `capture`'s own chain.
+    effect: Option<(Vec<Compiled>, RegionTerms)>,
+    /// `capture`'s chain, made on first use, so a capture leaves the live chain's state alone.
+    capture_chain: Option<MetalChain>,
     /// The device generation this window's command buffers report a loss for.
     generation: u64,
     /// Set when a Metal failure left the GPU side behind the CPU side: both start over first.
@@ -94,6 +99,9 @@ impl MetalWindow {
             scale,
             renderer,
             draw,
+            chain: None,
+            effect: None,
+            capture_chain: None,
             generation: crate::gpu_pick::current_generation(),
             stale: None,
             acquire: Acquire::default(),
@@ -108,7 +116,7 @@ impl MetalWindow {
     #[cfg(test)]
     pub fn offscreen(shared: &MetalShared, renderer: Renderer, size: (u32, u32)) -> MetalWindow {
         let mut w = MetalWindow::new(shared, None, size, 1.0, renderer, None).expect("the Metal pipelines");
-        w.offscreen = Some(target(&shared.device, size, false).expect("a texture"));
+        w.offscreen = Some(target(&shared.device, size, true).expect("a texture"));
         w
     }
 
@@ -172,25 +180,26 @@ impl MetalWindow {
         self.configure();
     }
 
-    pub fn render(&mut self, frame: &Frame, _fx: Option<FxFrame<'_>>, _overlay: Option<OverlayDraw<'_>>) -> Result<Drawn, RenderError> {
+    pub fn render(&mut self, frame: &Frame, fx: Option<FxFrame<'_>>, _overlay: Option<OverlayDraw<'_>>) -> Result<Drawn, RenderError> {
         // Each frame's command buffer, encoders and drawable go with the frame, not with AppKit's
         // event pool (or a test thread's, which never drains).
-        objc2::rc::autoreleasepool(|_| self.render_frame(frame))
+        objc2::rc::autoreleasepool(|_| self.render_frame(frame, fx))
     }
 
-    fn render_frame(&mut self, frame: &Frame) -> Result<Drawn, RenderError> {
+    fn render_frame(&mut self, frame: &Frame, fx: Option<FxFrame<'_>>) -> Result<Drawn, RenderError> {
         self.in_step().map_err(RenderError::Refused)?;
-        // No chain is ever built yet (`set_effect`), so an effect frame draws as a plain one, as a
-        // wgpu window without a chain does; the in-window menu bar is Linux only.
+        // An effect frame with no chain draws as a plain one, as on a wgpu window; the in-window
+        // menu bar is Linux only.
+        let fx = fx.filter(|_| self.chain.is_some());
         let wait_start = Instant::now();
         let Some(surface) = self.surface.as_ref() else {
             #[cfg(test)]
             if let Some(old) = self.offscreen.clone() {
                 // Made again when the size changed.
-                let t = if (old.width() as u32, old.height() as u32) == self.size { old } else { target(&self.shared.device, self.size, false).map_err(|e| self.metal_failed(e))? };
+                let t = if (old.width() as u32, old.height() as u32) == self.size { old } else { target(&self.shared.device, self.size, true).map_err(|e| self.metal_failed(e))? };
                 self.offscreen = Some(t.clone());
                 self.acquire = Acquire { wait: wait_start.elapsed(), dropped: false };
-                return self.draw_into(None, &t, frame);
+                return self.draw_into(None, &t, frame, fx);
             }
             self.acquire = Acquire { wait: wait_start.elapsed(), dropped: true };
             return Err(RenderError::Skip);
@@ -198,18 +207,21 @@ impl MetalWindow {
         let next = surface.next();
         self.acquire = Acquire { wait: wait_start.elapsed(), dropped: !matches!(next, Next::Drawable(..)) };
         match next {
-            Next::Drawable(drawable, texture) => self.draw_into(Some(drawable), &texture, frame),
+            Next::Drawable(drawable, texture) => self.draw_into(Some(drawable), &texture, frame, fx),
             Next::Occluded | Next::Timeout => Err(RenderError::Skip),
         }
     }
 
     /// Draws `frame` into `texture` and presents `drawable` with it.
-    fn draw_into(&mut self, drawable: Option<Retained<ProtocolObject<dyn objc2_quartz_core::CAMetalDrawable>>>, texture: &ProtocolObject<dyn MTLTexture>, frame: &Frame) -> Result<Drawn, RenderError> {
+    fn draw_into(&mut self, drawable: Option<Retained<ProtocolObject<dyn objc2_quartz_core::CAMetalDrawable>>>, texture: &ProtocolObject<dyn MTLTexture>, frame: &Frame, fx: Option<FxFrame<'_>>) -> Result<Drawn, RenderError> {
         let cb = self.shared.command_buffer(self.generation).map_err(RenderError::Refused)?;
         let draw_start = self.timing.then(Instant::now);
-        // A drawable has no non-sRGB view: the fade runs on its own view, as on a wgpu surface
-        // without view formats.
-        let kept = self.encode(&cb, frame, texture, None);
+        let kept = match fx {
+            Some(fx) => self.encode_fx(&cb, frame, fx, texture),
+            // A drawable has no non-sRGB view: the fade runs on its own view, as on a wgpu surface
+            // without view formats.
+            None => self.encode(&cb, frame, texture, None),
+        };
         let kept = match kept {
             Ok(()) => Ok(()),
             Err(Failed::Prepare(e)) => Err(e),
@@ -249,6 +261,53 @@ impl MetalWindow {
         })
     }
 
+    /// `Renderer::draw_fx_for` on Metal: the frame into the chain's frame texture unless the kept
+    /// picture is this frame's, then the passes into `out`. A Metal failure in the chain is a
+    /// Metal failure of the frame.
+    fn encode_fx(&mut self, cb: &ProtocolObject<dyn MTLCommandBuffer>, frame: &Frame, fx: FxFrame<'_>, out: &ProtocolObject<dyn MTLTexture>) -> Result<(), Failed> {
+        let mut chain = self.chain.take().expect("only called with a chain");
+        let drawn = self.encode_chain(cb, &mut chain, frame, fx.uniforms, fx.same_scene, fx.region, Some(fx.keep_output), out);
+        self.chain = Some(chain);
+        drawn
+    }
+
+    /// Runs `chain` over `frame` into `out`. `keep` is the app's word on whether a next frame may
+    /// shade only a region (None: a screenshot, which never tells the chain). A screenshot's own
+    /// chain failing is only an error: its textures are the screenshot's, and a scene it drew is
+    /// committed with the text changes.
+    #[allow(clippy::too_many_arguments)]
+    fn encode_chain(&mut self, cb: &ProtocolObject<dyn MTLCommandBuffer>, chain: &mut MetalChain, frame: &Frame, uniforms: &Uniforms, same_scene: bool, region: Option<&FrameRegion>, keep: Option<bool>, out: &ProtocolObject<dyn MTLTexture>) -> Result<(), Failed> {
+        if let Some(k) = keep {
+            chain.keep_output(k);
+        }
+        let size = (out.width() as u32, out.height() as u32);
+        let live = keep.is_some();
+        let failed = |w: &mut MetalWindow, chain: &mut MetalChain, e: String| {
+            chain.forget();
+            if !live {
+                return Failed::Prepare(e);
+            }
+            w.metal_failed(e);
+            Failed::Metal(w.stale.clone().unwrap_or_default())
+        };
+        let (view, raw) = match chain.frame_views(&self.shared.device, size) {
+            Ok(v) => v,
+            Err(e) => return Err(failed(self, chain, e)),
+        };
+        let animation_only = same_scene && chain.frame_kept();
+        if !animation_only {
+            // Not the window's picture until the draw succeeds.
+            chain.set_frame_drawn(false);
+            self.encode(cb, frame, &view, Some(&raw))?;
+            chain.set_frame_drawn(true);
+        }
+        let rects = region.and_then(|r| if animation_only { r.with_last.as_deref().map(Shade::Kept) } else { r.own.as_deref().map(Shade::Fresh) });
+        match chain.run(&self.shared.device, cb, &mut self.draw, uniforms, out, rects.unwrap_or(Shade::Full)) {
+            Ok(()) => Ok(()),
+            Err(e) => Err(failed(self, chain, e)),
+        }
+    }
+
     /// A Metal allocation failed: the window starts its text over before it draws again, and the
     /// failure goes to the app as a lost device (`gpu_pick::report_lost`), so recovery remakes
     /// the device a limited number of times and then shows the restart banner. The frame itself
@@ -265,6 +324,10 @@ impl MetalWindow {
     fn in_step(&mut self) -> Result<(), String> {
         if self.stale.is_none() {
             return Ok(());
+        }
+        // The chains' pictures and uniform buffers may be a failed frame's.
+        for c in self.chain.iter_mut().chain(self.capture_chain.iter_mut()) {
+            c.forget();
         }
         self.draw = fresh_draw(&self.shared.device, &mut self.renderer)?;
         self.stale = None;
@@ -285,11 +348,12 @@ impl MetalWindow {
     }
 
     /// Draws `frame` into an offscreen texture of `w` by `h` and reads it back as RGBA.
-    pub fn capture(&mut self, frame: &Frame, _fx: Option<FxFrame<'_>>, w: u32, h: u32) -> Result<Vec<u8>, String> {
-        objc2::rc::autoreleasepool(|_| self.capture_frame(frame, w, h))
+    pub fn capture(&mut self, frame: &Frame, fx: Option<FxFrame<'_>>, w: u32, h: u32) -> Result<Vec<u8>, String> {
+        let fx = fx.filter(|_| self.chain.is_some()).map(|f| f.uniforms);
+        objc2::rc::autoreleasepool(|_| self.capture_frame(frame, fx, w, h))
     }
 
-    fn capture_frame(&mut self, frame: &Frame, w: u32, h: u32) -> Result<Vec<u8>, String> {
+    fn capture_frame(&mut self, frame: &Frame, fx: Option<&Uniforms>, w: u32, h: u32) -> Result<Vec<u8>, String> {
         self.in_step()?;
         let max = MAX_TEXTURE_SIDE;
         if w == 0 || h == 0 || w > max || h > max {
@@ -301,22 +365,60 @@ impl MetalWindow {
         let tex = target(&self.shared.device, (w, h), true)?;
         let raw = tex.newTextureViewWithPixelFormat(raw_format(FORMAT)).ok_or("no Metal texture view")?;
         let cb = self.shared.command_buffer(self.generation)?;
-        let drawn = self.encode(&cb, frame, &tex, Some(&raw));
+        let drawn = match fx {
+            Some(u) => self.capture_fx(&cb, frame, u, &tex),
+            None => self.encode(&cb, frame, &tex, Some(&raw)),
+        };
         cb.commit();
         drawn.map_err(|(Failed::Prepare(e) | Failed::Metal(e))| e)?;
         super::readback::read_rgba(&self.shared.queue, &tex, w, h)
     }
 
-    pub fn set_effect(&mut self, compiled: Option<Vec<Compiled>>, _terms: RegionTerms) -> Result<(), String> {
-        match compiled {
-            Some(shaders) if !shaders.is_empty() => Err(NO_EFFECTS_YET.to_string()),
-            _ => Ok(()),
-        }
+    /// The screenshot through the effects, on its own chain (`Renderer::draw_offscreen_fx`).
+    fn capture_fx(&mut self, cb: &ProtocolObject<dyn MTLCommandBuffer>, frame: &Frame, u: &Uniforms, tex: &ProtocolObject<dyn MTLTexture>) -> Result<(), Failed> {
+        let mut chain = match self.capture_chain.take() {
+            Some(c) => c,
+            None => {
+                let (shaders, terms) = self.effect.clone().expect("kept with the chain");
+                self.make_chain(shaders, terms).map_err(Failed::Prepare)?
+            }
+        };
+        chain.unstage();
+        let drawn = self.encode_chain(cb, &mut chain, frame, u, false, None, None, tex);
+        // The screenshot's picture now fills the frame texture, not the window's.
+        chain.set_frame_drawn(false);
+        self.capture_chain = Some(chain);
+        drawn
     }
 
-    /// With no chain, never.
-    pub fn skip_if_still(&mut self, _u: &Uniforms, _eligible: bool) -> bool {
-        false
+    /// A chain as the window runs it: opaque, on the window's device.
+    fn make_chain(&self, shaders: Vec<Compiled>, terms: RegionTerms) -> Result<MetalChain, String> {
+        let mut c = MetalChain::new(&self.shared.device, FORMAT, shaders, false)?;
+        c.set_region_terms(terms);
+        Ok(c)
+    }
+
+    /// Builds the effect chain from `compiled` (None: no effect), or says why Metal refused it.
+    pub fn set_effect(&mut self, compiled: Option<Vec<Compiled>>, terms: RegionTerms) -> Result<(), String> {
+        self.chain = None;
+        self.effect = None;
+        self.capture_chain = None;
+        let Some(shaders) = compiled.filter(|s| !s.is_empty()) else { return Ok(()) };
+        self.chain = Some(self.make_chain(shaders.clone(), terms.clone())?);
+        self.effect = Some((shaders, terms));
+        Ok(())
+    }
+
+    /// `Chain::skip_if_still` on the window's chain; false with none.
+    pub fn skip_if_still(&mut self, u: &Uniforms, eligible: bool) -> bool {
+        let size = self.size;
+        self.chain.as_mut().is_some_and(|c| c.skip_if_still(u, size, eligible))
+    }
+
+    /// The window's chain (tests).
+    #[cfg(test)]
+    pub(crate) fn chain(&self) -> Option<&MetalChain> {
+        self.chain.as_ref()
     }
 
     /// Moves the window onto a new Metal device after a loss: new pipelines, buffers and atlas
@@ -326,6 +428,10 @@ impl MetalWindow {
         let GpuShared::Metal(m) = shared else { return Err("a Metal window needs a Metal device".to_string()) };
         self.shared = m.clone();
         self.generation = crate::gpu_pick::current_generation();
+        // As on wgpu: the effects are built again by the app (`fx_sync`) for the new device.
+        self.chain = None;
+        self.effect = None;
+        self.capture_chain = None;
         self.configure();
         self.stale = Some("a new Metal device".to_string());
         self.in_step()

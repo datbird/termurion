@@ -4107,7 +4107,7 @@ pub(crate) mod tests {
         (y0..y1).flat_map(|y| (x0..x1).map(move |x| (y * w as usize + x) * 4)).filter(|&i| (0..3).any(|k| (lit[i + k] as i32 - plain[i + k] as i32).abs() > 30)).count()
     }
 
-    fn preset_of(p: &crate::render_fx::Plugin) -> [u8; 3] {
+    pub(crate) fn preset_of(p: &crate::render_fx::Plugin) -> [u8; 3] {
         let c = crate::render_fx::hex_color(p.manifest.cursor_color.as_deref().unwrap()).unwrap();
         [(c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8]
     }
@@ -4575,26 +4575,26 @@ pub(crate) mod tests {
 
     /// How `region_shots` runs.
     #[derive(Clone, Default)]
-    struct Plan {
+    pub(crate) struct Plan {
         /// The events (`event_times`); without them the cursor stays still (idle).
-        events: bool,
+        pub(crate) events: bool,
         /// How long the cursor stays still after the last event (or from the start).
-        hold: u64,
+        pub(crate) hold: u64,
         /// Region terms in place of the plugin's.
-        terms: Option<Vec<crate::render_fx::RegionTerm>>,
+        pub(crate) terms: Option<Vec<crate::render_fx::RegionTerm>>,
         /// An underline cursor (the shaders' cellH is then twice the cursor width).
-        underline: bool,
+        pub(crate) underline: bool,
         /// The cursor on a wide character (two cells wide).
-        wide: bool,
+        pub(crate) wide: bool,
         /// Region frames are compared every this many ms (and always the first after a full one).
-        every: u64,
+        pub(crate) every: u64,
         /// Every this many frames one is drawn anew (0: only the first), its rows switched
         /// between the frame's own and `changed`'s.
-        built: u64,
+        pub(crate) built: u64,
         /// The other rows a built frame draws.
-        changed: Option<Frame>,
+        pub(crate) changed: Option<Frame>,
         /// A second effect after the plugin's: a chain of two passes.
-        then: Option<crate::render_fx::Plugin>,
+        pub(crate) then: Option<crate::render_fx::Plugin>,
     }
 
     /// The longest `full_after_change` of `terms`, in ms.
@@ -4617,17 +4617,28 @@ pub(crate) mod tests {
     /// jumps 20 rows, Enter is sent and five keys are typed (`event_times`), then it holds still
     /// for `plan.hold`. Region frames are compared with the full pass for the same uniforms; a
     /// full frame that no compared frame follows is not drawn (it depends on no earlier frame).
+    /// One frame of the region tests' timeline (`region_timeline`).
+    pub(crate) struct RegionStep {
+        pub ms: u64,
+        pub u: crate::render_fx::Uniforms,
+        /// Last frame's cursor.
+        pub last_cursor: [f32; 4],
+        /// `frame_rects` of this frame.
+        pub both: crate::render_fx::FrameRegion,
+        /// Drawn anew (`Plan::built`); frame 0 always is.
+        pub built: bool,
+        /// A built frame after the first: the scene switches to the other rows.
+        pub switch: bool,
+    }
+
+    /// The region tests' timeline over `frame`, a frame every 50 ms, as uniforms and regions: with
+    /// `plan.events` the cursor moves one cell, jumps 20 rows, Enter is sent and five keys are
+    /// typed (`event_times`), then it holds still for `plan.hold`. Every `plan.built` frames one
+    /// is drawn anew over the other rows.
     #[allow(clippy::too_many_arguments)]
-    fn region_shots(r: &mut Renderer, p: &crate::render_fx::Plugin, frame: &Frame, size: (u32, u32), bg: crate::palette::Rgb, preset: [u8; 3], kind: ChainKind, plan: &Plan) -> Vec<RegionShot> {
+    pub(crate) fn region_timeline(cell: (f32, f32), terms: &[crate::render_fx::RegionTerm], frame: &Frame, size: (u32, u32), bg: crate::palette::Rgb, preset: [u8; 3], live_lines: bool, plan: &Plan) -> Vec<RegionStep> {
         use crate::render_fx::{Clock, Signals, Uniforms};
         use std::time::{Duration, Instant};
-        let (device, queue) = device();
-        let manifests: Vec<_> = std::iter::once(p).chain(&plan.then).map(|p| &p.manifest).collect();
-        let terms = plan.terms.clone().or_else(|| crate::render_fx::chain_region(&manifests)).expect("a region");
-        let compiled = || std::iter::once(p).chain(&plan.then).flat_map(|p| compiled_for(p, kind)).collect::<Vec<_>>();
-        let mut region = chain_of(&device, compiled(), kind, Some(terms.clone()));
-        let mut full = chain_of(&device, compiled(), kind, None);
-        let (win_r, win_f) = (Window::new(&device, size), Window::new(&device, size));
         let (mut clock, mut u, mut sig) = (Clock::default(), Uniforms::default(), Signals::default());
         u.background = [bg.r as f32 / 255.0, bg.g as f32 / 255.0, bg.b as f32 / 255.0];
         let fx = frame.fx.clone().unwrap();
@@ -4635,7 +4646,6 @@ pub(crate) mod tests {
         u.input_box = fx.input_box.map_or([0.0; 4], |b| b.uniform());
         u.input_box_x = fx.input_box.map_or([0.0; 4], |b| b.uniform_x());
         u.prompt_mark = fx.uniform_mark();
-        let cell = r.cell;
         let (cw, ch) = cell;
         let mut base = fx.cursor.expect("a cursor");
         if plan.wide {
@@ -4648,23 +4658,10 @@ pub(crate) mod tests {
         let rows = size.1 as f32 / ch;
         // 20 rows toward the side with room.
         let jump = if base.rect[1] / ch > rows / 2.0 { -20.0 * ch } else { 20.0 * ch };
-        let [step, jumped, enter, typing] = event_times(full_window(&terms));
+        let [step, jumped, enter, typing] = event_times(full_window(terms));
         let until = if plan.events { typing + 200 + plan.hold } else { plan.hold };
         let t0 = Instant::now();
         let mut out = Vec::new();
-        // The last frame not drawn yet (a full one), and the scene each chain drew last.
-        let mut pending: Option<(Uniforms, crate::render_fx::FrameRegion)> = None;
-        let (mut drawn, mut drawn_full): (Option<&Frame>, Option<&Frame>) = (None, None);
-        let mut last_compared: Option<u64> = None;
-        // The rows switch on every built frame.
-        let changed = plan.changed.as_ref().map(|c| with_rows_of(frame, c, cell.1));
-        let other = |f: &Frame| if std::ptr::eq(f, frame) { changed.as_ref().unwrap_or(frame) } else { frame };
-        let same = |a: Option<&Frame>, b: &Frame| a.is_some_and(|a| std::ptr::eq(a, b));
-        let mut showing = frame;
-        let draw = |r: &mut Renderer, region: &mut crate::render_fx_gpu::Chain, scene: &Frame, u: &Uniforms, rects: &crate::render_fx::FrameRegion, same: bool| {
-            region.keep_output(rects.own.is_some());
-            r.draw_fx_for(scene, region, u, win_r.out(kind), size.0, size.1, same, Some(rects)).unwrap();
-        };
         for ms in (0..=until).step_by(50) {
             let now = t0 + Duration::from_millis(ms);
             if plan.events && ms == enter {
@@ -4680,14 +4677,51 @@ pub(crate) mod tests {
             c.color = [cr as f32 / 255.0, cg as f32 / 255.0, cb as f32 / 255.0, 1.0];
             let last = u.clone();
             clock.frame(&mut u, now, size, Some(c), true);
-            let both = crate::render_fx::frame_rects(&terms, &u, &last, cell, kind.live_lines, size);
+            let both = crate::render_fx::frame_rects(terms, &u, &last, cell, live_lines, size);
             let built = ms == 0 || (plan.built > 0 && (ms / 50) % plan.built == plan.built - 1);
+            out.push(RegionStep { ms, u: u.clone(), last_cursor: last.current_cursor, both, built, switch: built && ms > 0 });
+        }
+        out
+    }
+
+    /// The region tests' timeline (`region_timeline`) drawn: frame 0 is drawn anew, every later
+    /// frame is animation-only (`draw_fx_for` with the scene kept and `frame_region`, the chain
+    /// told `keep_output` as the app does), except those `plan.built` draws anew with their own
+    /// region over new rows. Region frames are compared with the full pass for the same uniforms;
+    /// a full frame that no compared frame follows is not drawn (it depends on no earlier frame).
+    #[allow(clippy::too_many_arguments)]
+    fn region_shots(r: &mut Renderer, p: &crate::render_fx::Plugin, frame: &Frame, size: (u32, u32), bg: crate::palette::Rgb, preset: [u8; 3], kind: ChainKind, plan: &Plan) -> Vec<RegionShot> {
+        use crate::render_fx::Uniforms;
+        let (device, queue) = device();
+        let manifests: Vec<_> = std::iter::once(p).chain(&plan.then).map(|p| &p.manifest).collect();
+        let terms = plan.terms.clone().or_else(|| crate::render_fx::chain_region(&manifests)).expect("a region");
+        let compiled = || std::iter::once(p).chain(&plan.then).flat_map(|p| compiled_for(p, kind)).collect::<Vec<_>>();
+        let mut region = chain_of(&device, compiled(), kind, Some(terms.clone()));
+        let mut full = chain_of(&device, compiled(), kind, None);
+        let (win_r, win_f) = (Window::new(&device, size), Window::new(&device, size));
+        let cell = r.cell;
+        let mut out = Vec::new();
+        // The last frame not drawn yet (a full one), and the scene each chain drew last.
+        let mut pending: Option<(Uniforms, crate::render_fx::FrameRegion)> = None;
+        let (mut drawn, mut drawn_full): (Option<&Frame>, Option<&Frame>) = (None, None);
+        let mut last_compared: Option<u64> = None;
+        // The rows switch on every built frame.
+        let changed = plan.changed.as_ref().map(|c| with_rows_of(frame, c, cell.1));
+        let other = |f: &Frame| if std::ptr::eq(f, frame) { changed.as_ref().unwrap_or(frame) } else { frame };
+        let same = |a: Option<&Frame>, b: &Frame| a.is_some_and(|a| std::ptr::eq(a, b));
+        let mut showing = frame;
+        let draw = |r: &mut Renderer, region: &mut crate::render_fx_gpu::Chain, scene: &Frame, u: &Uniforms, rects: &crate::render_fx::FrameRegion, same: bool| {
+            region.keep_output(rects.own.is_some());
+            r.draw_fx_for(scene, region, u, win_r.out(kind), size.0, size.1, same, Some(rects)).unwrap();
+        };
+        for st in region_timeline(cell, &terms, frame, size, bg, preset, kind.live_lines, plan) {
+            let (ms, u, both, built) = (st.ms, &st.u, &st.both, st.built);
             let rects = if built { both.own.clone() } else { both.with_last.clone() };
             if rects.is_none() && ms > 0 {
                 // Drawn full, its own region still telling the chain whether the next may build on it.
                 pending = Some((u.clone(), crate::render_fx::FrameRegion { own: both.own.clone(), with_last: None }));
                 last_compared = None;
-                if built {
+                if st.switch {
                     showing = other(showing);
                 }
                 continue;
@@ -4697,17 +4731,17 @@ pub(crate) mod tests {
                 draw(r, &mut region, showing, &before, &rects, same(drawn, showing));
                 drawn = Some(showing);
             }
-            if built && ms > 0 {
+            if st.switch {
                 showing = other(showing);
             }
-            draw(r, &mut region, showing, &u, &both, !built && same(drawn, showing));
+            draw(r, &mut region, showing, u, both, !built && same(drawn, showing));
             drawn = Some(showing);
             // The first region frame after full ones, then one every `plan.every` ms.
             if last_compared.is_none_or(|t| ms - t >= plan.every.max(50)) {
                 last_compared = Some(ms);
-                r.draw_fx_for(showing, &mut full, &u, win_f.out(kind), size.0, size.1, same(drawn_full, showing), None).unwrap();
+                r.draw_fx_for(showing, &mut full, u, win_f.out(kind), size.0, size.1, same(drawn_full, showing), None).unwrap();
                 drawn_full = Some(showing);
-                out.push(RegionShot { ms, region: win_r.read(&device, &queue), full: win_f.read(&device, &queue), rects, region_path: region.shaded_region(), built, cursor: u.current_cursor, last_cursor: last.current_cursor });
+                out.push(RegionShot { ms, region: win_r.read(&device, &queue), full: win_f.read(&device, &queue), rects, region_path: region.shaded_region(), built, cursor: u.current_cursor, last_cursor: st.last_cursor });
             }
         }
         out
@@ -4716,7 +4750,7 @@ pub(crate) mod tests {
     /// `frame` with `other`'s text rows, except around the cursor and the input box: there the
     /// shaders look for the box lines and the prompt mark themselves, and what they find must
     /// stay what the uniforms (made from `frame`) say. The box lines are `frame`'s own.
-    fn with_rows_of(frame: &Frame, other: &Frame, ch: f32) -> Frame {
+    pub(crate) fn with_rows_of(frame: &Frame, other: &Frame, ch: f32) -> Frame {
         let fx = frame.fx.as_ref().expect("an effect pane");
         let c = fx.cursor.expect("a cursor").rect;
         // A wrapped prompt's mark is looked for up to 10.5 rows above the cursor.
@@ -4755,7 +4789,7 @@ pub(crate) mod tests {
     /// `shell-rules`: a shell with full-width rules around the cursor that are no box lines to
     /// Termurion (a junction, a title) and a `>` prompt its profile does not list, the cursor far
     /// right of it. The shaders find both themselves.
-    const AGENT_SCREENS: [&str; 15] = ["agy", "codex", "codex-after", "hermes", "hermes-after", "opencode", "opencode-after", "tmux-other-has-box", "tmux-split-band", "tmux-split-left", "tmux-split-right", "tmux-stacked", "tmux-three", "tmux-title-row", "shell-rules"];
+    pub(crate) const AGENT_SCREENS: [&str; 15] = ["agy", "codex", "codex-after", "hermes", "hermes-after", "opencode", "opencode-after", "tmux-other-has-box", "tmux-split-band", "tmux-split-left", "tmux-split-right", "tmux-stacked", "tmux-three", "tmux-title-row", "shell-rules"];
 
     /// Runs `check` for every shipped effect with a region (or only TERMURION_REGION_ONLY), one
     /// thread each: lavapipe runs one submission on few cores. Returns the shots and the misses.

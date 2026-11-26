@@ -239,6 +239,12 @@ impl WgpuWindow {
         self.offscreen.as_ref().expect("an offscreen window")
     }
 
+    /// The window's chain (tests).
+    #[cfg(test)]
+    pub fn chain(&self) -> Option<&Chain> {
+        self.chain.as_ref()
+    }
+
     fn on(&self) -> &GpuHandles {
         self.alpha.as_ref().unwrap_or(&self.primary)
     }

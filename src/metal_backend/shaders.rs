@@ -183,6 +183,31 @@ pub fn to_msl_with(module: &naga::Module, info: &naga::valid::ModuleInfo, stage:
     Ok((src, name))
 }
 
+/// The effect passes' bind group 0 (`render_fx_gpu::Chain::new`): the input texture, the uniform
+/// block and the sampler, all seen by the fragment stage only.
+pub const EFFECT: [Entry; 3] = [Entry::new(0, Kind::Texture, false, true), Entry::new(1, Kind::Buffer, false, true), Entry::new(2, Kind::Sampler, false, true)];
+
+/// The copy passes' bind group 0: one texture read by the fragment stage.
+pub const COPY_INPUT: [Entry; 1] = [Entry::new(0, Kind::Texture, false, true)];
+
+/// An effect's fragment shader as MSL over the effect layout, as wgpu-hal translates it for the
+/// chain's pipeline, and the entry point's MSL name.
+pub fn effect_to_msl(compiled: &crate::render_fx::Compiled) -> Result<(String, String), String> {
+    to_msl_with(&compiled.module, &compiled.info, ShaderStage::Fragment, &compiled.entry, stage_resources(&[&EFFECT], ShaderStage::Fragment), Vec::new())
+}
+
+/// The full-screen triangle every effect and copy pass draws (`render_fx_gpu::VERTEX`), as MSL.
+pub fn effect_vertex_msl() -> Result<(String, String), String> {
+    let (module, info) = parse_wgsl(crate::render_fx_gpu::VERTEX)?;
+    to_msl_with(&module, &info, ShaderStage::Vertex, "vs_main", stage_resources(&[&EFFECT], ShaderStage::Vertex), Vec::new())
+}
+
+/// The fill copy (`render_fx_gpu::COPY`) as MSL over its one-texture layout.
+pub fn copy_msl() -> Result<(String, String), String> {
+    let (module, info) = parse_wgsl(crate::render_fx_gpu::COPY)?;
+    to_msl_with(&module, &info, ShaderStage::Fragment, "fs_main", stage_resources(&[&COPY_INPUT], ShaderStage::Fragment), Vec::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,5 +236,50 @@ mod tests {
         assert!(matches!(fs.resources[&naga::ResourceBinding { group: 1, binding: 1 }].sampler, Some(msl::BindSamplerTarget::Resource(0))));
         assert_eq!(fs.sizes_buffer, None);
         assert_eq!(vertex_buffer_slot(0), 30);
+    }
+
+    /// Every built-in effect, with every combination of the shared switches, reaches MSL over the
+    /// chain's layout, as do the triangle and the copy the passes share.
+    #[test]
+    fn every_plugin_translates_to_msl() {
+        let consts: Vec<&str> = crate::render_fx::SWITCHES.iter().filter_map(|(_, c, ..)| *c).collect();
+        let plugins: Vec<_> = crate::render_fx::discover(None).0.into_iter().filter(|p| p.builtin()).collect();
+        assert_eq!(plugins.len(), 13, "the shipped plugins");
+        for (name, msl) in [("vertex", effect_vertex_msl()), ("copy", copy_msl())] {
+            let (src, _) = msl.unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(src.contains("#include <metal_stdlib>"), "{name}");
+        }
+        let combos = 1u32 << consts.len();
+        let failures: Vec<String> = std::thread::scope(|scope| {
+            let runs: Vec<_> = plugins
+                .iter()
+                .map(|p| {
+                    let consts = &consts;
+                    scope.spawn(move || {
+                        let mut bad = Vec::new();
+                        for bits in 0..combos {
+                            let switches: Vec<(&str, bool)> = consts.iter().enumerate().map(|(i, c)| (*c, bits & (1 << i) != 0)).collect();
+                            let compiled = match p.compile_with(&switches) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    bad.push(format!("{} {switches:?}: {e}", p.id));
+                                    continue;
+                                }
+                            };
+                            for c in &compiled {
+                                match effect_to_msl(c) {
+                                    Ok((src, entry)) if src.contains(&entry) => {}
+                                    Ok((_, entry)) => bad.push(format!("{} {switches:?}: no {entry} in the MSL", p.id)),
+                                    Err(e) => bad.push(format!("{} {switches:?}: {e}", p.id)),
+                                }
+                            }
+                        }
+                        bad
+                    })
+                })
+                .collect();
+            runs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        });
+        assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
     }
 }

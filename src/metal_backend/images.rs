@@ -36,7 +36,7 @@ pub(super) struct ImagePipeline {
 
 /// wgpu's default sampler with linear filters (mip filter Nearest, LOD 0 to 32, anisotropy 1),
 /// as wgpu-hal `create_sampler` builds it.
-fn sampler(device: &ProtocolObject<dyn MTLDevice>, repeat: bool) -> Result<Retained<ProtocolObject<dyn MTLSamplerState>>, String> {
+pub(super) fn sampler(device: &ProtocolObject<dyn MTLDevice>, repeat: bool) -> Result<Retained<ProtocolObject<dyn MTLSamplerState>>, String> {
     let d = MTLSamplerDescriptor::new();
     d.setMinFilter(MTLSamplerMinMagFilter::Linear);
     d.setMagFilter(MTLSamplerMinMagFilter::Linear);

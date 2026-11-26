@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use crate::render_fx::{Compiled, Layout, PxRect, RegionTerm, Uniforms, uniform_layout};
 
 /// A full-screen triangle; the fragment shaders read `@builtin(position)` (gl_FragCoord).
-const VERTEX: &str = "
+pub(crate) const VERTEX: &str = "
 @vertex
 fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     let x = f32((i << 1u) & 2u) * 2.0 - 1.0;
@@ -33,7 +33,7 @@ fn fs_main(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
 ";
 
 /// The kept output into the window, byte for byte: no filtering and no color conversion.
-const COPY: &str = "
+pub(crate) const COPY: &str = "
 @group(0) @binding(0) var src: texture_2d<f32>;
 @fragment
 fn fs_main(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
@@ -734,7 +734,7 @@ fn ready<F: std::future::Future<Output = Option<wgpu::Error>>>(device: &wgpu::De
 
 /// The bytes of a changed uniform buffer to upload: just the clock span when everything outside
 /// it equals what the buffer holds, else all of it.
-fn upload_range(span: &std::ops::Range<usize>, packed: &[u8], last: &[u8]) -> std::ops::Range<usize> {
+pub(crate) fn upload_range(span: &std::ops::Range<usize>, packed: &[u8], last: &[u8]) -> std::ops::Range<usize> {
     let only_clock = packed.len() == last.len() && span.end <= packed.len() && packed[..span.start] == last[..span.start] && packed[span.end..] == last[span.end..];
     if only_clock { span.clone() } else { 0..packed.len() }
 }
