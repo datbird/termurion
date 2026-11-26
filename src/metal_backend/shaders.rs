@@ -176,9 +176,9 @@ pub fn to_msl(module: &naga::Module, info: &naga::valid::ModuleInfo, stage: Shad
 /// One entry point as MSL with the given slots and vertex buffers, and the name the entry point
 /// has in the MSL.
 pub fn to_msl_with(module: &naga::Module, info: &naga::valid::ModuleInfo, stage: ShaderStage, entry: &str, resources: msl::EntryPointResources, vertex_buffers: Vec<msl::VertexBufferMapping>) -> Result<(String, String), String> {
-    let (module, info) = naga::back::pipeline_constants::process_overrides(module, info, Some((stage, entry)), &Default::default()).map_err(|e| format!("MSL: {e:?}"))?;
+    let (module, info) = naga::back::pipeline_constants::process_overrides(module, info, Some((stage, entry)), &Default::default()).map_err(|e| format!("MSL: {e}"))?;
     let options = msl_options(lang_version(), entry, resources);
-    let (src, translated) = msl::write_string(&module, &info, &options, &pipeline_options(stage, entry, vertex_buffers)).map_err(|e| format!("MSL: {e:?}"))?;
+    let (src, translated) = msl::write_string(&module, &info, &options, &pipeline_options(stage, entry, vertex_buffers)).map_err(|e| format!("MSL: {e}"))?;
     let name = translated.entry_point_names.first().cloned().ok_or("MSL: no entry point")?.map_err(|e| format!("MSL: {e}"))?;
     Ok((src, name))
 }

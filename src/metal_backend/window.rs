@@ -363,11 +363,13 @@ impl MetalWindow {
         // Nothing has changed yet: a screenshot too big for the memory left is only an error, not
         // a lost device.
         let tex = target(&self.shared.device, (w, h), true)?;
-        let raw = tex.newTextureViewWithPixelFormat(raw_format(FORMAT)).ok_or("no Metal texture view")?;
         let cb = self.shared.command_buffer(self.generation)?;
         let drawn = match fx {
             Some(u) => self.capture_fx(&cb, frame, u, &tex),
-            None => self.encode(&cb, frame, &tex, Some(&raw)),
+            None => {
+                let raw = tex.newTextureViewWithPixelFormat(raw_format(FORMAT)).ok_or("no Metal texture view")?;
+                self.encode(&cb, frame, &tex, Some(&raw))
+            }
         };
         cb.commit();
         drawn.map_err(|(Failed::Prepare(e) | Failed::Metal(e))| e)?;

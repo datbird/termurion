@@ -662,8 +662,9 @@ fn metal_effects_match_wgpu_for_every_plugin() {
     report_near(&near);
 }
 
-/// Effect frames that only animate make no Metal buffer, texture or staging chunk once the first
-/// frames sized them: the chain reuses its textures, uniform buffers and staging.
+/// Effect frames that only animate make no Metal buffer, texture, view or staging chunk once the
+/// first frames sized them: the chain reuses its textures, uniform buffers, drawable views and
+/// staging, with region terms and without.
 #[test]
 fn steady_effect_frames_make_no_metal_objects() {
     use crate::render::tests::{agent_frame, preset_of, region_timeline, Plan};
@@ -687,6 +688,19 @@ fn steady_effect_frames_make_no_metal_objects() {
     assert!(steps.len() > 30);
     assert_eq!(made(&metal), after.unwrap(), "animation frames made Metal objects");
     assert!(metal.chain().unwrap().uniform_writes() as usize >= steps.len(), "every frame wrote its clock");
+    // A plugin with no region terms writes the drawable directly every frame, through the
+    // drawable's own non-sRGB view, made once per drawable.
+    let mut plain = metal_window(size);
+    plain.set_effect(Some(vec![crate::render_fx::compile_named("ripple.wgsl", USER_WGSL).unwrap()]), None).unwrap();
+    for (n, st) in steps.iter().enumerate() {
+        let fx = crate::gpu_window::FxFrame { uniforms: &st.u, region: None, same_scene: n > 0, keep_output: false };
+        plain.render(&frame, Some(fx), None).unwrap().kept.unwrap();
+        if n == 2 {
+            after = Some(made(&plain));
+        }
+    }
+    assert_eq!(made(&plain), after.unwrap(), "regionless frames made Metal objects or views");
+    assert!(!plain.chain().unwrap().shaded_region());
 }
 
 /// User plugin folders, each (id, files as name and text), in a temp folder of their own.
@@ -701,35 +715,13 @@ fn user_plugins(tag: &str, plugins: &[(&str, &[(&str, &str)])]) -> crate::test_t
     dir
 }
 
-/// `App::fx_sync` for one window: each wanted plugin compiled, the chain built from the ones
-/// that did, and every failure in the banner's words. Returns the errors, whether the effect runs
-/// and its region terms.
+/// `App::fx_sync`'s build for one window (`gpu_window::build_effects`), no switches set: the
+/// errors, whether the effect runs and its region terms.
 fn sync_effects(win: &mut WindowGpu, wanted: &[&str], user: &std::path::Path) -> (Vec<String>, bool, crate::render_fx::RegionTerms) {
     let (plugins, _) = crate::render_fx::discover(Some(user));
-    let (mut shaders, mut errors, mut manifests) = (Vec::new(), Vec::new(), Vec::new());
-    for id in wanted {
-        let Some(p) = plugins.iter().find(|p| p.id == *id) else {
-            errors.push(format!("{id}: no such effect"));
-            continue;
-        };
-        match p.compile_with(&[]) {
-            Ok(list) => {
-                shaders.extend(list);
-                manifests.push(&p.manifest);
-            }
-            Err(e) => errors.push(e),
-        }
-    }
-    let any = !shaders.is_empty();
-    let terms = if any { crate::render_fx::chain_region(&manifests) } else { None };
-    let active = match win.set_effect(Some(shaders), terms.clone()) {
-        Ok(()) => any,
-        Err(e) => {
-            errors.push(format!("the graphics card refused an effect: {e}"));
-            false
-        }
-    };
-    (errors, active, terms)
+    let ids: Vec<String> = wanted.iter().map(|s| s.to_string()).collect();
+    let built = crate::gpu_window::build_effects(win, &plugins, &ids, &[]);
+    (built.errors, built.active, built.terms)
 }
 
 fn metal_of(win: &WindowGpu) -> &MetalWindow {

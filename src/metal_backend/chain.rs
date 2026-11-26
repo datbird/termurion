@@ -90,9 +90,15 @@ pub(crate) struct MetalChain {
     shaded_region: bool,
     /// The `Shade::Fresh` copies: one for a pass in the middle, one with the last pass's mask.
     fill: Option<(Pipeline, Pipeline)>,
-    /// Metal buffers and textures made after `new` (tests).
+    /// Metal buffers, textures and views made after `new` (tests).
     made: u64,
+    /// Non-sRGB views of the drawables a frame wrote directly, by drawable texture: the layer
+    /// cycles a few textures, so a steady frame makes no view.
+    views: Vec<(Texture, Texture)>,
 }
+
+/// Drawable views kept: the layer's `maximumDrawableCount` (`surface::Surface::configure`).
+const DRAWABLE_VIEWS: usize = 3;
 
 /// A pipeline drawing the full-screen triangle with `fs` into `format`, no blending.
 fn pipeline(device: &ProtocolObject<dyn MTLDevice>, vs: &ProtocolObject<dyn MTLFunction>, fs: &ProtocolObject<dyn MTLFunction>, format: MTLPixelFormat, color_only: bool) -> Result<Pipeline, String> {
@@ -188,6 +194,7 @@ impl MetalChain {
             shaded_region: false,
             fill: None,
             made: 0,
+            views: Vec::with_capacity(DRAWABLE_VIEWS),
         })
     }
 
@@ -250,6 +257,8 @@ impl MetalChain {
             self.kept_made += u64::from(kept.is_some());
             self.targets = targets;
             self.kept = kept;
+            // The drawables of the old size are gone.
+            self.views.clear();
             self.kept_ok = false;
             self.size = size;
             self.frame_drawn = false;
@@ -314,13 +323,16 @@ impl MetalChain {
         let last = self.passes.len().saturating_sub(1);
         // A full frame no next frame builds on writes the window directly.
         let skip_kept = rects.is_none() && !self.keep_next;
-        let kept = self.kept.as_ref().map(|k| &k.raw).filter(|_| !skip_kept);
         // The drawable's own non-sRGB view, only for a frame that writes it directly.
-        let direct = match kept {
-            Some(_) => None,
-            None if out.pixelFormat() == raw_format(out.pixelFormat()) => Some(out.retain()),
-            None => Some(out.newTextureViewWithPixelFormat(raw_format(out.pixelFormat())).ok_or("no Metal view of the window")?),
+        let direct: Option<&ProtocolObject<dyn MTLTexture>> = match self.kept.is_none() || skip_kept {
+            false => None,
+            true if out.pixelFormat() == raw_format(out.pixelFormat()) => Some(out),
+            true => {
+                let i = self.view_of(out)?;
+                Some(&self.views[i].1)
+            }
         };
+        let kept = self.kept.as_ref().map(|k| &k.raw).filter(|_| !skip_kept);
         let load = rects.is_some() && !fresh;
         let fill = self.fill.as_ref().filter(|_| fresh && rects.is_some() && self.kept.is_some());
         for (i, pass) in self.passes.iter().enumerate() {
@@ -370,6 +382,20 @@ impl MetalChain {
         self.shaded_region = rects.is_some();
         self.ran = true;
         Ok(())
+    }
+
+    /// The index in `views` of `out`'s non-sRGB view, made when the drawable is new to the chain.
+    fn view_of(&mut self, out: &ProtocolObject<dyn MTLTexture>) -> Result<usize, String> {
+        if let Some(i) = self.views.iter().position(|(t, _)| std::ptr::eq(&**t, out)) {
+            return Ok(i);
+        }
+        let view = out.newTextureViewWithPixelFormat(raw_format(out.pixelFormat())).ok_or("no Metal view of the window")?;
+        if self.views.len() == DRAWABLE_VIEWS {
+            self.views.remove(0);
+        }
+        self.views.push((out.retain(), view));
+        self.made += 1;
+        Ok(self.views.len() - 1)
     }
 
     /// Packs each pass's uniforms (unless `skip_if_still` did) and writes the ones that changed:

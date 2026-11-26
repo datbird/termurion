@@ -406,6 +406,52 @@ impl WgpuWindow {
     }
 }
 
+/// What `build_effects` made of a window's effect list.
+pub struct BuiltEffects {
+    /// Every plugin that is missing, failed to compile or was refused, in the banner's words.
+    pub errors: Vec<String>,
+    /// The chain runs (at least one shader compiled and the card took them).
+    pub active: bool,
+    /// Where the plugins say they draw (`render_fx::chain_region`).
+    pub terms: RegionTerms,
+    pub animations: Vec<crate::render_fx::Animation>,
+    /// The first plugin's cursor color.
+    pub preset: Option<[f32; 3]>,
+}
+
+/// Compiles the plugins `ids` names (from `plugins`) with `switches` and builds `win`'s chain from
+/// the ones that compiled. A plugin that is missing or fails is left out and named in `errors`,
+/// never silently dropped (`App::fx_sync`).
+pub fn build_effects(win: &mut WindowGpu, plugins: &[crate::render_fx::Plugin], ids: &[String], switches: &[(&str, bool)]) -> BuiltEffects {
+    let (mut shaders, mut errors, mut animations, mut manifests, mut preset) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), None);
+    for id in ids {
+        let Some(p) = plugins.iter().find(|p| &p.id == id) else {
+            errors.push(format!("{id}: no such effect"));
+            continue;
+        };
+        match p.compile_with(switches) {
+            Ok(list) => {
+                shaders.extend(list);
+                animations.push(p.manifest.animation);
+                manifests.push(&p.manifest);
+                preset = preset.or_else(|| p.manifest.cursor_color.as_deref().and_then(crate::render_fx::hex_color));
+            }
+            Err(e) => errors.push(e),
+        }
+    }
+    // Where the plugins say they draw: an animation frame shades only there.
+    let any = !shaders.is_empty();
+    let terms = if any { crate::render_fx::chain_region(&manifests) } else { None };
+    let active = match win.set_effect(Some(shaders), terms.clone()) {
+        Ok(()) => any,
+        Err(e) => {
+            errors.push(format!("the graphics card refused an effect: {e}"));
+            false
+        }
+    };
+    BuiltEffects { errors, active, terms, animations, preset }
+}
+
 impl WindowGpu {
     /// The surface's size in pixels.
     pub fn size(&self) -> (u32, u32) {

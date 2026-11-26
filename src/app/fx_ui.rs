@@ -140,39 +140,10 @@ impl App {
             return;
         }
         let (plugins, _) = render_fx::discover(Some(&render_fx::user_dir()));
-        let mut shaders = Vec::new();
-        let mut errors = Vec::new();
-        let mut animations = Vec::new();
-        let mut preset = None;
-        let mut manifests = Vec::new();
         let switches: Vec<(&str, bool)> = render_fx::SWITCHES.iter().zip(&wanted.1).filter_map(|((_, c, ..), on)| c.map(|c| (c, *on))).collect();
         let live_lines = render_fx::SWITCHES.iter().zip(&wanted.1).any(|((_, c, ..), on)| *c == Some("LINE_EFFECT") && *on);
         let signals = render_fx::SWITCHES.iter().zip(&wanted.1).find(|((_, c, ..), _)| c.is_none()).is_none_or(|(_, on)| *on);
-        for id in &wanted.0 {
-            let Some(p) = plugins.iter().find(|p| &p.id == id) else {
-                errors.push(format!("{id}: no such effect"));
-                continue;
-            };
-            match p.compile_with(&switches) {
-                Ok(list) => {
-                    shaders.extend(list);
-                    animations.push(p.manifest.animation);
-                    manifests.push(&p.manifest);
-                    preset = preset.or_else(|| p.manifest.cursor_color.as_deref().and_then(render_fx::hex_color));
-                }
-                Err(e) => errors.push(e),
-            }
-        }
-        // Where the plugins say they draw: an animation frame shades only there.
-        let any = !shaders.is_empty();
-        let terms = if any { render_fx::chain_region(&manifests) } else { None };
-        let active = match gpu.win.set_effect(Some(shaders), terms.clone()) {
-            Ok(()) => any,
-            Err(e) => {
-                errors.push(format!("the graphics card refused an effect: {e}"));
-                false
-            }
-        };
+        let crate::gpu_window::BuiltEffects { errors, active, terms, animations, preset } = crate::gpu_window::build_effects(&mut gpu.win, &plugins, &wanted.0, &switches);
         gpu.fx = Some(FxRuntime { ids: wanted, active, terms: terms.filter(|_| active), clock: Clock::default(), uniforms: Uniforms::default(), last_uniforms: Uniforms::default(), live_lines, animation: strongest(&animations), preset, keep_alpha, signals, due: None, colors: None, palette_fills: 0, rects: Default::default() });
         if errors.is_empty() {
             self.banners.clear(BANNER);
