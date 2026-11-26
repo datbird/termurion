@@ -42,12 +42,15 @@ report() {
     return 0
 }
 # Runs a test command with its output in $1 and stops it after $stall minutes with no new output.
-# Returns 3 on a stall. The local run gets its own process group; on macOS the remote test processes are killed by name.
+# Returns 3 on a stall. Job control gives the local run its own process group but keeps the controlling
+# terminal (PTY tests need it); on macOS the remote test processes are killed by name.
 if [ "${TERMURION_TEST_BACKEND:-}" = gl ]; then stall="${CHECK_UNIX_STALL_MINUTES:-150}"; else stall="${CHECK_UNIX_STALL_MINUTES:-30}"; fi
 run_watched() {
     local log="$1" os="$2"; shift 2
-    setsid "$@" >"$log" 2>&1 &
+    set -m
+    "$@" >"$log" 2>&1 &
     local pid=$! last=-1 still=0 size
+    set +m
     while kill -0 "$pid" 2>/dev/null; do
         sleep 30
         size=$(stat -c %s "$log" 2>/dev/null || echo 0)
