@@ -1107,11 +1107,13 @@ pub struct Clock {
     next_due: Option<Instant>,
     /// The frame gap of the current pacing (`set_pacing`), which `frame` advances `next_due` by.
     gap: Option<Duration>,
+    /// How early a frame paced by the display may come (`set_lead`), on top of `FRAME_SLACK`.
+    lead: Duration,
 }
 
 impl Default for Clock {
     fn default() -> Self {
-        Clock { first: None, last: None, focused: None, last_change: None, next_due: None, gap: None }
+        Clock { first: None, last: None, focused: None, last_change: None, next_due: None, gap: None, lead: Duration::ZERO }
     }
 }
 
@@ -1120,6 +1122,12 @@ impl Clock {
     /// the setting applies at once.
     pub fn set_pacing(&mut self, pacing: Pacing) {
         self.gap = pacing.frame_gap();
+    }
+
+    /// Frames that follow the display draw on the refresh nearest their due time, up to `lead`
+    /// (half a refresh) early; such a frame still counts as the due one. Zero on the loop timer.
+    pub fn set_lead(&mut self, lead: Duration) {
+        self.lead = lead;
     }
 
     /// Updates `u` for a frame drawn at `now`.
@@ -1132,14 +1140,14 @@ impl Clock {
             // in between leaves it. A pause or stall (over a gap behind) restarts it, no burst.
             let due = match self.next_due {
                 None => now + gap,
-                Some(d) if now + FRAME_SLACK >= d => {
+                Some(d) if now + FRAME_SLACK + self.lead >= d => {
                     let n = d + gap;
                     if now.saturating_duration_since(n) > gap { now + gap } else { n }
                 }
                 Some(d) => d,
             };
             // A frame admitted early (within the slack) must not pull the phase early with it.
-            self.next_due = Some(due.min(now + gap + FRAME_SLACK));
+            self.next_due = Some(due.min(now + gap + FRAME_SLACK + self.lead));
         }
         u.time = now.saturating_duration_since(first).as_secs_f32();
         u.time_delta = now.saturating_duration_since(last).as_secs_f32();

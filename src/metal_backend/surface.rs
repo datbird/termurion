@@ -1,15 +1,17 @@
 //! The window's `CAMetalLayer`: a sublayer of winit's view that follows the view's bounds and
 //! scale, handing out drawables.
 
+use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
+use std::time::Duration;
 
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyClass, AnyObject, NSObject, ProtocolObject};
-use objc2::{class, define_class, msg_send, AllocAnyThread, ClassType, DefinedClass, MainThreadMarker};
-use objc2_foundation::{ns_string, NSDictionary, NSKeyValueChangeKey, NSKeyValueChangeNewKey, NSKeyValueObservingOptions, NSNumber, NSObjectNSKeyValueObserverRegistration, NSSize, NSString, NSValue};
+use objc2::{class, define_class, msg_send, sel, AllocAnyThread, ClassType, DefinedClass, MainThreadMarker};
+use objc2_foundation::{ns_string, NSDictionary, NSRunLoop, NSRunLoopCommonModes, NSKeyValueChangeKey, NSKeyValueChangeNewKey, NSKeyValueObservingOptions, NSNumber, NSObjectNSKeyValueObserverRegistration, NSSize, NSString, NSValue};
 use objc2_metal::{MTLDevice, MTLPixelFormat, MTLTexture};
-use objc2_quartz_core::{CALayer, CAMetalDrawable, CAMetalLayer};
+use objc2_quartz_core::{CADisplayLink, CAFrameRateRange, CALayer, CAMetalDrawable, CAMetalLayer};
 
 // The layer wgpu draws on is raw-window-metal 1.1.0's `ObserverLayer` (src/observer.rs): a
 // CAMetalLayer subclass, added as a sublayer, that copies the root layer's bounds and
@@ -110,8 +112,86 @@ pub enum Next {
     Timeout,
 }
 
+/// What the display link's callback leaves for the loop.
+struct Ticks {
+    /// A refresh came since the last `display_tick`.
+    ticked: Cell<bool>,
+    /// The display's refresh period, in seconds.
+    period: Cell<f64>,
+}
+
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[name = "TermurionDisplayTicker"]
+    #[ivars = Ticks]
+    struct Ticker;
+
+    impl Ticker {
+        #[unsafe(method(tick:))]
+        fn _tick(&self, link: &CADisplayLink) {
+            // Waking the main loop is the point; the effect frame is asked for in its idle pass.
+            let t = self.ivars();
+            t.ticked.set(true);
+            t.period.set(link.duration());
+        }
+    }
+);
+
+/// Wakes the main loop at the display's refresh while an effect animates, so the frame asks for
+/// a drawable right after the display let one go instead of waiting in `nextDrawable`.
+struct DisplayLink {
+    link: Retained<CADisplayLink>,
+    ticker: Retained<Ticker>,
+    /// The frame gap the link runs for (None: the display's rate); None while paused.
+    running: Cell<Option<Option<Duration>>>,
+}
+
+impl DisplayLink {
+    /// The view's display link, paused (macOS 14 and later).
+    fn new(view: &NSObject) -> Option<DisplayLink> {
+        if !objc2::available!(macos = 14.0) {
+            return None;
+        }
+        let ticker: Retained<Ticker> = {
+            let this = Ticker::alloc().set_ivars(Ticks { ticked: Cell::new(false), period: Cell::new(1.0 / 60.0) });
+            // SAFETY: a plain NSObject subclass.
+            unsafe { msg_send![super(this), init] }
+        };
+        // SAFETY: NSView's displayLinkWithTarget:selector: (macOS 14), checked above; the link
+        // keeps its target, and `tick:` takes the link.
+        let link: Option<Retained<CADisplayLink>> = unsafe { msg_send![view, displayLinkWithTarget: &*ticker, selector: sel!(tick:)] };
+        let link = link?;
+        link.setPaused(true);
+        // The common modes, as winit's own wake timer.
+        // SAFETY: the main run loop and a constant mode.
+        unsafe { link.addToRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSRunLoopCommonModes) };
+        Some(DisplayLink { link, ticker, running: Cell::new(None) })
+    }
+
+    fn follow(&self, gap: Option<Option<Duration>>) {
+        if self.running.replace(gap) == gap {
+            return;
+        }
+        if let Some(gap) = gap {
+            // The link ticks at the effect's own rate where the display allows it; 0 is the display's rate.
+            let fps = gap.map_or(0.0, |g| (1.0 / g.as_secs_f64()).round() as f32);
+            self.link.setPreferredFrameRateRange(CAFrameRateRange { minimum: fps, maximum: fps, preferred: fps });
+        }
+        self.ticker.ivars().ticked.set(false);
+        self.link.setPaused(gap.is_none());
+    }
+}
+
+impl Drop for DisplayLink {
+    fn drop(&mut self) {
+        self.link.invalidate();
+    }
+}
+
 pub struct Surface {
     pub layer: Retained<CAMetalLayer>,
+    /// None on macOS before 14 and in tests: effect frames then follow the loop timer.
+    display: Option<DisplayLink>,
 }
 
 impl Surface {
@@ -123,19 +203,19 @@ impl Surface {
         let _: () = unsafe { msg_send![view, setWantsLayer: true] };
         let root: Option<Retained<CALayer>> = unsafe { msg_send![view, layer] };
         let root = root.ok_or("the view has no layer")?;
-        Ok(Surface { layer: TrackingLayer::new(&root).into_super() })
+        Ok(Surface { layer: TrackingLayer::new(&root).into_super(), display: DisplayLink::new(view) })
     }
 
     /// A layer in no window (tests).
     #[cfg(test)]
     pub fn detached() -> Surface {
-        Surface { layer: CAMetalLayer::new() }
+        Surface { layer: CAMetalLayer::new(), display: None }
     }
 
     /// A tracking layer under `root`, a layer in no window (tests).
     #[cfg(test)]
     pub fn under(root: &CALayer) -> Surface {
-        Surface { layer: TrackingLayer::new(root).into_super() }
+        Surface { layer: TrackingLayer::new(root).into_super(), display: None }
     }
 
     /// Sets the layer up for `device` at `w` by `h` pixels and `scale`: sRGB, readable (not
@@ -168,6 +248,26 @@ impl Surface {
             }
             l.setDrawableSize(NSSize::new(f64::from(w.max(1)), f64::from(h.max(1))));
         });
+    }
+
+    /// Runs the display link for effect frames `gap` apart (None inside: the display's rate), or
+    /// pauses it (None).
+    pub fn follow_display(&self, gap: Option<Option<Duration>>) {
+        if let Some(d) = &self.display {
+            d.follow(gap);
+        }
+    }
+
+    /// The display's refresh period while effect frames follow it; None when they follow the
+    /// loop timer.
+    pub fn display_period(&self) -> Option<Duration> {
+        let d = self.display.as_ref().filter(|d| d.running.get().is_some())?;
+        Some(Duration::from_secs_f64(d.ticker.ivars().period.get().clamp(1.0 / 480.0, 1.0 / 15.0)))
+    }
+
+    /// Whether the display refreshed since the last call.
+    pub fn take_display_tick(&self) -> bool {
+        self.display.as_ref().is_some_and(|d| d.ticker.ivars().ticked.replace(false))
     }
 
     /// The next drawable, unless the window is covered (wgpu-hal `acquire_texture`).

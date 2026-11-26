@@ -492,7 +492,9 @@ impl Gpu {
     fn pace_fx(&mut self, now: Instant, focused: bool, pacing: crate::render_fx::Pacing, still: bool) {
         let Some(fx) = self.fx.as_mut() else { return };
         fx.due = if still { fx.next_after_still(now, focused, pacing) } else { fx.next_frame(now, focused, pacing) };
-        if fx.due.is_some_and(|t| t <= Instant::now()) {
+        self.win.follow_display(fx.due.map(|_| pacing.frame_gap()));
+        // On the display a due frame waits for the next refresh (`fx_frame_tick`).
+        if fx.due.is_some_and(|t| t <= Instant::now()) && self.win.display_period().is_none() {
             fx.due = None;
             self.redraw_fx();
         }
@@ -7708,7 +7710,9 @@ impl App {
         // Sampled before the acquire wait now: the effects' clock then runs a few ms ahead of
         // the present, which the 33 ms and 16 ms frame gaps already allow.
         let fx_now = Instant::now();
+        let fx_lead = gpu.win.display_period().map_or(Duration::ZERO, |p| p / 2);
         if let Some(fx) = gpu.fx.as_mut().filter(|f| f.active()) {
+            fx.set_lead(fx_lead);
             fx.prepare(frame.fx.as_ref(), fx_signals.as_ref(), (w, h), focused_window, fx_now, fx_pacing);
         }
         // A system expose (X11 Expose, Win32 WM_PAINT) reaches this as the same RedrawRequested

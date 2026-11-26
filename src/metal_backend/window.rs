@@ -446,6 +446,23 @@ impl MetalWindow {
         self.in_step()
     }
 
+    /// Effect frames `gap` apart follow the display (None inside: its rate); None stops that.
+    pub fn follow_display(&self, gap: Option<Option<std::time::Duration>>) {
+        if let Some(s) = &self.surface {
+            s.follow_display(gap);
+        }
+    }
+
+    /// `Surface::display_period`.
+    pub fn display_period(&self) -> Option<std::time::Duration> {
+        self.surface.as_ref()?.display_period()
+    }
+
+    /// `Surface::take_display_tick`.
+    pub fn take_display_tick(&self) -> bool {
+        self.surface.as_ref().is_some_and(Surface::take_display_tick)
+    }
+
     pub fn set_timing(&mut self, on: bool) {
         self.timing = on;
     }

@@ -89,7 +89,7 @@ core-foundation-sys = "0.8.7"
 # The menu bar, pop-ups and the view's key path (src/platform/macos). objc2 0.6 is muda's; winit's own
 # 0.5 stays inside winit, and nothing here may add a third.
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSArray", "NSBundle", "NSURL", "NSDictionary", "NSDate", "NSError", "NSNotification", "NSDistributedNotificationCenter", "NSOperation", "NSData", "block2", "NSKeyValueObserving", "NSValue", "NSObjCRuntime"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSArray", "NSBundle", "NSURL", "NSDictionary", "NSDate", "NSError", "NSNotification", "NSDistributedNotificationCenter", "NSOperation", "NSData", "block2", "NSKeyValueObserving", "NSValue", "NSObjCRuntime", "NSRunLoop"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "NSApplication", "NSEvent", "NSMenu", "NSResponder", "NSView", "NSWindow", "NSRunningApplication", "NSWorkspace", "NSScreen", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSImage", "objc2-core-foundation", "libc"] }
 # Notifications (src/platform/macos/notify.rs).
 block2 = "0.6"
@@ -111,7 +111,7 @@ naga-types = "30.0.1"
 # The native Metal backend (src/metal_backend), with the features wgpu-hal asked for when it was
 # in the macOS build.
 objc2-metal = { version = "0.3.2", default-features = false, features = ["std", "block2", "MTLAllocation", "MTLBlitCommandEncoder", "MTLBlitPass", "MTLBuffer", "MTLCaptureManager", "MTLCaptureScope", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLComputeCommandEncoder", "MTLComputePass", "MTLComputePipeline", "MTLCounters", "MTLDepthStencil", "MTLDevice", "MTLDrawable", "MTLEvent", "MTLLibrary", "MTLPipeline", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLSampler", "MTLStageInputOutputDescriptor", "MTLTexture", "MTLTypes", "MTLVertexDescriptor", "MTLAccelerationStructure", "MTLAccelerationStructureTypes", "MTLAccelerationStructureCommandEncoder", "MTLResidencySet"] }
-objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "CALayer", "CAMetalLayer", "objc2-metal"] }
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "CALayer", "CAMetalLayer", "CADisplayLink", "CAFrameRateRange", "objc2-metal"] }
 
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 muda = "0.20"

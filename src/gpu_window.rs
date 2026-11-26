@@ -632,6 +632,38 @@ impl WindowGpu {
         }
     }
 
+    /// Effect frames `gap` apart follow the display's refresh (None inside: the display's own
+    /// rate), or stop doing so (None). Metal only; elsewhere they follow the loop timer.
+    pub fn follow_display(&self, gap: Option<Option<std::time::Duration>>) {
+        match self {
+            #[cfg(not(target_os = "macos"))]
+            WindowGpu::Wgpu(_) => { let _ = gap; }
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(w) => w.follow_display(gap),
+        }
+    }
+
+    /// The display's refresh period while effect frames follow it; None when they follow the
+    /// loop timer.
+    pub fn display_period(&self) -> Option<std::time::Duration> {
+        match self {
+            #[cfg(not(target_os = "macos"))]
+            WindowGpu::Wgpu(_) => None,
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(w) => w.display_period(),
+        }
+    }
+
+    /// Whether the display refreshed since the last call (always false off the display).
+    pub fn take_display_tick(&self) -> bool {
+        match self {
+            #[cfg(not(target_os = "macos"))]
+            WindowGpu::Wgpu(_) => false,
+            #[cfg(target_os = "macos")]
+            WindowGpu::Metal(w) => w.take_display_tick(),
+        }
+    }
+
     /// How the last drawable request went.
     pub fn last_acquire(&self) -> Acquire {
         match self {
