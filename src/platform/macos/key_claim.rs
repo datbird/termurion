@@ -120,6 +120,38 @@ pub fn install(view: isize, route: Arc<RwLock<Snapshot>>) -> Result<(), String> 
     Ok(())
 }
 
+/// Set once: the app-wide key monitor is up.
+static NO_WINDOW_MONITOR: std::sync::Once = std::sync::Once::new();
+
+/// Cmd-, Cmd-N and Cmd-Q with no key window (the last window closed, Termurion still running).
+/// AppKit does not hand such a key to the menu bar's key equivalents here, so a local monitor
+/// takes it and runs the same command a click on the menu item runs. `run` gets the item id.
+/// With a key window the monitor does nothing: the view and the menu keep the key.
+pub fn install_no_window_keys(run: Box<dyn Fn(String) + Send + Sync>) {
+    use objc2_app_kit::{NSApplication, NSEventMask};
+    use std::ptr::NonNull;
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    NO_WINDOW_MONITOR.call_once(|| {
+        let handler = block2::RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+            // SAFETY: AppKit hands the monitor a live event.
+            let ev = unsafe { event.as_ref() };
+            let flags = ev.modifierFlags();
+            if NSApplication::sharedApplication(mtm).keyWindow().is_none() && flags.contains(NSEventModifierFlags::Command) {
+                let chars = ev.charactersIgnoringModifiers().map(|s| s.to_string()).unwrap_or_default();
+                let chord = crate::menus::chord_of_key(&chars, true, flags.contains(NSEventModifierFlags::Option), flags.contains(NSEventModifierFlags::Shift), flags.contains(NSEventModifierFlags::Control));
+                if let Some(id) = chord.as_ref().and_then(crate::commands::no_window_item) {
+                    run(id);
+                    return std::ptr::null_mut();
+                }
+            }
+            event.as_ptr()
+        });
+        // SAFETY: the block returns the event or null; the monitor lives as long as the app.
+        let monitor = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &handler) };
+        std::mem::forget(monitor);
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

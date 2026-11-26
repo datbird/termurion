@@ -197,6 +197,18 @@ pub fn command_for_chord(chord: &Chord) -> Option<&'static Item> {
     menus::items_for(chord).into_iter().find(|i| !status(i).unavailable())
 }
 
+/// The commands with a Cmd chord that still work with no window open (iTerm2 leaves them
+/// enabled): New Window, Settings and Quit. Everything else needs a window.
+const WITHOUT_A_WINDOW: &[&str] = &["newWindow:", "showPrefWindow:", "terminate:"];
+
+/// The menu item id a Cmd chord runs while the app has no key window, or None when the chord
+/// needs a window. macOS sends such a key to the app's own handler (`platform::macos::key_claim`),
+/// the same path a click on the menu item takes.
+pub fn no_window_item(chord: &Chord) -> Option<String> {
+    let item = command_for_chord(chord)?;
+    (chord.cmd && WITHOUT_A_WINDOW.contains(&item.selector.as_str())).then(|| item.id())
+}
+
 /// Hiding other apps is a macOS thing: each item keeps its own reason where there is none.
 fn app_hiding_reason(selector: &str) -> Option<&'static str> {
     match selector {
@@ -523,5 +535,27 @@ mod tests {
     fn show_tabs_in_fullscreen_works() {
         let item = items().iter().find(|i| i.selector == "toggleFullScreenTabBar:" && i.label() == "Show Tabs in Fullscreen").unwrap();
         assert_eq!(status(item), Status::Done);
+    }
+}
+
+#[cfg(test)]
+mod no_window_tests {
+    use super::*;
+
+    fn cmd(key: char, shift: bool) -> Chord {
+        Chord { key: ChordKey::Char(key), cmd: true, alt: false, shift, ctrl: false }
+    }
+
+    /// Cmd-, Cmd-N and Cmd-Q run with no window open; a chord that needs a window does not.
+    #[test]
+    fn the_app_shortcuts_work_with_no_window() {
+        assert_eq!(no_window_item(&cmd(',', false)).as_deref(), menus::items_for(&cmd(',', false)).first().map(|i| i.id()).as_deref());
+        for (key, selector) in [(',', "showPrefWindow:"), ('n', "newWindow:"), ('q', "terminate:")] {
+            let id = no_window_item(&cmd(key, false)).unwrap_or_else(|| panic!("Cmd-{key}"));
+            assert_eq!(menus::by_id(&id).unwrap().selector, selector);
+        }
+        assert_eq!(no_window_item(&cmd('t', false)), None, "New Tab needs a window");
+        assert_eq!(no_window_item(&cmd('w', false)), None, "Close needs a window");
+        assert_eq!(no_window_item(&Chord { cmd: false, ..cmd(',', false) }), None);
     }
 }

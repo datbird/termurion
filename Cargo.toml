@@ -87,7 +87,7 @@ core-foundation-sys = "0.8.7"
 # 0.5 stays inside winit, and nothing here may add a third.
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSArray", "NSBundle", "NSURL", "NSDictionary", "NSDate", "NSError", "NSNotification", "NSDistributedNotificationCenter", "NSOperation", "NSData", "block2", "NSKeyValueObserving", "NSValue", "NSObjCRuntime"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSMenu", "NSResponder", "NSView", "NSWindow", "NSRunningApplication", "NSWorkspace", "NSScreen", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSImage", "objc2-core-foundation", "libc"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "NSApplication", "NSEvent", "NSMenu", "NSResponder", "NSView", "NSWindow", "NSRunningApplication", "NSWorkspace", "NSScreen", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSImage", "objc2-core-foundation", "libc"] }
 # Notifications (src/platform/macos/notify.rs).
 block2 = "0.6"
 objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationSound", "UNNotificationResponse", "UNNotificationSettings", "UNNotification", "UNNotificationTrigger", "UNError"] }

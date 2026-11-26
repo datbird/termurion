@@ -422,6 +422,11 @@ impl App {
         // Tips beside highlighted items, after the delay `MenuTipDelay` sets (iTerm2 reads it per tip).
         crate::platform::chrome::install_menu_tips(view, crate::menu_tips::delay_of(self.globals.number("MenuTipDelay").unwrap_or(1.0)));
 
+        // Cmd-, Cmd-N and Cmd-Q with no window open run as the menu items do (macOS).
+        let keys = self.proxy.clone();
+        crate::platform::chrome::claim_no_window_keys(Box::new(move |id| {
+            let _ = keys.lock().map(|p| p.send_event(UserEvent::Menu(id)));
+        }));
         let proxy = self.proxy.clone();
         muda::MenuEvent::set_event_handler(Some(move |e: muda::MenuEvent| {
             let _ = proxy.lock().unwrap().send_event(UserEvent::Menu(e.id.0));

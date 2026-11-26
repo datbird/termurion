@@ -87,6 +87,11 @@ pub fn claim_key_equivalents(view: isize, route: std::sync::Arc<std::sync::RwLoc
     super::key_claim::install(view, route)
 }
 
+/// Cmd-, Cmd-N and Cmd-Q while no window is key (see `key_claim::install_no_window_keys`).
+pub fn claim_no_window_keys(run: Box<dyn Fn(String) + Send + Sync>) {
+    super::key_claim::install_no_window_keys(run)
+}
+
 pub fn forget_key_equivalents(view: isize) {
     super::key_claim::forget(view)
 }

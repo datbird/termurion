@@ -76,6 +76,9 @@ pub fn claim_key_equivalents(_view: isize, _route: std::sync::Arc<std::sync::RwL
 /// Nothing was claimed on Linux, so nothing to forget.
 pub fn forget_key_equivalents(_view: isize) {}
 
+/// macOS only: the app shortcuts with no window open.
+pub fn claim_no_window_keys(_run: Box<dyn Fn(String) + Send + Sync>) {}
+
 pub fn set_border(_hwnd: isize, _color: u32) {}
 
 pub fn set_corners(_hwnd: isize, _preference: i32) {}

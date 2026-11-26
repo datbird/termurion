@@ -163,6 +163,11 @@ pub fn services_item() -> Option<muda::PredefinedMenuItem> {
     imp::services_item()
 }
 
+/// macOS: Cmd-, Cmd-N and Cmd-Q while no window is key run their menu item (`run` gets its id).
+pub fn claim_no_window_keys(run: Box<dyn Fn(String) + Send + Sync>) {
+    imp::claim_no_window_keys(run)
+}
+
 /// Makes the window's view take every Command key-down before the menu does, so key mappings beat
 /// menu shortcuts (macOS). Windows and Linux route keys through their own hook, so nothing to do.
 /// `route` is what the key path takes (mappings, menu chords): only those Cmd keys are claimed.
