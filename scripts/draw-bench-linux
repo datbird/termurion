@@ -131,7 +131,13 @@ session_env() {
         [ -n "$pid" ] && break
     done
     [ -n "${pid:-}" ] || return 1
-    tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -E '^(DISPLAY|WAYLAND_DISPLAY|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|XAUTHORITY|XDG_SESSION_TYPE)='
+    local e; e=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -E '^(DISPLAY|WAYLAND_DISPLAY|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|XAUTHORITY|XDG_SESSION_TYPE)=')
+    printf '%s\n' "$e"
+    # gnome-shell does not carry WAYLAND_DISPLAY in its own environment; use the socket it made.
+    if ! printf '%s\n' "$e" | grep -q '^WAYLAND_DISPLAY='; then
+        local rt; rt=$(printf '%s\n' "$e" | sed -n 's/^XDG_RUNTIME_DIR=//p')
+        [ -S "${rt:-/run/user/$(id -u)}/wayland-0" ] && echo "WAYLAND_DISPLAY=wayland-0"
+    fi
 }
 session_summary() {
     local e; e=$(session_env) || { echo "no graphical session found for this user"; return; }
@@ -229,7 +235,9 @@ if ($mode eq 'idle') {
     die "unknown workload $mode";
 }
 close($fh);
-print "$bytes\n";
+# The writer's own CPU seconds go with the bytes, so the bench can leave it out of "other".
+my @t = times;
+print "$bytes ", $t[0] + $t[1], "\n";
 EOF
 
 # --- settings, saved and put back ----------------------------------------------------------
@@ -362,12 +370,14 @@ run_one() {
     local names; names=$(proc_names "$cfg")
     local a0 c0 w0 t0 a1 c1 w1 t1 bytes rss
     a0=$(cpu_of); c0=$(cpu_of $names); w0=$(cpu_of $comp_names); t0=$(now)
-    bytes=$(perl "$B/writer.pl" "$wl" "$(cat "$B/tty.$key")" "$secs")
+    local wout wcpu
+    wout=$(perl "$B/writer.pl" "$wl" "$(cat "$B/tty.$key")" "$secs")
+    bytes=${wout% *}; wcpu=${wout#* }
     a1=$(cpu_of); c1=$(cpu_of $names); w1=$(cpu_of $comp_names); t1=$(now)
     rss=$(ps -o rss= -p "$(pids_of $names | paste -sd,)" 2>/dev/null | awk '{ s += $1 } END { if (NR) printf "%.0f", s / 1024 }')
     # Front-window checks need X11 tools; without them the column says so.
-    awk -v a0="$a0" -v a1="$a1" -v c0="$c0" -v c1="$c1" -v w0="$w0" -v w1="$w1" -v t0="$t0" -v t1="$t1" -v b="$bytes" -v rss="$rss" \
-        'BEGIN { wall = t1 - t0; printf "RESULT\t%.2f\t%.1f\t%.1f\t-\t%.2f\t%.1f\tunchecked\t%s\n", wall, 100 * (c1 - c0) / wall, 100 * (w1 - w0) / wall, b / wall / 1e6, 100 * ((a1 - a0) - (c1 - c0) - (w1 - w0)) / wall, rss }'
+    awk -v a0="$a0" -v a1="$a1" -v c0="$c0" -v c1="$c1" -v w0="$w0" -v w1="$w1" -v t0="$t0" -v t1="$t1" -v b="$bytes" -v rss="$rss" -v wc="$wcpu" \
+        'BEGIN { wall = t1 - t0; printf "RESULT\t%.2f\t%.1f\t%.1f\t-\t%.2f\t%.1f\tunchecked\t%s\n", wall, 100 * (c1 - c0) / wall, 100 * (w1 - w0) / wall, b / wall / 1e6, 100 * ((a1 - a0) - (c1 - c0) - (w1 - w0) - wc) / wall, rss }'
 }
 
 for pass in $(seq 1 "$passes"); do

@@ -29,7 +29,7 @@
 # saved first and put back on exit. Work files live in %LOCALAPPDATA%\draw-bench.
 #
 # Usage: scripts/draw-bench-win.ps1 [-Secs N] [-Passes N] [-Out DIR] [-Termurion PATH]
-#            [-PresentMon PATH] [-WezTerm PATH] [-Workloads a,b] [-DryRun] [-KillExisting] [CONFIG...]
+#            [-PresentMon PATH] [-WezTerm PATH] [-Workloads a,b] [-NoisePct N] [-DryRun] [-KillExisting] [CONFIG...]
 param(
     [int]$Secs = 20,
     [int]$Passes = 1,
@@ -40,7 +40,8 @@ param(
     [string[]]$Workloads = @(),
     [switch]$DryRun,
     [switch]$KillExisting,
-    [Parameter(ValueFromRemainingArguments = $true)][string[]]$Config = @()
+    [double]$NoisePct = 25,
+    [Parameter(Position = 0, ValueFromRemainingArguments = $true)][string[]]$Config = @()
 )
 $ErrorActionPreference = 'Stop'
 [Threading.Thread]::CurrentThread.CurrentCulture = [Globalization.CultureInfo]::InvariantCulture
@@ -119,12 +120,16 @@ if ($DryRun) { Write-Output 'dry run: nothing was started or changed'; exit 0 }
 
 # --- from here on it touches the machine ---------------------------------------------------
 
+# Processes of these names that were already running are not ours: leave them alone and do not count them.
+$script:keep = @{}
 foreach ($n in $allNames) {
-    if (Get-Process -Name $n -ErrorAction SilentlyContinue) {
-        if ($KillExisting) { Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 1 }
-        else { Write-Error "draw-bench-win: $n is already running; close it or pass -KillExisting"; exit 2 }
+    foreach ($p in @(Get-Process -Name $n -ErrorAction SilentlyContinue)) {
+        if ($KillExisting) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+        else { $script:keep[$p.Id] = $true }
     }
 }
+if ($KillExisting) { Start-Sleep 1 }
+if ($script:keep.Count) { [Console]::Error.WriteLine("draw-bench-win: leaving $($script:keep.Count) already running process(es) alone (pids $(($script:keep.Keys | Sort-Object) -join ' '))") }
 New-Item -ItemType Directory -Force -Path $work, $Out | Out-Null
 $results = Join-Path $Out 'results.tsv'
 "config`tworkload`tpass`twall_s`tcpu_pct`tws_pct`tfps`tmb_s`tother_pct`tfront`tnote`trss_mb" | Set-Content -Encoding ASCII $results
@@ -226,7 +231,7 @@ function Quit-Ours {
     foreach ($p in $script:owned) { if ($p -and -not $p.HasExited) { try { $p.Kill() } catch {} } }
     Start-Sleep 1
     # Nothing of these names ran when we started, so what is left is ours.
-    foreach ($n in $allNames) { Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }
+    foreach ($n in $allNames) { Get-Process -Name $n -ErrorAction SilentlyContinue | Where-Object { -not $script:keep.ContainsKey($_.Id) } | Stop-Process -Force -ErrorAction SilentlyContinue }
     $script:owned = @()
     Get-ChildItem (Join-Path $work '*') -Include 'ready.*', 'go.*', 'done.*', 'quit.*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 }
@@ -255,7 +260,7 @@ function Front-Name {
 function Snap($names) {
     $h = @{}
     $list = if ($names) { Get-Process -Name $names -ErrorAction SilentlyContinue } else { Get-Process }
-    foreach ($p in $list) { try { $h[$p.Id] = $p.TotalProcessorTime.TotalSeconds } catch {} }
+    foreach ($p in $list) { if ($script:keep -and $script:keep.ContainsKey($p.Id)) { continue }; try { $h[$p.Id] = $p.TotalProcessorTime.TotalSeconds } catch {} }
     return $h
 }
 function Delta($a, $b, $skip) {
@@ -356,7 +361,7 @@ function Run-One($cfg, $wl) {
     [void](Wait-File (Join-Path $work "done.$key") ($Secs + 30))
     $c1 = Snap $names; $w1 = Snap @('dwm'); $t1 = [DateTime]::UtcNow
     $rss = 0.0
-    foreach ($p in (Get-Process -Name $names -ErrorAction SilentlyContinue)) { $rss += $p.WorkingSet64 }
+    foreach ($p in (Get-Process -Name $names -ErrorAction SilentlyContinue)) { if ($script:keep.ContainsKey($p.Id)) { continue }; $rss += $p.WorkingSet64 }
     $bytes = [double](Get-Content (Join-Path $work "done.$key") -ErrorAction SilentlyContinue)
     $a1 = Snap $null; $tAll1 = [DateTime]::UtcNow
     $f1 = Front-Name
@@ -397,7 +402,7 @@ try {
                 for ($try = 1; $try -le 8; $try++) {
                     Wait-Quiet
                     $f = Run-One $cfg $wl
-                    if ($f[6] -eq 'yes' -and [double]$f[5] -lt 25) { break }
+                    if ($f[6] -eq 'yes' -and [double]$f[5] -lt $NoisePct) { break }
                     [Console]::Error.WriteLine("draw-bench-win: $cfg $wl try ${try}: front $($f[6]), other processes $($f[5])% of a core; again")
                     if ($try -eq 8) { $note = 'noisy' }
                 }
