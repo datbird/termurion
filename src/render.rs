@@ -5072,6 +5072,57 @@ pub(crate) mod tests {
         }
     }
 
+    /// A user GLSL plugin with a region whose shader uses a derivative (`fwidth`) keeps the two
+    /// passes: under the one pass's per-pixel branch a quad across a rect edge has no defined
+    /// derivative. Its frames are the old way's bytes on every chain kind, over odd-aligned rects.
+    /// The same shader without the derivative runs the one pass, so the check is not empty.
+    #[test]
+    fn a_derivative_plugin_keeps_two_passes() {
+        use crate::render_fx::{FrameRegion, PxRect, Uniforms};
+        let td = TempDir::new("render_derivative_");
+        let body = |extra: &str| format!("void mainImage(out vec4 c, in vec2 p) {{ c = texture(iChannel0, p / iResolution.xy); float s = sin(0.37 * p.x + 0.23 * p.y + 3.0 * iTime); c.rgb = mix(c.rgb, vec3(1.0, 0.2, 0.1), clamp(0.5 + 0.5 * s{extra}, 0.0, 1.0) * 0.6); }}");
+        for (id, extra) in [("deriv", " + 8.0 * fwidth(s)"), ("plain", "")] {
+            let dir = td.file(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("plugin.toml"), format!("name = \"{id}\"\nshaders = \"m.glsl\"\nanimation = \"always\"\nregion = [\"cursor\"]")).unwrap();
+            std::fs::write(dir.join("m.glsl"), body(extra)).unwrap();
+        }
+        let (list, errors) = crate::render_fx::discover(Some(&td.to_path_buf()));
+        assert!(errors.is_empty(), "{errors:?}");
+        let (device, queue) = device();
+        let mut r = test_renderer(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        for id in ["deriv", "plain"] {
+            let p = list.iter().find(|p| p.id == id).expect(id);
+            let (frame, size, _) = agent_frame(&r, "hermes", [255, 80, 40]);
+            let mut u = Uniforms { resolution: [size.0 as f32, size.1 as f32, 1.0], time: 0.5, ..Default::default() };
+            u.current_cursor = frame.fx.as_ref().unwrap().cursor.map_or([0.0; 4], |c| [c.rect[0], c.rect[1] + c.rect[3], c.rect[2], c.rect[3]]);
+            // Odd edges: quads straddle every rect side.
+            let rects = vec![PxRect { x: 33, y: 17, w: 101, h: 57 }, PxRect { x: 251, y: 141, w: 77, h: 39 }];
+            let region = FrameRegion { own: Some(rects.clone()), with_last: Some(rects) };
+            for kind in kinds() {
+                let mut chain = chain_of(&device, compiled_for(p, kind), kind, p.manifest.region.clone());
+                let mut old = chain_of(&device, compiled_for(p, kind), kind, p.manifest.region.clone());
+                old.set_one_pass(false);
+                let (win, win_old) = (Window::new(&device, size), Window::new(&device, size));
+                r.draw_fx_for(&frame, &mut chain, &u, win.out(kind), size.0, size.1, false, None).unwrap();
+                r.draw_fx_for(&frame, &mut old, &u, win_old.out(kind), size.0, size.1, false, None).unwrap();
+                for step in 0..4 {
+                    u.time += 0.3;
+                    let before = chain.passes_run();
+                    r.draw_fx_for(&frame, &mut chain, &u, win.out(kind), size.0, size.1, true, Some(&region)).unwrap();
+                    r.draw_fx_for(&frame, &mut old, &u, win_old.out(kind), size.0, size.1, true, Some(&region)).unwrap();
+                    assert!(chain.shaded_region(), "{id} {kind:?} {step}: only the rects");
+                    let one = id == "plain" && kind.views;
+                    assert_eq!(chain.ran_one_pass(), one, "{id} {kind:?} {step}");
+                    if kind.views {
+                        assert_eq!(chain.passes_run() - before, if one { 1 } else { 2 }, "{id} {kind:?} {step}");
+                    }
+                    assert!(diff_box(&win.read(&device, &queue), &win_old.read(&device, &queue), size.0).is_none(), "{id} {kind:?} {step}: the old way's bytes");
+                }
+            }
+        }
+    }
+
     /// Each frame of the region path is one render pass per shader: no copy pass after the effect,
     /// on animation-only and full frames alike. A steady frame makes nothing: no kept texture and
     /// no bind group.

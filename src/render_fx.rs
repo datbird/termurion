@@ -809,12 +809,28 @@ pub fn compile_glsl(body: &str) -> Result<Compiled, String> {
     Ok(c)
 }
 
-/// The one-pass region variant of a GLSL body (`wrap_glsl_for`). It fails where the body needs
-/// uniform control flow (derivatives), and such a shader keeps the two passes.
+/// The one-pass region variant of a GLSL body (`wrap_glsl_for`). It is refused for a body that
+/// uses derivatives (dFdx, dFdy, fwidth, or a sample that picks its own level): `mainImage` runs
+/// there under a per-pixel branch, so a 2x2 quad across a rect edge has no defined derivative,
+/// and naga lets that pass in a fragment shader. Such a shader keeps the two passes.
 pub fn compile_one_pass(body: &str) -> Result<Compiled, String> {
     let src = wrap_glsl_for(body, true);
     let module = naga::front::glsl::Frontend::default().parse(&naga::front::glsl::Options::from(naga::ShaderStage::Fragment), &src).map_err(|e| e.emit_to_string(&src))?;
+    if uses_derivatives(&module) {
+        return Err("the shader uses derivatives".to_string());
+    }
     validate(module, &src, "main", prefix_lines())
+}
+
+/// Whether any function of `module` takes a derivative, directly or through a sample with an
+/// implicit level.
+fn uses_derivatives(module: &naga::Module) -> bool {
+    let functions = module.functions.iter().map(|(_, f)| f).chain(module.entry_points.iter().map(|e| &e.function));
+    functions.flat_map(|f| f.expressions.iter()).any(|(_, e)| match e {
+        naga::Expression::Derivative { .. } => true,
+        naga::Expression::ImageSample { level, .. } => matches!(level, naga::SampleLevel::Auto | naga::SampleLevel::Bias(_)),
+        _ => false,
+    })
 }
 
 /// Compiles a WGSL shader with a `fs_main` fragment entry point and the same bindings.
@@ -1642,6 +1658,23 @@ mod tests {
         }
     }
 
+    /// A body with a derivative, or a sample that picks its own level, gets no one-pass variant;
+    /// the same body without one does.
+    #[test]
+    fn a_derivative_refuses_the_one_pass() {
+        let plain = "void mainImage(out vec4 c, in vec2 p) { c = textureLod(iChannel0, p / iResolution.xy, 0.0); }";
+        assert!(compile_one_pass(plain).is_ok());
+        for d in ["fwidth(p.x)", "dFdx(p.y)", "dFdy(p.x)", "dFdxFine(p.x)", "dFdyCoarse(p.y)"] {
+            let body = format!("void mainImage(out vec4 c, in vec2 p) {{ c = textureLod(iChannel0, p / iResolution.xy, 0.0); c.r += {d}; }}");
+            assert!(compile_glsl(&body).is_ok(), "{d}: the shader itself compiles");
+            assert!(compile_one_pass(&body).is_err(), "{d}: no one pass");
+        }
+        // `texture` is textureLod through the prefix; an undefined macro samples with an implicit level.
+        let implicit = "#undef texture\nvoid mainImage(out vec4 c, in vec2 p) { c = texture(iChannel0, p / iResolution.xy); }";
+        assert!(compile_glsl(implicit).is_ok());
+        assert!(compile_one_pass(implicit).is_err(), "an implicit level");
+    }
+
     #[test]
     fn compile_errors_name_the_body_line() {
         let e = compile_glsl("void mainImage(out vec4 c, in vec2 p) {\n  c = vec4(nope);\n}").unwrap_err();
@@ -2198,7 +2231,7 @@ mod tests {
             n += 1.25;
             n
         };
-        let mut v4 = |next: &mut dyn FnMut() -> f32| [next(), next(), next(), next()];
+        let v4 = |next: &mut dyn FnMut() -> f32| [next(), next(), next(), next()];
         let mut u = Uniforms::default();
         u.resolution = [next(), next(), 1.0];
         u.time = next();

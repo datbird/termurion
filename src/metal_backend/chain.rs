@@ -1,8 +1,7 @@
 //! Render plugins on Metal: `render_fx_gpu::Chain` with view formats, pass for pass. The frame is
 //! drawn into an sRGB texture, each shader reads it through a non-sRGB view, and the last pass
 //! writes the window's raw bytes. With region terms the last pass writes a kept texture, and a
-//! blit copies it into the drawable (whose contents are undefined each frame). wgpu's one pass
-//! (window and kept texture written together) is here too, off (`ONE_PASS`): the blit measured faster.
+//! blit copies it into the drawable (whose contents are undefined each frame).
 
 use objc2::rc::Retained;
 use objc2::Message;
@@ -13,7 +12,7 @@ use objc2_metal::{
 };
 
 use super::draw::{raw_format, MetalDraw};
-use super::shaders::{self, COPY_INPUT, EFFECT, EFFECT_ONE_PASS};
+use super::shaders::{self, COPY_INPUT, EFFECT};
 use crate::render_fx::{Compiled, Layout, PxRect, RegionTerm, Uniforms, uniform_layout};
 use crate::render_fx_gpu::Shade;
 
@@ -61,46 +60,6 @@ impl Slots {
     }
 }
 
-/// The fragment slots of the one pass: the effect's, plus last frame's kept texture and the rects.
-#[derive(Clone, Copy)]
-struct OneSlots {
-    texture: usize,
-    buffer: usize,
-    sampler: usize,
-    kept: usize,
-    shade: usize,
-}
-
-impl OneSlots {
-    fn new() -> Result<OneSlots, String> {
-        let fs = shaders::stage_resources(&[&EFFECT_ONE_PASS], naga::ShaderStage::Fragment);
-        let at = |binding: u32| fs.resources.get(&naga::ResourceBinding { group: 0, binding }).cloned().ok_or_else(|| format!("no slot for binding {binding}"));
-        let sampler = match at(2)?.sampler {
-            Some(naga::back::msl::BindSamplerTarget::Resource(s)) => usize::from(s),
-            _ => return Err("no sampler slot".to_string()),
-        };
-        Ok(OneSlots {
-            texture: usize::from(at(0)?.texture.ok_or("no texture slot")?),
-            buffer: usize::from(at(1)?.buffer.ok_or("no buffer slot")?),
-            sampler,
-            kept: usize::from(at(3)?.texture.ok_or("no texture slot")?),
-            shade: usize::from(at(4)?.buffer.ok_or("no buffer slot")?),
-        })
-    }
-}
-
-/// `render_fx_gpu::Chain`'s one pass on Metal: the window and the spare kept texture written
-/// together, full screen, in place of the scissored pass and the blit.
-struct OnePass {
-    pipeline: Pipeline,
-    slots: OneSlots,
-    shade: Buffer,
-    held: Option<[u8; SHADE_BYTES]>,
-}
-
-/// `render_fx_gpu::SHADE_BYTES`: 16 uvec4 rects, then the count.
-const SHADE_BYTES: usize = crate::render_fx::SHADE_RECTS * 16 + 16;
-
 pub(crate) struct MetalChain {
     passes: Vec<Pass>,
     vertex: Function,
@@ -131,27 +90,12 @@ pub(crate) struct MetalChain {
     shaded_region: bool,
     /// The `Shade::Fresh` copies: one for a pass in the middle, one with the last pass's mask.
     fill: Option<(Pipeline, Pipeline)>,
-    /// With the one pass: the kept texture the next frame writes; it swaps with `kept`.
-    spare: Option<Target>,
-    one_src: Option<std::sync::Arc<str>>,
-    one: Option<OnePass>,
-    one_tried: bool,
-    one_pass_on: bool,
-    #[cfg_attr(not(test), allow(dead_code))]
-    ran_one_pass: bool,
-    #[cfg_attr(not(test), allow(dead_code))]
-    passes_run: u64,
     /// Metal buffers, textures and views made after `new` (tests).
     made: u64,
     /// Non-sRGB views of the drawables a frame wrote directly, by drawable texture: the layer
     /// cycles a few textures, so a steady frame makes no view.
     views: Vec<(Texture, Texture)>,
 }
-
-/// Whether the region path runs the one pass on Metal (else the scissored pass and the blit).
-/// Off: on funtimes the blit was as fast on the GPU and about 10 us faster to encode per frame
-/// (`one_pass_against_blit_timing`, Task 13 report).
-const ONE_PASS: bool = false;
 
 /// Drawable views kept: the layer's `maximumDrawableCount` (`surface::Surface::configure`).
 const DRAWABLE_VIEWS: usize = 3;
@@ -213,7 +157,6 @@ impl MetalChain {
         let (copy_src, copy_name) = shaders::copy_msl()?;
         let copy = super::quads::function(device, &copy_src, &copy_name)?;
         let last = shaders.len().saturating_sub(1);
-        let one_src = shaders.last().and_then(|s| s.glsl.clone()).filter(|_| shaders.len() <= 2);
         let mut passes = Vec::new();
         for (i, shader) in shaders.into_iter().enumerate() {
             let (src, name) = shaders::effect_to_msl(&shader)?;
@@ -250,13 +193,6 @@ impl MetalChain {
             keep_next: true,
             shaded_region: false,
             fill: None,
-            spare: None,
-            one_src,
-            one: None,
-            one_tried: false,
-            one_pass_on: ONE_PASS,
-            ran_one_pass: false,
-            passes_run: 0,
             made: 0,
             views: Vec::with_capacity(DRAWABLE_VIEWS),
         })
@@ -303,52 +239,6 @@ impl MetalChain {
         self.made
     }
 
-    /// `Chain::set_one_pass`; it takes effect when the kept output is made next.
-    #[cfg(test)]
-    pub fn set_one_pass(&mut self, on: bool) {
-        self.one_pass_on = on;
-    }
-
-    #[cfg(test)]
-    pub fn ran_one_pass(&self) -> bool {
-        self.ran_one_pass
-    }
-
-    #[cfg(test)]
-    pub fn passes_run(&self) -> u64 {
-        self.passes_run
-    }
-
-    /// Builds the one pass the first time a kept output is made, as `Chain::make_one_pass` does:
-    /// a GLSL last shader whose variant compiles; any other chain keeps the scissors and the blit.
-    fn make_one_pass(&mut self, device: &ProtocolObject<dyn MTLDevice>) -> Result<(), String> {
-        if !self.one_pass_on || std::mem::replace(&mut self.one_tried, true) {
-            return Ok(());
-        }
-        let Some(src) = self.one_src.clone() else { return Ok(()) };
-        let Ok(compiled) = crate::render_fx::compile_one_pass(&src) else { return Ok(()) };
-        let Ok((msl, name)) = shaders::one_pass_to_msl(&compiled) else { return Ok(()) };
-        let Ok(fs) = super::quads::function(device, &msl, &name) else { return Ok(()) };
-        let d = MTLRenderPipelineDescriptor::new();
-        d.setVertexFunction(Some(&self.vertex));
-        d.setFragmentFunction(Some(&fs));
-        // SAFETY: a triangle list is of the triangle class.
-        unsafe { d.setInputPrimitiveTopology(MTLPrimitiveTopologyClass::Triangle) };
-        for i in 0..2 {
-            // SAFETY: indexes 0 and 1 are the window and the spare kept texture.
-            let at = unsafe { d.colorAttachments().objectAtIndexedSubscript(i) };
-            at.setPixelFormat(raw_format(self.format));
-            at.setWriteMask(if self.keep_alpha { MTLColorWriteMask::All } else { MTLColorWriteMask::Red | MTLColorWriteMask::Green | MTLColorWriteMask::Blue });
-            at.setBlendingEnabled(false);
-        }
-        let Ok(pipeline) = device.newRenderPipelineStateWithDescriptor_error(&d) else { return Ok(()) };
-        // An allocation failure is a lost device, as for any chain buffer.
-        let shade = super::new_buffer(device, SHADE_BYTES, MTLResourceOptions::StorageModePrivate).ok_or("no Metal shade rects buffer")?;
-        self.made += 1;
-        self.one = Some(OnePass { pipeline, slots: OneSlots::new()?, shade, held: None });
-        Ok(())
-    }
-
     /// The frame texture and its non-sRGB view at `size`, made again on a resize (the kept
     /// output with them). Nothing changes when a texture cannot be made.
     pub fn frame_views(&mut self, device: &ProtocolObject<dyn MTLDevice>, size: (u32, u32)) -> Result<(Texture, Texture), String> {
@@ -357,21 +247,16 @@ impl MetalChain {
             let targets = (0..wanted).map(|_| target(device, self.format, size)).collect::<Result<Vec<_>, _>>()?;
             // A third pass writes the frame texture, so such a chain never shades a region alone.
             let kept = if self.region_terms.is_some() && self.passes.len() <= 2 { Some(target(device, self.format, size)?) } else { None };
-            if kept.is_some() {
-                self.make_one_pass(device)?;
-            }
-            let spare = if kept.is_some() && self.one.is_some() { Some(target(device, self.format, size)?) } else { None };
             if kept.is_some() && self.fill.is_none() {
                 let raw = raw_format(self.format);
                 let all = pipeline(device, &self.vertex, &self.copy, raw, false)?;
                 let last = if self.keep_alpha { all.clone() } else { pipeline(device, &self.vertex, &self.copy, raw, true)? };
                 self.fill = Some((all, last));
             }
-            self.made += (targets.len() + usize::from(kept.is_some()) + usize::from(spare.is_some())) as u64;
+            self.made += (targets.len() + usize::from(kept.is_some())) as u64;
             self.kept_made += u64::from(kept.is_some());
             self.targets = targets;
             self.kept = kept;
-            self.spare = spare;
             // The drawables of the old size are gone.
             self.views.clear();
             self.kept_ok = false;
@@ -434,29 +319,12 @@ impl MetalChain {
             Shade::Kept(r) => (Some(r).filter(|_| self.kept.is_some() && self.kept_ok), false),
             Shade::Fresh(r) => (Some(r).filter(|_| self.kept.is_some() && !self.region_terms.as_ref().is_some_and(|t| t.contains(&RegionTerm::StillLooks))), true),
         };
+        self.write_uniforms(device, cb, draw, uniforms)?;
         let last = self.passes.len().saturating_sub(1);
         // A full frame no next frame builds on writes the window directly.
         let skip_kept = rects.is_none() && !self.keep_next;
-        // `Chain::run_with`'s one pass: the window and the spare kept texture at once.
-        let one_pass = !skip_kept && self.one.is_some() && self.kept.is_some() && self.spare.is_some() && rects.is_none_or(|r| r.len() <= crate::render_fx::SHADE_RECTS);
-        let shade = one_pass.then(|| {
-            let mut bytes = [0u8; SHADE_BYTES];
-            let (sw, sh) = self.size;
-            let full = [PxRect { x: 0, y: 0, w: sw, h: sh }];
-            let list = rects.unwrap_or(&full);
-            for (r, at) in list.iter().zip(bytes.chunks_exact_mut(16)) {
-                let (x, y) = (r.x.min(sw), r.y.min(sh));
-                let (w, h) = (r.w.min(sw - x), r.h.min(sh - y));
-                for (v, b) in [x, y, w, h].into_iter().zip(at.chunks_exact_mut(4)) {
-                    b.copy_from_slice(&v.to_le_bytes());
-                }
-            }
-            bytes[SHADE_BYTES - 16..SHADE_BYTES - 12].copy_from_slice(&(list.len() as u32).to_le_bytes());
-            bytes
-        });
-        self.write_uniforms(device, cb, draw, uniforms, shade)?;
         // The drawable's own non-sRGB view, only for a frame that writes it directly.
-        let direct: Option<&ProtocolObject<dyn MTLTexture>> = match self.kept.is_none() || skip_kept || one_pass {
+        let direct: Option<&ProtocolObject<dyn MTLTexture>> = match self.kept.is_none() || skip_kept {
             false => None,
             true if out.pixelFormat() == raw_format(out.pixelFormat()) => Some(out),
             true => {
@@ -468,38 +336,6 @@ impl MetalChain {
         let load = rects.is_some() && !fresh;
         let fill = self.fill.as_ref().filter(|_| fresh && rects.is_some() && self.kept.is_some());
         for (i, pass) in self.passes.iter().enumerate() {
-            self.passes_run += 1;
-            if i == last && one_pass {
-                let (k, spare, o, d) = (self.kept.as_ref().expect("checked"), self.spare.as_ref().expect("checked"), self.one.as_ref().expect("checked"), direct.expect("one pass has the window's view"));
-                let desc = MTLRenderPassDescriptor::new();
-                for (n, t) in [d, &*spare.raw].into_iter().enumerate() {
-                    // SAFETY: indexes 0 and 1 are the pipeline's two color attachments.
-                    let at = unsafe { desc.colorAttachments().objectAtIndexedSubscript(n) };
-                    at.setTexture(Some(t));
-                    at.setClearColor(MTLClearColor { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 });
-                    at.setLoadAction(MTLLoadAction::Clear);
-                    at.setStoreAction(MTLStoreAction::Store);
-                }
-                let enc = cb.renderCommandEncoderWithDescriptor(&desc).ok_or("no Metal render encoder")?;
-                enc.setFrontFacingWinding(MTLWinding::CounterClockwise);
-                enc.setCullMode(MTLCullMode::None);
-                enc.setTriangleFillMode(MTLTriangleFillMode::Fill);
-                // Outside the rects: last frame's kept output, or the new frame.
-                let outside = if rects.is_some() && !fresh { &k.raw } else { &self.targets[0].raw };
-                // SAFETY: the slots are the ones the variant was translated with; every resource
-                // outlives the command buffer.
-                unsafe {
-                    enc.setRenderPipelineState(&o.pipeline);
-                    enc.setFragmentTexture_atIndex(Some(&self.targets[i % 2].raw), o.slots.texture);
-                    enc.setFragmentTexture_atIndex(Some(outside), o.slots.kept);
-                    enc.setFragmentBuffer_offset_atIndex(Some(&pass.uniforms), 0, o.slots.buffer);
-                    enc.setFragmentBuffer_offset_atIndex(Some(&o.shade), 0, o.slots.shade);
-                    enc.setFragmentSamplerState_atIndex(Some(&self.sampler), o.slots.sampler);
-                }
-                triangle(&enc);
-                enc.endEncoding();
-                continue;
-            }
             let output: &ProtocolObject<dyn MTLTexture> = match (i == last, kept, &direct) {
                 (true, Some(k), _) => k,
                 (true, None, Some(d)) => d,
@@ -536,19 +372,14 @@ impl MetalChain {
             }
             enc.endEncoding();
         }
-        if let Some(k) = self.kept.as_ref().filter(|_| !skip_kept && !one_pass) {
-            self.passes_run += 1;
+        if let Some(k) = self.kept.as_ref().filter(|_| !skip_kept) {
             let blit = cb.blitCommandEncoder().ok_or("no Metal blit encoder")?;
             // SAFETY: the same format and size; both textures outlive the command buffer.
             unsafe { blit.copyFromTexture_toTexture(&k.texture, out) };
             blit.endEncoding();
         }
-        if one_pass {
-            std::mem::swap(&mut self.kept, &mut self.spare);
-        }
         self.kept_ok = self.kept.is_some() && !skip_kept;
         self.shaded_region = rects.is_some();
-        self.ran_one_pass = one_pass;
         self.ran = true;
         Ok(())
     }
@@ -569,8 +400,7 @@ impl MetalChain {
 
     /// Packs each pass's uniforms (unless `skip_if_still` did) and writes the ones that changed:
     /// just the clock span when only it moved, through one staging chunk and one blit.
-    /// `shade`, the one pass's rects, is written too when the buffer holds other bytes.
-    fn write_uniforms(&mut self, device: &ProtocolObject<dyn MTLDevice>, cb: &ProtocolObject<dyn MTLCommandBuffer>, draw: &mut MetalDraw, uniforms: &Uniforms, shade: Option<[u8; SHADE_BYTES]>) -> Result<(), String> {
+    fn write_uniforms(&mut self, device: &ProtocolObject<dyn MTLDevice>, cb: &ProtocolObject<dyn MTLCommandBuffer>, draw: &mut MetalDraw, uniforms: &Uniforms) -> Result<(), String> {
         let staged = std::mem::take(&mut self.staged);
         self.writes.clear();
         for (i, pass) in self.passes.iter().enumerate() {
@@ -583,8 +413,7 @@ impl MetalChain {
                 self.writes.push((i, crate::render_fx_gpu::upload_range(&layout.clock_span(), packed, last)));
             }
         }
-        let shade = shade.filter(|b| self.one.as_ref().is_some_and(|o| o.held.as_ref() != Some(b)));
-        let total: usize = self.writes.iter().map(|(_, r)| r.len().next_multiple_of(4)).sum::<usize>() + shade.map_or(0, |b| b.len());
+        let total: usize = self.writes.iter().map(|(_, r)| r.len().next_multiple_of(4)).sum();
         if total == 0 {
             return Ok(());
         }
@@ -600,14 +429,6 @@ impl MetalChain {
                 blit.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(&staging, at, &self.passes[*i].uniforms, range.start, bytes.len());
             }
             at += bytes.len().next_multiple_of(4);
-        }
-        if let (Some(bytes), Some(o)) = (shade, self.one.as_mut()) {
-            // SAFETY: as above; the rects buffer holds SHADE_BYTES.
-            unsafe {
-                std::ptr::copy_nonoverlapping(bytes.as_ptr(), staging.contents().as_ptr().cast::<u8>().add(at), bytes.len());
-                blit.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(&staging, at, &o.shade, 0, bytes.len());
-            }
-            o.held = Some(bytes);
         }
         blit.endEncoding();
         for (i, _) in &self.writes {

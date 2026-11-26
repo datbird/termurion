@@ -141,8 +141,11 @@ pub struct Chain {
     /// pass in the middle, one with the last pass's write mask. Made with the first kept output.
     fill: Option<(wgpu::BindGroupLayout, wgpu::RenderPipeline, wgpu::RenderPipeline)>,
     /// Render passes begun (tests).
+    #[cfg(test)]
     passes_run: u64,
+    /// The region path may run its last pass as one (tests turn it off to compare).
     one_pass_on: bool,
+    #[cfg(test)]
     ran_one_pass: bool,
     /// The last shader's GLSL body, for its one-pass variant (a chain of at most two shaders).
     one_src: Option<std::sync::Arc<str>>,
@@ -268,7 +271,16 @@ impl Chain {
         }
         let last_packed = vec![Vec::new(); passes.len()];
         let scratch = vec![Vec::new(); passes.len()];
-        Ok(Chain { passes, bind_layout, sampler, format, size: (0, 0), targets: Vec::new(), blits: None, plain: None, keep_alpha, frame_drawn: false, binds: Vec::new(), copy_binds: Vec::new(), last_packed, binds_made: 0, uniform_writes: 0, ran: false, skipped: 0, scratch, staged: false, region_terms: None, kept: None, kept_ok: false, kept_made: 0, keep_next: true, shaded_region: false, fill: None, passes_run: 0, one_pass_on: true, ran_one_pass: false, one_src, one: None, one_tried: false })
+        Ok(Chain { passes, bind_layout, sampler, format, size: (0, 0), targets: Vec::new(), blits: None, plain: None, keep_alpha, frame_drawn: false, binds: Vec::new(), copy_binds: Vec::new(), last_packed, binds_made: 0, uniform_writes: 0, ran: false, skipped: 0, scratch, staged: false, region_terms: None, kept: None, kept_ok: false, kept_made: 0, keep_next: true, shaded_region: false, fill: None,
+            #[cfg(test)]
+            passes_run: 0,
+            one_pass_on: true,
+            #[cfg(test)]
+            ran_one_pass: false,
+            one_src,
+            one: None,
+            one_tried: false,
+        })
     }
 
     /// For a card that cannot view a texture in a second format (`view_formats_supported` false):
@@ -347,16 +359,19 @@ impl Chain {
     }
 
     /// Whether the region path may run its last pass as one (tests compare it with the old way).
+    #[cfg(test)]
     pub fn set_one_pass(&mut self, on: bool) {
         self.one_pass_on = on;
     }
 
     /// Whether the last run wrote the window and the kept output in one pass.
+    #[cfg(test)]
     pub fn ran_one_pass(&self) -> bool {
         self.ran_one_pass
     }
 
     /// How many render passes the chain has begun.
+    #[cfg(test)]
     pub fn passes_run(&self) -> u64 {
         self.passes_run
     }
@@ -562,7 +577,7 @@ impl Chain {
     /// Builds the one pass the first time a kept output is made: only with view formats and a
     /// GLSL last shader whose variant compiles. Any other chain keeps the two passes.
     fn make_one_pass(&mut self, device: &wgpu::Device) {
-        if std::mem::replace(&mut self.one_tried, true) || self.blits.is_some() {
+        if !self.one_pass_on || std::mem::replace(&mut self.one_tried, true) || self.blits.is_some() {
             return;
         }
         let Some(src) = self.one_src.clone() else { return };
@@ -605,8 +620,7 @@ impl Chain {
     }
 
     /// One copy pass from `src` into `dst`.
-    fn blit(encoder: &mut wgpu::CommandEncoder, bind: &wgpu::BindGroup, pipeline: &wgpu::RenderPipeline, dst: &wgpu::TextureView, passes: &mut u64) {
-        *passes += 1;
+    fn blit(encoder: &mut wgpu::CommandEncoder, bind: &wgpu::BindGroup, pipeline: &wgpu::RenderPipeline, dst: &wgpu::TextureView) {
         let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("render_fx copy"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: dst, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
@@ -754,7 +768,11 @@ impl Chain {
         // An animation-only region frame finds the decoded frame still there: with a kept output
         // no pass writes it.
         if let Some((b, p)) = plain.filter(|_| rects.is_none() || fresh) {
-            Self::blit(&mut encoder, &self.copy_binds[0], &b.decode, &p.raw[0], &mut self.passes_run);
+            Self::blit(&mut encoder, &self.copy_binds[0], &b.decode, &p.raw[0]);
+            #[cfg(test)]
+            {
+                self.passes_run += 1;
+            }
         }
         let kept = self.kept.as_ref().map(|k| &k.views[k.cur]).filter(|_| !skip_kept);
         // An animation-only region frame keeps every pixel outside its rects from the last frame.
@@ -768,7 +786,10 @@ impl Chain {
         for (i, pass) in self.passes.iter().enumerate() {
             if i == last && one_pass {
                 let (k, o) = (self.kept.as_ref().expect("one pass has a kept output"), self.one.as_ref().expect("checked above"));
-                self.passes_run += 1;
+                #[cfg(test)]
+                {
+                    self.passes_run += 1;
+                }
                 let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("render_fx one pass"),
                     color_attachments: &[cleared(out), cleared(&k.views[1 - k.cur])],
@@ -792,7 +813,10 @@ impl Chain {
                 None if i == last => kept.unwrap_or(out),
                 None => &self.targets[(i + 1) % 2].raw,
             };
-            self.passes_run += 1;
+            #[cfg(test)]
+            {
+                self.passes_run += 1;
+            }
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("render_fx"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: output, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load, store: wgpu::StoreOp::Store } })],
@@ -825,8 +849,20 @@ impl Chain {
             }
         }
         match (plain, &self.kept) {
-            (Some((b, _)), _) => Self::blit(&mut encoder, &self.copy_binds[1], &b.encode, out, &mut self.passes_run),
-            (None, Some(Kept { copy: Some((_, pipeline, binds)), cur, .. })) if !skip_kept && !one_pass => Self::blit(&mut encoder, &binds[*cur], pipeline, out, &mut self.passes_run),
+            (Some((b, _)), _) => {
+                Self::blit(&mut encoder, &self.copy_binds[1], &b.encode, out);
+                #[cfg(test)]
+                {
+                    self.passes_run += 1;
+                }
+            }
+            (None, Some(Kept { copy: Some((_, pipeline, binds)), cur, .. })) if !skip_kept && !one_pass => {
+                Self::blit(&mut encoder, &binds[*cur], pipeline, out);
+                #[cfg(test)]
+                {
+                    self.passes_run += 1;
+                }
+            }
             (None, _) => {}
         }
         match uploads {
@@ -842,7 +878,10 @@ impl Chain {
         }
         self.kept_ok = self.kept.is_some() && !skip_kept;
         self.shaded_region = rects.is_some();
-        self.ran_one_pass = one_pass;
+        #[cfg(test)]
+        {
+            self.ran_one_pass = one_pass;
+        }
         self.ran = true;
     }
 }

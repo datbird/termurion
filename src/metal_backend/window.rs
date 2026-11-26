@@ -48,9 +48,6 @@ pub struct MetalWindow {
     /// A test window draws into a texture of its own in place of a drawable.
     #[cfg(test)]
     offscreen: Option<Texture>,
-    /// The last offscreen frame's GPU time in seconds (tests).
-    #[cfg(test)]
-    gpu_seconds: f64,
 }
 
 /// A `w` by `h` render target in the window format; `views` lets it be viewed as non-sRGB too.
@@ -112,8 +109,6 @@ impl MetalWindow {
             _window: window,
             #[cfg(test)]
             offscreen: None,
-            #[cfg(test)]
-            gpu_seconds: 0.0,
         })
     }
 
@@ -248,10 +243,6 @@ impl MetalWindow {
         #[cfg(test)]
         if drawable.is_none() {
             cb.waitUntilCompleted();
-            // SAFETY: both are plain double properties of a completed command buffer (sent by
-            // name: objc2-metal gates them behind a feature this crate leaves off).
-            let (start, end): (f64, f64) = unsafe { (objc2::msg_send![&*cb, GPUStartTime], objc2::msg_send![&*cb, GPUEndTime]) };
-            self.gpu_seconds = end - start;
         }
         Ok(Drawn { bar: None, kept, draw, present: present_start.map(|t| t.elapsed()) })
     }
@@ -430,17 +421,6 @@ impl MetalWindow {
     #[cfg(test)]
     pub(crate) fn chain(&self) -> Option<&MetalChain> {
         self.chain.as_ref()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn chain_mut(&mut self) -> Option<&mut MetalChain> {
-        self.chain.as_mut()
-    }
-
-    /// The last offscreen frame's GPU time in seconds (tests).
-    #[cfg(test)]
-    pub(crate) fn gpu_seconds(&self) -> f64 {
-        self.gpu_seconds
     }
 
     /// Moves the window onto a new Metal device after a loss: new pipelines, buffers and atlas

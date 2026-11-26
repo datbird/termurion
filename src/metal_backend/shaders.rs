@@ -196,15 +196,6 @@ pub fn effect_to_msl(compiled: &crate::render_fx::Compiled) -> Result<(String, S
     to_msl_with(&compiled.module, &compiled.info, ShaderStage::Fragment, &compiled.entry, stage_resources(&[&EFFECT], ShaderStage::Fragment), Vec::new())
 }
 
-/// The region path's one pass (`render_fx_gpu::Chain`'s one-pass layout): the effect layout,
-/// then last frame's kept texture and the shade rects block.
-pub const EFFECT_ONE_PASS: [Entry; 5] = [Entry::new(0, Kind::Texture, false, true), Entry::new(1, Kind::Buffer, false, true), Entry::new(2, Kind::Sampler, false, true), Entry::new(3, Kind::Texture, false, true), Entry::new(4, Kind::Buffer, false, true)];
-
-/// A one-pass variant (`render_fx::compile_one_pass`) as MSL over `EFFECT_ONE_PASS`.
-pub fn one_pass_to_msl(compiled: &crate::render_fx::Compiled) -> Result<(String, String), String> {
-    to_msl_with(&compiled.module, &compiled.info, ShaderStage::Fragment, &compiled.entry, stage_resources(&[&EFFECT_ONE_PASS], ShaderStage::Fragment), Vec::new())
-}
-
 /// The full-screen triangle every effect and copy pass draws (`render_fx_gpu::VERTEX`), as MSL.
 pub fn effect_vertex_msl() -> Result<(String, String), String> {
     let (module, info) = parse_wgsl(crate::render_fx_gpu::VERTEX)?;

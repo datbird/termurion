@@ -95,7 +95,7 @@ fn private_buffer(device: &ProtocolObject<dyn MTLDevice>, size: u64) -> Result<B
 
 impl MetalDraw {
     /// The draw for a renderer whose glyph atlas and rows are as `text` says (new ones).
-    pub fn new(device: &ProtocolObject<dyn MTLDevice>, format: MTLPixelFormat, text: &TextStart) -> Result<MetalDraw, String> {
+    pub(super) fn new(device: &ProtocolObject<dyn MTLDevice>, format: MTLPixelFormat, text: &TextStart) -> Result<MetalDraw, String> {
         let buf = || private_buffer(device, Shadow::START);
         Ok(MetalDraw {
             quads: QuadPipeline::new(device, format)?,
