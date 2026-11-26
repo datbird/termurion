@@ -10,42 +10,59 @@ impl App {
     /// with the pane's background image laid out over the whole image's height. With `cursor`,
     /// `screen`'s cursor is drawn where it is shown, as a focused pane's, undimmed.
     pub(super) fn render_lines(&mut self, pane: PaneId, screen: &crate::screen::Screen, first: usize, last: usize, cursor: bool) -> Result<(u32, u32, Vec<u8>), String> {
-        use alacritty_terminal::grid::Dimensions;
-        let (cell, face) = (self.pane_cell(pane), self.pane_face(pane));
-        let pad = self.margins().0.round();
-        let cols = screen.term().columns();
-        let width = (cols as f32 * cell.0 + 2.0 * pad).ceil();
-        let lines = last + 1 - first;
-        let total_h = lines as f32 * cell.1;
-        let history = screen.term().grid().history_size() as i32;
-        let background = self.background_of(pane);
-        // A batch must fit in one texture; iTerm2 renders 1000 lines at a time.
-        let max_rows = ((8192.0 / cell.1).floor() as usize).clamp(1, 1000);
-        let bg = screen.palette.bg;
+        let face = self.pane_face(pane);
         let mut draw = self.draw_prefs_for(face);
         draw.fx_rules = self.panes.get(&pane).map(|p| p.fx_rules.clone());
-        let mut out = Vec::with_capacity((width as usize) * (total_h as usize) * 4);
-        for (b0, b1) in screenshot::batches(first, last, max_rows) {
-            let count = b1 + 1 - b0;
-            let mut batch = screenshot::slice(screen, b0 as i32 - history, count);
-            if cursor {
-                screenshot::carry_cursor(screen, &mut batch, b0 as i32 - history);
-            }
-            let h = count as f32 * cell.1;
-            let mut frame = Frame { clear: rgba(bg, 1.0), gap_underlines: !draw.solid_underlines, ..Default::default() };
-            let area = Rect { x: 0.0, y: 0.0, w: width, h };
-            if let Some((image, mode, blend)) = &background {
-                // The image is laid out over the whole screenshot, and this batch shows its slice.
-                let container = Rect { x: 0.0, y: -((b0 - first) as f32 * cell.1), w: width, h: total_h };
-                let pieces = crate::bgimage::quads(*mode, image.size, container, area);
-                scene::background(&mut frame, area, &pieces, image, bg, *blend);
-            }
-            picture_pane(&mut frame, &batch, Rect { x: pad, y: 0.0, w: cols as f32 * cell.0, h }, cell, cursor, &draw, face);
-            let gpu = self.gpu.as_mut().ok_or("no window")?;
-            out.extend(gpu.win.capture(&frame, None, width as u32, h as u32)?);
-        }
-        Ok((width as u32, total_h as u32, out))
+        let look = LinesLook { cell: self.pane_cell(pane), face, pad: self.margins().0.round(), background: self.background_of(pane), draw };
+        let gpu = self.gpu.as_mut().ok_or("no window")?;
+        draw_lines(&mut gpu.win, &look, screen, first, last, cursor)
     }
+}
+
+/// How a pane's lines are drawn into a picture: its cell, face, side padding, background image and
+/// draw settings.
+pub(crate) struct LinesLook {
+    pub cell: (f32, f32),
+    pub face: u16,
+    pub pad: f32,
+    pub background: Option<(Arc<crate::bgimage::Loaded>, crate::bgimage::Mode, f32)>,
+    pub draw: scene::DrawPrefs,
+}
+
+/// `App::render_lines` on `win`: the lines in batches that each fit in one texture, read back and
+/// joined top to bottom.
+pub(crate) fn draw_lines(win: &mut crate::gpu_window::WindowGpu, look: &LinesLook, screen: &crate::screen::Screen, first: usize, last: usize, cursor: bool) -> Result<(u32, u32, Vec<u8>), String> {
+    use alacritty_terminal::grid::Dimensions;
+    let LinesLook { cell, face, pad, background, draw } = look;
+    let (cell, face, pad) = (*cell, *face, *pad);
+    let cols = screen.term().columns();
+    let width = (cols as f32 * cell.0 + 2.0 * pad).ceil();
+    let lines = last + 1 - first;
+    let total_h = lines as f32 * cell.1;
+    let history = screen.term().grid().history_size() as i32;
+    // A batch must fit in one texture; iTerm2 renders 1000 lines at a time.
+    let max_rows = ((8192.0 / cell.1).floor() as usize).clamp(1, 1000);
+    let bg = screen.palette.bg;
+    let mut out = Vec::with_capacity((width as usize) * (total_h as usize) * 4);
+    for (b0, b1) in screenshot::batches(first, last, max_rows) {
+        let count = b1 + 1 - b0;
+        let mut batch = screenshot::slice(screen, b0 as i32 - history, count);
+        if cursor {
+            screenshot::carry_cursor(screen, &mut batch, b0 as i32 - history);
+        }
+        let h = count as f32 * cell.1;
+        let mut frame = Frame { clear: rgba(bg, 1.0), gap_underlines: !draw.solid_underlines, ..Default::default() };
+        let area = Rect { x: 0.0, y: 0.0, w: width, h };
+        if let Some((image, mode, blend)) = background {
+            // The image is laid out over the whole screenshot, and this batch shows its slice.
+            let container = Rect { x: 0.0, y: -((b0 - first) as f32 * cell.1), w: width, h: total_h };
+            let pieces = crate::bgimage::quads(*mode, image.size, container, area);
+            scene::background(&mut frame, area, &pieces, image, bg, *blend);
+        }
+        picture_pane(&mut frame, &batch, Rect { x: pad, y: 0.0, w: cols as f32 * cell.0, h }, cell, cursor, draw, face);
+        out.extend(win.capture(&frame, None, width as u32, h as u32)?);
+    }
+    Ok((width as u32, total_h as u32, out))
 }
 
 /// How every picture of a pane (Make Screenshot's minimap and image, the API screenshot, the

@@ -119,14 +119,50 @@ pub fn symbols_face() -> Vec<u8> {
     include_bytes!("../resources/fonts/TermurionSymbols.ttf").to_vec()
 }
 
-pub struct EguiHost {
+/// The GPU half of an egui window: egui-wgpu on a wgpu device, or the Metal painter on the Metal
+/// device (macOS).
+enum Canvas {
+    Wgpu(WgpuCanvas),
+    #[cfg(target_os = "macos")]
+    Metal(crate::metal_backend::EguiCanvas),
+}
+
+struct WgpuCanvas {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    renderer: egui_wgpu::Renderer,
+}
+
+impl Canvas {
+    fn size(&self) -> (u32, u32) {
+        match self {
+            Canvas::Wgpu(w) => (w.config.width, w.config.height),
+            #[cfg(target_os = "macos")]
+            Canvas::Metal(m) => m.size(),
+        }
+    }
+
+    fn resize(&mut self, w: u32, h: u32, scale: f64) {
+        match self {
+            Canvas::Wgpu(c) => {
+                c.config.width = w;
+                c.config.height = h;
+                c.surface.configure(&c.device, &c.config);
+            }
+            #[cfg(target_os = "macos")]
+            Canvas::Metal(m) => m.resize(w, h, scale),
+        }
+        let _ = scale;
+    }
+}
+
+pub struct EguiHost {
+    /// First, so it goes before the window it draws in.
+    canvas: Canvas,
     ctx: egui::Context,
     state: egui_winit::State,
-    renderer: egui_wgpu::Renderer,
     pub window: Arc<Window>,
     /// Set to read the selected label text on the next frame (see `paint`).
     probe: bool,
@@ -201,32 +237,39 @@ impl EguiHost {
         gpu: &crate::gpu_shared::GpuShared,
         attrs: winit::window::WindowAttributes,
     ) -> Result<EguiHost, String> {
-        let gpu = gpu.for_egui()?;
-        let (instance, adapter, device, queue) = gpu.wgpu()?;
         let attrs = attrs.with_window_icon(crate::presence::window_icon());
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
-        let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
-        let caps = surface.get_capabilities(adapter);
-        let format = caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(caps.formats[0]);
-        let size = window.inner_size();
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            width: size.width.max(1),
-            height: size.height.max(1),
-            present_mode: wgpu::PresentMode::Fifo,
-            // Explicit: an egui window is never see-through (a visual swapchain lists Auto first).
-            alpha_mode: crate::transparency::pick_alpha_mode(&caps.alpha_modes, false),
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-            color_space: wgpu::SurfaceColorSpace::Auto,
+        let (canvas, max_side) = match gpu {
+            crate::gpu_shared::GpuShared::Wgpu { instance, adapter, device, queue } => {
+                let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
+                let caps = surface.get_capabilities(adapter);
+                let format = caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(caps.formats[0]);
+                let size = window.inner_size();
+                let config = wgpu::SurfaceConfiguration {
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    format,
+                    width: size.width.max(1),
+                    height: size.height.max(1),
+                    present_mode: wgpu::PresentMode::Fifo,
+                    // Explicit: an egui window is never see-through (a visual swapchain lists Auto first).
+                    alpha_mode: crate::transparency::pick_alpha_mode(&caps.alpha_modes, false),
+                    view_formats: vec![],
+                    desired_maximum_frame_latency: 2,
+                    color_space: wgpu::SurfaceColorSpace::Auto,
+                };
+                surface.configure(device, &config);
+                let renderer = egui_wgpu::Renderer::new(device, format, egui_wgpu::RendererOptions::default());
+                let side = device.limits().max_texture_dimension_2d as usize;
+                (Canvas::Wgpu(WgpuCanvas { surface, config, device: device.clone(), queue: queue.clone(), renderer }), side)
+            }
+            // The terminal windows' own device: no second GPU device for the settings windows.
+            #[cfg(target_os = "macos")]
+            crate::gpu_shared::GpuShared::Metal(m) => (Canvas::Metal(crate::metal_backend::EguiCanvas::open(&window, m)?), crate::metal_backend::MAX_TEXTURE_SIDE as usize),
         };
-        surface.configure(device, &config);
         let ctx = egui::Context::default();
         install_menu_fonts(&ctx);
-        let state = egui_winit::State::new(ctx.clone(), egui::ViewportId::ROOT, &window, Some(window.scale_factor() as f32), None, Some(device.limits().max_texture_dimension_2d as usize));
-        let renderer = egui_wgpu::Renderer::new(device, format, egui_wgpu::RendererOptions::default());
-        Ok(EguiHost { surface, config, device: device.clone(), queue: queue.clone(), ctx, state, renderer, window, probe: false, probed: None, dialog: None, answered: false, focus_on_show: std::cell::Cell::new(false), validation_logged: false })
+        let state = egui_winit::State::new(ctx.clone(), egui::ViewportId::ROOT, &window, Some(window.scale_factor() as f32), None, Some(max_side));
+        Ok(EguiHost { canvas, ctx, state, window, probe: false, probed: None, dialog: None, answered: false, focus_on_show: std::cell::Cell::new(false), validation_logged: false })
     }
 
     pub fn id(&self) -> WindowId {
@@ -282,9 +325,7 @@ impl EguiHost {
         }
         if let WindowEvent::Resized(s) = event
             && s.width > 0 && s.height > 0 {
-                self.config.width = s.width;
-                self.config.height = s.height;
-                self.surface.configure(&self.device, &self.config);
+                self.canvas.resize(s.width, s.height, self.window.scale_factor());
                 self.answered = true;
             }
         let r = self.state.on_window_event(&self.window, event);
@@ -387,10 +428,8 @@ impl EguiHost {
         // (a requested one) would otherwise leave egui drawing a smaller frame into it, and the
         // rest unpainted.
         let size = self.window.inner_size();
-        if size.width > 0 && size.height > 0 && (size.width, size.height) != (self.config.width, self.config.height) {
-            self.config.width = size.width;
-            self.config.height = size.height;
-            self.surface.configure(&self.device, &self.config);
+        if size.width > 0 && size.height > 0 && (size.width, size.height) != self.canvas.size() {
+            self.canvas.resize(size.width, size.height, self.window.scale_factor());
         }
         let mut input = self.state.take_egui_input(&self.window);
         let mut probing = false;
@@ -434,35 +473,57 @@ impl EguiHost {
         with_delayed(|d| d.record(u64::from(self.window.id()), Arc::downgrade(&self.window), std::time::Instant::now(), delay));
         self.state.handle_platform_output(&self.window, out.platform_output);
         let jobs = self.ctx.tessellate(out.shapes, out.pixels_per_point);
-        let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: [self.config.width, self.config.height], pixels_per_point: out.pixels_per_point };
-        for (id, deltas) in &out.textures_delta.set {
-            for delta in deltas {
-                self.renderer.update_texture(&self.device, &self.queue, *id, delta);
+        #[cfg(target_os = "macos")]
+        if let Canvas::Metal(c) = &mut self.canvas {
+            if !present {
+                c.apply(&out.textures_delta);
+                out.textures_delta.clear();
+                return;
             }
-        }
-        if !present {
-            for id in &out.textures_delta.free {
-                self.renderer.free_texture(id);
+            // A failed frame was reported as a lost device; its texture changes wait in the painter.
+            if c.paint(&jobs, &out.textures_delta, out.pixels_per_point) == crate::metal_backend::egui_painter::Shown::Later {
+                with_delayed(|d| d.record(u64::from(self.window.id()), Arc::downgrade(&self.window), std::time::Instant::now(), RETRY_LATER));
             }
             out.textures_delta.clear();
             return;
         }
-        let status = self.surface.get_current_texture();
+        self.paint_wgpu(&jobs, &mut out.textures_delta, out.pixels_per_point, present);
+    }
+
+    /// The frame on a wgpu canvas: textures, then the surface texture (none for a frame that is
+    /// not presented), the pass and the present.
+    fn paint_wgpu(&mut self, jobs: &[egui::ClippedPrimitive], textures_delta: &mut egui::TexturesDelta, pixels_per_point: f32, present: bool) {
+        #[cfg_attr(not(target_os = "macos"), allow(irrefutable_let_patterns))]
+        let Canvas::Wgpu(w) = &mut self.canvas else { return };
+        let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: [w.config.width, w.config.height], pixels_per_point };
+        for (id, deltas) in &textures_delta.set {
+            for delta in deltas {
+                w.renderer.update_texture(&w.device, &w.queue, *id, delta);
+            }
+        }
+        if !present {
+            for id in &textures_delta.free {
+                w.renderer.free_texture(id);
+            }
+            textures_delta.clear();
+            return;
+        }
+        let status = w.surface.get_current_texture();
         let frame = match status {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
             other => {
                 // The frame is skipped; its texture changes were applied above and are done with.
-                for id in &out.textures_delta.free {
-                    self.renderer.free_texture(id);
+                for id in &textures_delta.free {
+                    w.renderer.free_texture(id);
                 }
-                out.textures_delta.clear();
+                textures_delta.clear();
                 if announce_validation(&other, &mut self.validation_logged) {
                     crate::host_base::log("egui window: the surface reports a validation error; retrying every 250 ms");
                 }
                 let size = self.window.inner_size();
                 match retry_for_window(surface_retry(&other), (size.width, size.height), self.window.is_minimized().unwrap_or(false)) {
                     Retry::Reconfigure => {
-                        self.surface.configure(&self.device, &self.config);
+                        w.surface.configure(&w.device, &w.config);
                         self.window.request_redraw();
                     }
                     // A covered or hidden window has no frame to give; asking again at once spun the
@@ -474,8 +535,8 @@ impl EguiHost {
         };
         self.validation_logged = false;
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("settings") });
-        let extra = self.renderer.update_buffers(&self.device, &self.queue, &mut encoder, &jobs, &screen);
+        let mut encoder = w.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("settings") });
+        let extra = w.renderer.update_buffers(&w.device, &w.queue, &mut encoder, jobs, &screen);
         {
             let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("settings"),
@@ -491,15 +552,15 @@ impl EguiHost {
                 multiview_mask: None,
             });
             let mut pass = pass.forget_lifetime();
-            self.renderer.render(&mut pass, &jobs, &screen);
+            w.renderer.render(&mut pass, jobs, &screen);
         }
-        self.queue.submit(extra.into_iter().chain(Some(encoder.finish())));
-        self.queue.present(frame);
-        for id in &out.textures_delta.free {
-            self.renderer.free_texture(id);
+        w.queue.submit(extra.into_iter().chain(Some(encoder.finish())));
+        w.queue.present(frame);
+        for id in &textures_delta.free {
+            w.renderer.free_texture(id);
         }
         // Applied: egui's debug build checks that no delta is dropped unhandled.
-        out.textures_delta.clear();
+        textures_delta.clear();
     }
 }
 
@@ -582,10 +643,14 @@ mod tests {
         assert!(at(pd, "for op in step.ops(fit.fit)") < at(pd, "WinOp::Show =>"));
         assert_eq!(pd.matches("set_visible(true)").count(), 1, "only Show maps it");
         assert!(at(pd, "WinOp::Show =>") < at(pd, "set_visible(true)"));
-        let pw = &src[src.find("fn paint_with(").unwrap()..];
-        assert!(at(pw, "if !present {") < at(pw, "self.surface.get_current_texture()"), "no texture for the measuring frame");
-        let skip = &pw[at(pw, "if !present {")..at(pw, "self.surface.get_current_texture()")];
+        let pw = &src[src.find("fn paint_wgpu(").unwrap()..];
+        assert!(at(pw, "if !present {") < at(pw, "w.surface.get_current_texture()"), "no texture for the measuring frame");
+        let skip = &pw[at(pw, "if !present {")..at(pw, "w.surface.get_current_texture()")];
         assert!(skip.contains("return;"));
+        // On Metal the measuring frame applies its textures and asks for no drawable.
+        let pw = &src[src.find("fn paint_with(").unwrap()..src.find("fn paint_wgpu(").unwrap()];
+        let metal = &pw[at(pw, "if let Canvas::Metal(c)")..];
+        assert!(at(metal, "if !present {") < at(metal, "c.apply(") && at(metal, "c.apply(") < at(metal, "return;") && at(metal, "return;") < at(metal, "c.paint("));
     }
 
     #[test]
@@ -623,7 +688,7 @@ mod tests {
     #[test]
     fn a_hidden_dialog_does_not_redraw_at_once() {
         let src = include_str!("egui_host.rs").split("#[cfg(test)]").next().unwrap();
-        let pw = &src[src.find("fn paint_with(").unwrap()..];
+        let pw = &src[src.find("fn paint_wgpu(").unwrap()..];
         let arm = &pw[pw.find("match retry_for_window(").unwrap()..];
         let (reconf, later) = (&arm[arm.find("Retry::Reconfigure =>").unwrap()..arm.find("Retry::Later =>").unwrap()], &arm[arm.find("Retry::Later =>").unwrap()..]);
         assert!(reconf.contains("configure(") && reconf.contains("request_redraw()"));

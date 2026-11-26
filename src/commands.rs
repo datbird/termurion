@@ -279,9 +279,18 @@ mod tests {
         assert_eq!(found.len(), 1, "one call site: {:?}", found.iter().map(|f| &f.0).collect::<Vec<_>>());
         let (path, before) = &found[0];
         assert!(path.ends_with("gpu_capture.rs"), "{path:?}");
-        let item_start = before.rfind("\nfn ").or_else(|| before.rfind("\npub fn ")).or_else(|| before.rfind("\npub(super) fn ")).expect("inside a function");
-        let head: Vec<&str> = before[..item_start].lines().rev().take(3).collect();
-        assert!(head.iter().any(|l| l.trim() == "#[cfg(debug_assertions)]"), "the function is debug-only: {head:?}");
+        assert!(debug_only(before), "the function is debug-only");
+        // The Metal capture: one call too, in a debug-only function.
+        let metal = std::fs::read_to_string(root.join("metal_backend/mod.rs")).unwrap();
+        let calls: Vec<usize> = metal.match_indices("startCaptureWithScope(").map(|(i, _)| i).collect();
+        assert_eq!(calls.len(), 1, "one Metal capture call");
+        assert!(debug_only(&metal[..calls[0]]), "the Metal capture is debug-only");
+    }
+
+    /// Whether the function the text before a call ends in is marked debug-only.
+    fn debug_only(before: &str) -> bool {
+        let item_start = ["\nfn ", "\npub fn ", "\npub(super) fn ", "\n    pub fn "].iter().filter_map(|p| before.rfind(p)).max().expect("inside a function");
+        before[..item_start].lines().rev().take(3).any(|l| l.trim() == "#[cfg(debug_assertions)]")
     }
 
     #[test]

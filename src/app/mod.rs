@@ -7734,12 +7734,12 @@ impl App {
             let bar = &mut gpu.bar;
             let mut paint = |o: &crate::gpu_window::Overlay<'_>| bar.draw(&menu_bar_ui::BarFrame { device: o.device, queue: o.queue, target: o.target, format: o.format, size: o.size, scale: bar_scale, dark: bar_dark }, menu);
             #[cfg(debug_assertions)]
-            let capturing = gpu.win.wgpu_device().is_some_and(gpu_capture::begin);
+            let capturing = gpu_capture::begin(&gpu.win);
             gpu.win.set_timing(timing);
             let rendered = gpu.win.render(&frame, fx, if bar_draws { Some(&mut paint) } else { None });
             #[cfg(debug_assertions)]
-            if capturing && let Some(d) = gpu.win.wgpu_device() {
-                gpu_capture::end(d);
+            if capturing {
+                gpu_capture::end(&gpu.win);
             }
             // The renderer's timings for Copy Performance Stats: counters and milliseconds only.
             let acquire = gpu.win.last_acquire();
@@ -9023,17 +9023,17 @@ fn log_adapters_once(list: &[gpu_pick::Facts]) {
     });
 }
 
-/// The first window's GPU: DirectX 12, then Vulkan, then OpenGL, each only when the one before it
+/// The first window's GPU: Metal on macOS; elsewhere DirectX 12, then Vulkan, then OpenGL, each only when the one before it
 /// made no adapter, surface or device (the reason goes to host.log). `power_preference` is iTerm2's
 /// "Prefer integrated to discrete GPU".
 fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop, power_preference: wgpu::PowerPreference) -> Result<Gpu, String> {
     let display = event_loop.owned_display_handle();
     let forced = std::env::var(gpu_pick::FORCE_ENV).ok();
-    // Metal, when asked for, is the only API tried: a failure is shown and the app ends, with no
-    // fallback to wgpu.
+    // On macOS Metal is the only API tried: a failure is shown and the app ends, with no
+    // fallback to wgpu (`TERMURION_RENDERER=wgpu` asks for wgpu instead).
     #[cfg(target_os = "macos")]
-    if gpu_pick::wants_metal(forced.as_deref()) {
-        return match init_metal(window, display, power_preference) {
+    if gpu_pick::wants_metal(true, forced.as_deref()) {
+        return match init_metal(window, power_preference) {
             Ok(gpu) => Ok(gpu),
             Err(e) => {
                 crate::host_base::log(&format!("renderer: Metal unavailable: {e}"));
@@ -9156,9 +9156,8 @@ fn init_gpu_on(window: Arc<Window>, display: &winit::event_loop::OwnedDisplayHan
 
 /// The first terminal window on the native Metal backend: a new device for the GPU preference.
 #[cfg(target_os = "macos")]
-fn init_metal(window: Arc<Window>, display: winit::event_loop::OwnedDisplayHandle, power_preference: wgpu::PowerPreference) -> Result<Gpu, String> {
+fn init_metal(window: Arc<Window>, power_preference: wgpu::PowerPreference) -> Result<Gpu, String> {
     gpu_pick::next_generation();
-    crate::metal_backend::set_display(display);
     // Listed as the wgpu start lists its adapters: host.log, and "Prefer integrated GPU" is offered
     // only where both kinds exist.
     let facts = crate::metal_backend::adapter_facts();
@@ -10584,6 +10583,10 @@ mod banner_tests {
 }
 
 // Last in the file: tests that read the live source stop at the first test marker.
+/// Make Screenshot's drawing, for the tests that compare it across backends.
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) use screenshot_ui::{draw_lines, LinesLook};
+
 /// The menu bar's texts, for the egui font test.
 #[cfg(test)]
 pub(crate) fn menu_texts() -> Vec<String> {

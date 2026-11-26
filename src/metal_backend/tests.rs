@@ -863,3 +863,319 @@ fn a_failed_effect_allocation_is_a_lost_device() {
     compare("capture after a failed one", &wgpu.capture(&frame, fx(), size.0, size.1).unwrap(), &shot, size.0, &mut near);
     report_near(&near);
 }
+
+/// One egui frame, tessellated once: what both painters get.
+struct EguiFrame {
+    name: String,
+    jobs: Vec<egui::ClippedPrimitive>,
+    deltas: egui::TexturesDelta,
+    size: [u32; 2],
+    ppp: f32,
+}
+
+impl Drop for EguiFrame {
+    fn drop(&mut self) {
+        // Both painters took them; egui's debug build checks no delta is dropped unhandled.
+        self.deltas.clear();
+    }
+}
+
+/// `frames` frames of `ui` on a new context of `points` at `ppp` pixels per point, run and
+/// tessellated as `EguiHost::paint_with` runs them.
+fn egui_frames(name: &str, points: (f32, f32), ppp: f32, dark: bool, frames: usize, setup: impl FnOnce(&egui::Context), mut ui: impl FnMut(&mut egui::Ui, usize)) -> Vec<EguiFrame> {
+    let ctx = egui::Context::default();
+    crate::egui_host::install_menu_fonts(&ctx);
+    ctx.set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
+    setup(&ctx);
+    let size = [(points.0 * ppp).round() as u32, (points.1 * ppp).round() as u32];
+    (0..frames)
+        .map(|n| {
+            let mut input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(points.0, points.1))), time: Some(n as f64 / 60.0), max_texture_side: Some(super::MAX_TEXTURE_SIDE as usize), ..Default::default() };
+            input.viewports.insert(egui::ViewportId::ROOT, egui::ViewportInfo { native_pixels_per_point: Some(ppp), ..Default::default() });
+            // The pointer over the window, so hover looks are drawn too.
+            input.events.push(egui::Event::PointerMoved(egui::pos2(points.0 * 0.3, points.1 * 0.2)));
+            let out = ctx.run_ui(input, |u| ui(u, n));
+            assert_eq!(out.pixels_per_point, ppp);
+            let jobs = ctx.tessellate(out.shapes, out.pixels_per_point);
+            EguiFrame { name: format!("{name} {n}"), jobs, deltas: out.textures_delta, size, ppp }
+        })
+        .collect()
+}
+
+/// A Settings page: tabs, a profile list, and a column of real setting controls (switches,
+/// numbers, sliders, choices, colors, text), on a Retina scale. The second frame turns the page,
+/// so new glyphs reach the font atlas as a partial update.
+fn settings_frames() -> Vec<EguiFrame> {
+    let mut profile = crate::profile::Profile::new("Default");
+    let wanted = |s: &&crate::schema::Setting| matches!(s.kind, crate::schema::Kind::Bool | crate::schema::Kind::Int | crate::schema::Kind::Float | crate::schema::Kind::Enum | crate::schema::Kind::Color | crate::schema::Kind::String);
+    let settings: Vec<&crate::schema::Setting> = crate::schema::profile().iter().filter(wanted).collect();
+    assert!(settings.len() > 60, "{} settings", settings.len());
+    egui_frames("settings", (980.0, 720.0), 2.0, true, 3, crate::settings_keys::add_icon_font, move |ui, n| {
+        egui::Panel::top("tabs").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                for (i, t) in ["General", "Appearance", "Profiles", "Keys", "Arrangements", "Pointer", "Advanced"].iter().enumerate() {
+                    let _ = ui.selectable_label(i == 2, *t);
+                }
+            });
+        });
+        egui::Panel::left("profiles").show(ui, |ui| {
+            for p in ["Default", "Work \u{2318}", "SSH box", "Late night"] {
+                let _ = ui.selectable_label(p == "Default", p);
+            }
+        });
+        egui::CentralPanel::default().show(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let page = if n == 0 { &settings[..30] } else { &settings[30..60] };
+                for s in page {
+                    crate::settings_ui::control(ui, &mut profile, s, true);
+                }
+            });
+        });
+    })
+}
+
+/// An alert: its frame, text, a checkbox and buttons, at 1x, in the light look.
+fn prompt_frames() -> Vec<EguiFrame> {
+    let mut remember = false;
+    egui_frames("prompt", (480.0, 220.0), 1.0, false, 2, |_| {}, move |ui, _| {
+        let _ = crate::dialog_frame::show(ui, "Termurion", crate::dialog_frame::OWN_FRAME, crate::dialog_frame::FIT, &mut |ui| {
+            ui.label("Close this window? The session \u{201c}zsh\u{201d} is still running a job (cargo test).");
+            ui.checkbox(&mut remember, "Remember my choice");
+            ui.horizontal(|ui| {
+                let _ = ui.button("Cancel");
+                let _ = ui.button("Close");
+            });
+        });
+    })
+}
+
+/// A popover at a fractional scale: two columns of text clipped by a scroll area, and pictures
+/// with every filter and wrap mode, stretched past their edges. The last frame drops one
+/// picture, so its texture is freed.
+fn popover_frames() -> Vec<EguiFrame> {
+    use egui::{TextureFilter as F, TextureOptions, TextureWrapMode as W};
+    let image = |w: usize, h: usize| egui::ColorImage::from_rgba_unmultiplied([w, h], &(0..w * h).flat_map(|i| [(i * 37 % 256) as u8, (i * 91 % 256) as u8, (255 - i * 13 % 256) as u8, (128 + i * 7 % 128) as u8]).collect::<Vec<u8>>());
+    let mut pictures: Vec<egui::TextureHandle> = Vec::new();
+    let opts = [
+        TextureOptions { magnification: F::Nearest, minification: F::Nearest, wrap_mode: W::Repeat, mipmap_mode: None },
+        TextureOptions { magnification: F::Linear, minification: F::Linear, wrap_mode: W::MirroredRepeat, mipmap_mode: None },
+        TextureOptions { magnification: F::Linear, minification: F::Nearest, wrap_mode: W::ClampToEdge, mipmap_mode: None },
+    ];
+    egui_frames("popover", (320.0, 180.0), 1.5, true, 3, |_| {}, move |ui, n| {
+        if pictures.is_empty() {
+            pictures = opts.iter().enumerate().map(|(i, o)| ui.ctx().load_texture(format!("picture {i}"), image(7 + i * 5, 5 + i * 3), *o)).collect();
+        }
+        if n == 2 {
+            pictures.truncate(2);
+        }
+        egui::ScrollArea::vertical().max_height(70.3).show(ui, |ui| {
+            egui::Grid::new("info").num_columns(2).show(ui, |ui| {
+                for (k, v) in [("Command", "cargo test --lib"), ("Directory", "~/src/termurion"), ("Started", "12:04:31"), ("Exit status", "running"), ("PID", "41377")] {
+                    ui.label(k);
+                    ui.label(v);
+                    ui.end_row();
+                }
+            });
+        });
+        ui.horizontal(|ui| {
+            for p in &pictures {
+                ui.add(egui::Image::new(p).fit_to_exact_size(egui::vec2(61.3, 33.7)).uv(egui::Rect::from_min_max(egui::pos2(-0.4, -0.2), egui::pos2(1.7, 1.3))));
+            }
+        });
+    })
+}
+
+/// egui-wgpu on the shared wgpu (Metal backend) device: one renderer, frames drawn into a fresh
+/// non-sRGB texture each, as `EguiHost` draws them.
+fn wgpu_egui(on: &crate::gpu_window::GpuHandles, renderer: &mut egui_wgpu::Renderer, f: &EguiFrame) -> Vec<u8> {
+    let [w, h] = f.size;
+    let tex = on.device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Bgra8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: f.size, pixels_per_point: f.ppp };
+    for (id, deltas) in &f.deltas.set {
+        for d in deltas {
+            renderer.update_texture(&on.device, &on.queue, *id, d);
+        }
+    }
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = on.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    let extra = renderer.update_buffers(&on.device, &on.queue, &mut encoder, &f.jobs, &screen);
+    {
+        let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        let mut pass = pass.forget_lifetime();
+        renderer.render(&mut pass, &f.jobs, &screen);
+    }
+    on.queue.submit(extra.into_iter().chain(Some(encoder.finish())));
+    for id in &f.deltas.free {
+        renderer.free_texture(id);
+    }
+    read_back(on, &tex)
+}
+
+/// `EguiPainter` on the Metal device, into a fresh texture per frame.
+fn metal_egui(painter: &mut super::EguiPainter, f: &EguiFrame) -> Result<Vec<u8>, String> {
+    let t = super::egui_painter::offscreen_target(&test_device().device, (f.size[0], f.size[1]))?;
+    metal_egui_into(painter, f, &t)
+}
+
+fn metal_egui_into(painter: &mut super::EguiPainter, f: &EguiFrame, t: &objc2::runtime::ProtocolObject<dyn MTLTexture>) -> Result<Vec<u8>, String> {
+    let dev = test_device();
+    painter.paint(dev, super::egui_painter::Target::Texture(t), &f.jobs, &f.deltas, super::egui_painter::ScreenDescriptor { size_in_pixels: f.size, pixels_per_point: f.ppp })?;
+    super::readback::read_rgba(&dev.queue, t, f.size[0], f.size[1])
+}
+
+/// The Settings window, a prompt and a popover, each frame tessellated once and painted by
+/// egui-wgpu on wgpu's Metal backend and by `EguiPainter`: equal bytes.
+#[test]
+fn metal_egui_matches_wgpu() {
+    let on = handles();
+    assert_eq!(on.adapter.get_info().backend, wgpu::Backend::Metal);
+    let mut near = Vec::new();
+    let popover = popover_frames();
+    assert!(popover.iter().any(|f| f.deltas.free.len() == 1), "the dropped picture is freed");
+    for frames in [settings_frames(), prompt_frames(), popover] {
+        let mut renderer = egui_wgpu::Renderer::new(&on.device, wgpu::TextureFormat::Bgra8Unorm, egui_wgpu::RendererOptions::default());
+        let mut painter = super::EguiPainter::new(&test_device().device).unwrap();
+        for f in &frames {
+            assert!(!f.jobs.is_empty(), "{}: nothing drawn", f.name);
+            let a = wgpu_egui(&on, &mut renderer, f);
+            let b = metal_egui(&mut painter, f).unwrap_or_else(|e| panic!("{}: {e}", f.name));
+            assert!(a.chunks(4).any(|p| p[..3] != [0, 0, 0]), "{}: a black picture", f.name);
+            compare(&f.name, &a, &b, f.size[0], &mut near);
+        }
+        // The first frame uploads the font atlas whole; the later ones grew it in place.
+        assert!(frames[0].deltas.set.values().flatten().any(|d| d.pos.is_none()));
+    }
+    report_near(&near);
+}
+
+/// With no terminal window open, the app keeps the device the last one drew on (`prefs_gpu`):
+/// on macOS that is the Metal device, and an egui window opens and paints on it with no wgpu
+/// device made for it.
+#[test]
+fn egui_opens_with_no_terminal_window() {
+    // As the last window's close keeps it: `self.prefs_gpu = self.gpu.as_ref().map(Gpu::shared)`.
+    let app = include_str!("../app/mod.rs");
+    assert!(app.contains("self.prefs_gpu = self.gpu.as_ref().map(Gpu::shared);"));
+    let win = WindowGpu::Metal(metal_window((64, 32)));
+    let prefs = win.shared();
+    drop(win);
+    let crate::gpu_shared::GpuShared::Metal(m) = &prefs else { panic!("prefs_gpu holds a wgpu device on macOS") };
+    // Settings opens on `prefs_gpu`, and `EguiHost` opens a Metal canvas for a Metal device.
+    assert!(app.contains(".or_else(|| self.prefs_gpu.clone())"));
+    let host = include_str!("../egui_host.rs").split("#[cfg(test)]").next().unwrap();
+    assert!(host.contains("GpuShared::Metal(m) => (Canvas::Metal(crate::metal_backend::EguiCanvas::open(&window, m)?)"));
+    assert!(!host.contains("for_egui") && !include_str!("mod.rs").contains("fn egui_wgpu"), "no wgpu device for the egui windows");
+    let frames = prompt_frames();
+    let mut canvas = super::EguiCanvas::offscreen(m, (frames[0].size[0], frames[0].size[1])).unwrap();
+    for f in &frames {
+        assert_eq!(canvas.paint(&f.jobs, &f.deltas, f.ppp), super::egui_painter::Shown::Drawn, "{}", f.name);
+    }
+    let px = canvas.pixels();
+    assert_eq!(px.len(), (frames[0].size[0] * frames[0].size[1] * 4) as usize);
+    // The light dialog's panel, not the black clear.
+    assert!(px.chunks(4).filter(|p| p[0] > 200).count() > px.len() / 8, "the prompt did not paint");
+}
+
+/// Make Screenshot's drawing (`App::render_lines`) on both backends: several batches, a
+/// background image laid over the whole picture, the cursor, and color text.
+#[test]
+fn screenshot_matches_wgpu() {
+    let (_, mut wgpu, metal) = text_pair(true);
+    let mut metal = WindowGpu::Metal(metal);
+    let cell = wgpu.renderer().cell;
+    let mut s = crate::screen::Screen::new(60, 24);
+    for n in 0..620 {
+        s.feed(format!("\x1b[3{}mline {n:03}\x1b[0m of the \x1b[1mscreenshot\x1b[0m test \u{4e2d}\u{6587}\r\n", n % 8).as_bytes());
+    }
+    s.feed(b"$ ls");
+    let px: Vec<u8> = (0..13 * 9).flat_map(|i| [(i * 29 % 256) as u8, (i * 53 % 256) as u8, 200, 255]).collect();
+    let image = Arc::new(crate::bgimage::Loaded { path: "shot.png".into(), key: 77, size: (13, 9), rgba: Arc::new(px) });
+    let look = crate::app::LinesLook { cell, face: crate::render::DEFAULT_FACE, pad: 5.0, background: Some((image, crate::bgimage::Mode::Tile, 0.4)), draw: Default::default() };
+    use alacritty_terminal::grid::Dimensions;
+    let last = s.term().grid().history_size() + s.term().grid().screen_lines() - 1;
+    let max_rows = ((8192.0 / cell.1).floor() as usize).clamp(1, 1000);
+    assert!(last + 1 > max_rows, "one batch only: {} lines, {max_rows} a batch", last + 1);
+    for (first, cursor) in [(0, true), (last - 30, false)] {
+        let (w, h, a) = crate::app::draw_lines(&mut wgpu, &look, &s, first, last, cursor).unwrap();
+        let (w2, h2, b) = crate::app::draw_lines(&mut metal, &look, &s, first, last, cursor).unwrap();
+        assert_eq!((w, h), (w2, h2));
+        assert_eq!(a.len(), (w * h * 4) as usize);
+        crate::render_pixel_tests::assert_same(&format!("screenshot from line {first}"), &a, &b, w);
+    }
+}
+
+/// An unchanged egui frame on Metal makes nothing: the vertex and index buffers, the textures and
+/// the staging chunks are reused.
+#[test]
+fn steady_egui_frames_make_no_metal_objects() {
+    let frames = egui_frames("steady", (400.0, 300.0), 2.0, true, 40, |_| {}, |ui, _| {
+        ui.heading("Profiles");
+        for i in 0..40 {
+            ui.label(format!("row {i}: a line of text that repeats every frame"));
+        }
+    });
+    let mut painter = super::EguiPainter::new(&test_device().device).unwrap();
+    let mut made = Vec::new();
+    for f in &frames {
+        metal_egui(&mut painter, f).unwrap();
+        made.push(painter.objects_made());
+    }
+    assert!(frames[5..].iter().all(|f| f.deltas.is_empty()), "the frames change no texture");
+    assert!(made.iter().all(|m| m.0 == made[0].0), "textures or buffers made after the first frame: {made:?}");
+    // A chunk is free again once its command buffer completed; a frame or two may still hold one.
+    assert!(made[39].1 <= 3, "{} staging chunks for 40 frames", made[39].1);
+}
+
+/// A Metal allocation that fails in an egui frame (a texture upload, a staging chunk) skips the
+/// frame and is reported as a lost device; the texture changes wait, and the next frame draws
+/// as egui-wgpu does.
+#[test]
+fn a_failed_egui_allocation_is_a_lost_device() {
+    let _one = loss_reports();
+    let _ = crate::gpu_pick::take_lost();
+    let on = handles();
+    let frames = popover_frames();
+    let mut renderer = egui_wgpu::Renderer::new(&on.device, wgpu::TextureFormat::Bgra8Unorm, egui_wgpu::RendererOptions::default());
+    let mut painter = super::EguiPainter::new(&test_device().device).unwrap();
+    let target = |f: &EguiFrame| super::egui_painter::offscreen_target(&test_device().device, (f.size[0], f.size[1])).unwrap();
+    // The first frame's first egui texture fails, then the second frame's first allocation.
+    let t = target(&frames[0]);
+    super::fail_textures(1);
+    let err = metal_egui_into(&mut painter, &frames[0], &t).unwrap_err();
+    super::fail_textures(0);
+    assert!(err.contains("egui"), "{err}");
+    let why = crate::gpu_pick::take_lost().expect("reported as a lost device");
+    assert!(why.starts_with("Metal: ") && why.contains("egui"), "{why}");
+    assert!(painter.pending() > 0, "the texture changes wait");
+    wgpu_egui(&on, &mut renderer, &frames[0]);
+    let t = target(&frames[1]);
+    super::fail_allocations(1);
+    assert!(metal_egui_into(&mut painter, &frames[1], &t).is_err());
+    super::fail_allocations(0);
+    assert!(crate::gpu_pick::take_lost().is_some());
+    wgpu_egui(&on, &mut renderer, &frames[1]);
+    // Both frames' changes go through with the next one, which then matches egui-wgpu's.
+    let mut near = Vec::new();
+    let want = wgpu_egui(&on, &mut renderer, &frames[2]);
+    let got = metal_egui(&mut painter, &frames[2]).unwrap();
+    assert_eq!(painter.pending(), 0);
+    compare("after the failures", &want, &got, frames[2].size[0], &mut near);
+    assert!(near.is_empty());
+    assert!(crate::gpu_pick::take_lost().is_none());
+}

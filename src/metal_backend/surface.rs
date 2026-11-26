@@ -141,11 +141,17 @@ impl Surface {
     /// Sets the layer up for `device` at `w` by `h` pixels and `scale`: sRGB, readable (not
     /// framebuffer only), synced to the display, opaque. The frame and scale normally come from the
     /// root layer (`TrackingLayer`); a layer with no root takes `scale` here.
-    pub fn configure(&self, device: &ProtocolObject<dyn MTLDevice>, (w, h): (u32, u32), scale: f64) {
+    pub fn configure(&self, device: &ProtocolObject<dyn MTLDevice>, size: (u32, u32), scale: f64) {
+        self.configure_as(device, size, scale, FORMAT, false);
+    }
+
+    /// `configure` in `format`; `framebuffer_only` for a layer whose drawables are only drawn
+    /// into (an egui window's, as wgpu-hal sets it for a render-attachment-only surface).
+    pub fn configure_as(&self, device: &ProtocolObject<dyn MTLDevice>, (w, h): (u32, u32), scale: f64, format: MTLPixelFormat, framebuffer_only: bool) {
         let l = &self.layer;
         l.setDevice(Some(device));
-        l.setPixelFormat(FORMAT);
-        l.setFramebufferOnly(false);
+        l.setPixelFormat(format);
+        l.setFramebufferOnly(framebuffer_only);
         // wgpu-hal sets desired_maximum_frame_latency + 1 drawables: the app asks for 2, so 3.
         l.setMaximumDrawableCount(3);
         l.setDisplaySyncEnabled(true);

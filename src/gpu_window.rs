@@ -95,7 +95,7 @@ pub type OverlayDraw<'a> = &'a mut dyn FnMut(&Overlay<'_>) -> Option<String>;
 /// A terminal window's GPU backend.
 pub enum WindowGpu {
     Wgpu(WgpuWindow),
-    /// The native Metal backend (macOS, `TERMURION_RENDERER=metal` for now).
+    /// The native Metal backend (the macOS default; `TERMURION_RENDERER=wgpu` asks for wgpu).
     #[cfg(target_os = "macos")]
     Metal(crate::metal_backend::MetalWindow),
 }

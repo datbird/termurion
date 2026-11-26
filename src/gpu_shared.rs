@@ -13,16 +13,6 @@ pub enum GpuShared {
 }
 
 impl GpuShared {
-    /// The wgpu GPU an egui window opens on: this one, or for Metal the settings windows' own
-    /// wgpu device (egui draws with egui-wgpu only).
-    pub fn for_egui(&self) -> Result<GpuShared, String> {
-        match self {
-            GpuShared::Wgpu { .. } => Ok(self.clone()),
-            #[cfg(target_os = "macos")]
-            GpuShared::Metal(_) => crate::metal_backend::egui_wgpu(),
-        }
-    }
-
     /// The four wgpu objects of a wgpu GPU; an error for any other.
     pub fn wgpu(&self) -> Result<(&wgpu::Instance, &wgpu::Adapter, &wgpu::Device, &wgpu::Queue), String> {
         match self {

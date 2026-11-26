@@ -51,16 +51,17 @@ pub enum Api {
     Metal,
 }
 
-/// Whether `forced` (the value of `FORCE_ENV`) asks for the native Metal backend.
-pub fn wants_metal(forced: Option<&str>) -> bool {
-    matches!(forced.map(|s| s.trim().to_ascii_lowercase()).as_deref(), Some("metal"))
+/// Whether the terminal windows draw with the native Metal backend: on macOS unless `forced` (the
+/// value of `FORCE_ENV`) is `wgpu`, the hidden switch back to wgpu's Metal backend for comparing.
+pub fn wants_metal(macos: bool, forced: Option<&str>) -> bool {
+    macos && !matches!(forced.map(|s| s.trim().to_ascii_lowercase()).as_deref(), Some("wgpu"))
 }
 
-/// `backend_order` with the native Metal backend: on macOS `metal` asks for it alone, with no
-/// API after it (a Metal failure is shown, never silently replaced). Elsewhere, and on macOS
-/// without it, wgpu's order (`wgpu` keeps it on purpose).
+/// `backend_order` with the native Metal backend: on macOS it is alone, with no API after it (a
+/// Metal failure is shown, never silently replaced). Elsewhere, and on macOS with `wgpu`, wgpu's
+/// order.
 pub fn api_order(windows: bool, macos: bool, forced: Option<&str>) -> Vec<(Api, &'static str)> {
-    if macos && wants_metal(forced) {
+    if wants_metal(macos, forced) {
         return vec![(Api::Metal, "Metal")];
     }
     backend_order(windows, forced).into_iter().map(|(b, label)| (Api::Wgpu(b), label)).collect()
@@ -510,12 +511,15 @@ mod tests {
     }
 
     #[test]
-    fn metal_is_asked_for_by_name_on_macos_only() {
-        assert_eq!(api_order(false, true, Some(" Metal ")), [(Api::Metal, "Metal")], "Metal alone: nothing follows it");
-        assert_eq!(api_order(false, true, None)[0].0, Api::Wgpu(Backends::PRIMARY), "wgpu stays the default for now");
-        assert_eq!(api_order(false, true, Some("wgpu"))[0].0, Api::Wgpu(Backends::PRIMARY));
+    fn metal_is_the_macos_default_and_wgpu_the_switch_back() {
+        assert_eq!(api_order(false, true, None), [(Api::Metal, "Metal")], "Metal alone: nothing follows it");
+        assert_eq!(api_order(false, true, Some(" Metal ")), [(Api::Metal, "Metal")]);
+        assert_eq!(api_order(false, true, Some("gl")), [(Api::Metal, "Metal")], "only wgpu switches back");
+        assert_eq!(api_order(false, true, Some(" WGPU "))[0].0, Api::Wgpu(Backends::PRIMARY));
         assert_eq!(api_order(false, false, Some("metal"))[0].0, Api::Wgpu(Backends::PRIMARY), "no Metal off macOS");
+        assert_eq!(api_order(false, false, None)[0].0, Api::Wgpu(Backends::PRIMARY));
         assert_eq!(api_order(true, false, Some("metal")).len(), 3);
+        assert!(!wants_metal(false, None) && wants_metal(true, None) && !wants_metal(true, Some("wgpu")));
     }
 
     #[test]

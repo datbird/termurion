@@ -37,11 +37,16 @@ pub(super) struct ImagePipeline {
 /// wgpu's default sampler with linear filters (mip filter Nearest, LOD 0 to 32, anisotropy 1),
 /// as wgpu-hal `create_sampler` builds it.
 pub(super) fn sampler(device: &ProtocolObject<dyn MTLDevice>, repeat: bool) -> Result<Retained<ProtocolObject<dyn MTLSamplerState>>, String> {
-    let d = MTLSamplerDescriptor::new();
-    d.setMinFilter(MTLSamplerMinMagFilter::Linear);
-    d.setMagFilter(MTLSamplerMinMagFilter::Linear);
-    d.setMipFilter(MTLSamplerMipFilter::Nearest);
     let uv = if repeat { MTLSamplerAddressMode::Repeat } else { MTLSamplerAddressMode::ClampToEdge };
+    sampler_with(device, (MTLSamplerMinMagFilter::Linear, MTLSamplerMinMagFilter::Linear), uv)
+}
+
+/// wgpu's default sampler with these (min, mag) filters and this address mode for u and v.
+pub(super) fn sampler_with(device: &ProtocolObject<dyn MTLDevice>, (min, mag): (MTLSamplerMinMagFilter, MTLSamplerMinMagFilter), uv: MTLSamplerAddressMode) -> Result<Retained<ProtocolObject<dyn MTLSamplerState>>, String> {
+    let d = MTLSamplerDescriptor::new();
+    d.setMinFilter(min);
+    d.setMagFilter(mag);
+    d.setMipFilter(MTLSamplerMipFilter::Nearest);
     d.setSAddressMode(uv);
     d.setTAddressMode(uv);
     d.setRAddressMode(MTLSamplerAddressMode::ClampToEdge);

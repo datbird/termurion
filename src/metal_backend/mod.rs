@@ -8,6 +8,8 @@ mod chain;
 #[cfg(target_os = "macos")]
 mod draw;
 #[cfg(target_os = "macos")]
+pub mod egui_painter;
+#[cfg(target_os = "macos")]
 mod images;
 #[cfg(target_os = "macos")]
 mod quads;
@@ -22,6 +24,8 @@ mod text;
 #[cfg(target_os = "macos")]
 mod window;
 
+#[cfg(target_os = "macos")]
+pub use egui_painter::{EguiCanvas, EguiPainter};
 #[cfg(target_os = "macos")]
 pub use window::MetalWindow;
 
@@ -77,6 +81,32 @@ impl MetalShared {
             transient_saves_memory: None,
             limit_bucket: None,
         }
+    }
+
+    /// Starts a graphics debugger capture of the device (Xcode's), as wgpu-hal's
+    /// `start_graphics_debugger_capture` does; with no debugger attached nothing is recorded.
+    /// Debug builds only (Capture GPU Frame).
+    #[cfg(debug_assertions)]
+    pub fn start_capture(&self) -> bool {
+        // SAFETY: the shared capture manager is a process-wide singleton.
+        let manager = unsafe { objc2_metal::MTLCaptureManager::sharedCaptureManager() };
+        let scope = manager.newCaptureScopeWithDevice(&self.device);
+        manager.setDefaultCaptureScope(Some(&scope));
+        #[allow(deprecated)]
+        manager.startCaptureWithScope(&scope);
+        objc2_metal::MTLCaptureScope::beginScope(&*scope);
+        true
+    }
+
+    /// Ends the capture `start_capture` began.
+    #[cfg(debug_assertions)]
+    pub fn stop_capture() {
+        // SAFETY: as in `start_capture`.
+        let manager = unsafe { objc2_metal::MTLCaptureManager::sharedCaptureManager() };
+        if let Some(scope) = manager.defaultCaptureScope() {
+            objc2_metal::MTLCaptureScope::endScope(&*scope);
+        }
+        manager.stopCapture();
     }
 
     /// A command buffer whose errors are reported for device generation `generation`.
@@ -154,40 +184,6 @@ pub fn test_device() -> &'static MetalShared {
     static DEVICE: std::sync::OnceLock<MetalShared> = std::sync::OnceLock::new();
     // High performance, as the shared wgpu test device asks.
     DEVICE.get_or_init(|| MetalShared::new(wgpu::PowerPreference::HighPerformance).expect("a Metal device"))
-}
-
-#[cfg(target_os = "macos")]
-static DISPLAY: std::sync::OnceLock<winit::event_loop::OwnedDisplayHandle> = std::sync::OnceLock::new();
-
-/// The display the settings windows' wgpu instance is made for (`egui_wgpu`).
-#[cfg(target_os = "macos")]
-pub fn set_display(display: winit::event_loop::OwnedDisplayHandle) {
-    let _ = DISPLAY.set(display);
-}
-
-/// egui windows still draw with wgpu while terminal windows draw on Metal (until egui moves to
-/// Metal): one wgpu device on wgpu's Metal backend, made on first use and kept.
-#[cfg(target_os = "macos")]
-pub fn egui_wgpu() -> Result<crate::gpu_shared::GpuShared, String> {
-    // Only a made device is kept: a failure is tried again at the next window that opens.
-    static GPU: std::sync::Mutex<Option<crate::gpu_shared::GpuShared>> = std::sync::Mutex::new(None);
-    let mut slot = GPU.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(gpu) = slot.as_ref() {
-        return Ok(gpu.clone());
-    }
-    let mut desc = match DISPLAY.get() {
-        Some(d) => wgpu::InstanceDescriptor::new_with_display_handle(Box::new(d.clone())),
-        None => wgpu::InstanceDescriptor::new_without_display_handle(),
-    };
-    desc.backends = wgpu::Backends::METAL;
-    let instance = wgpu::Instance::new(desc);
-    let pick = wgpu::RequestAdapterOptions { power_preference: crate::power::chosen(), ..Default::default() };
-    let adapter = pollster::block_on(instance.request_adapter(&pick)).map_err(|e| format!("no adapter for the settings windows: {e}"))?;
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).map_err(|e| format!("no device for the settings windows: {e}"))?;
-    crate::gpu_pick::watch(&device, crate::gpu_pick::current_generation());
-    let gpu = crate::gpu_shared::GpuShared::Wgpu { instance, adapter, device, queue };
-    *slot = Some(gpu.clone());
-    Ok(gpu)
 }
 
 /// A Metal buffer, or None when the device has no room (or a test made it fail).

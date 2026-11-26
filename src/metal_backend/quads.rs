@@ -35,6 +35,8 @@ pub(super) struct Shader {
     buffers: &'static [Layout],
     /// The vertex stage's slots, as the translation used them.
     vertex: naga::back::msl::EntryPointResources,
+    /// The fragment stage's slots, as the translation used them.
+    fragment: naga::back::msl::EntryPointResources,
 }
 
 /// The Metal vertex format wgpu-hal maps `format` to (`conv::map_vertex_format`), for the ones
@@ -84,8 +86,19 @@ impl Shader {
             .collect();
         let vertex = shaders::stage_resources(groups, ShaderStage::Vertex);
         let (vs_src, vs_name) = shaders::to_msl_with(&module, &info, ShaderStage::Vertex, vs, vertex.clone(), mappings)?;
-        let (fs_src, fs_name) = shaders::to_msl_with(&module, &info, ShaderStage::Fragment, fs, shaders::stage_resources(groups, ShaderStage::Fragment), Vec::new())?;
-        Ok(Shader { vs: function(device, &vs_src, &vs_name)?, fs: function(device, &fs_src, &fs_name)?, buffers, vertex })
+        let fragment = shaders::stage_resources(groups, ShaderStage::Fragment);
+        let (fs_src, fs_name) = shaders::to_msl_with(&module, &info, ShaderStage::Fragment, fs, fragment.clone(), Vec::new())?;
+        Ok(Shader { vs: function(device, &vs_src, &vs_name)?, fs: function(device, &fs_src, &fs_name)?, buffers, vertex, fragment })
+    }
+
+    /// The fragment stage's slot for `group`, `binding`: a buffer, a texture or a sampler.
+    pub fn fragment_slot(&self, group: u32, binding: u32) -> Result<usize, String> {
+        let t = self.fragment.resources.get(&naga::ResourceBinding { group, binding });
+        let sampler = t.and_then(|t| match t.sampler {
+            Some(naga::back::msl::BindSamplerTarget::Resource(s)) => Some(s),
+            _ => None,
+        });
+        t.and_then(|t| t.buffer.or(t.texture)).or(sampler).map(usize::from).ok_or_else(|| format!("no fragment slot for group {group} binding {binding}"))
     }
 
     /// The vertex stage's buffer slot for `group`, `binding`.
@@ -152,6 +165,8 @@ impl Blend {
     pub const ALPHA: Blend = Blend { color: (MTLBlendFactor::SourceAlpha, MTLBlendFactor::OneMinusSourceAlpha), alpha: (MTLBlendFactor::One, MTLBlendFactor::OneMinusSourceAlpha) };
     /// The fade: destination times the blend color, in every channel.
     pub const SCALE: Blend = Blend { color: (MTLBlendFactor::Zero, MTLBlendFactor::BlendColor), alpha: (MTLBlendFactor::Zero, MTLBlendFactor::BlendColor) };
+    /// egui-wgpu's: premultiplied color, and alpha that only grows where the target had little.
+    pub const EGUI: Blend = Blend { color: (MTLBlendFactor::One, MTLBlendFactor::OneMinusSourceAlpha), alpha: (MTLBlendFactor::OneMinusDestinationAlpha, MTLBlendFactor::One) };
 }
 
 /// The quad and image shaders' screen uniform, at group 0 binding 0, seen by the vertex stage.

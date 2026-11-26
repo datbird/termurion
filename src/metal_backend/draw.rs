@@ -29,7 +29,7 @@ pub fn raw_format(format: MTLPixelFormat) -> MTLPixelFormat {
     }
 }
 
-type Buffer = Retained<ProtocolObject<dyn MTLBuffer>>;
+pub(super) type Buffer = Retained<ProtocolObject<dyn MTLBuffer>>;
 
 /// The GPU half on Metal: pipelines, the persistent vertex buffers and the text state.
 pub(crate) struct MetalDraw {
@@ -53,14 +53,14 @@ const KEEP_CHUNKS: usize = 4;
 /// until it completes (its handler frees it), so the CPU never writes one the GPU still reads,
 /// and steady frames reuse chunks instead of making buffers.
 #[derive(Default)]
-struct Staging {
+pub(super) struct Staging {
     chunks: Vec<(Buffer, Arc<AtomicBool>)>,
-    made: u64,
+    pub(super) made: u64,
 }
 
 impl Staging {
     /// A free chunk of at least `len` bytes, now held by `cb`.
-    fn take(&mut self, device: &ProtocolObject<dyn MTLDevice>, cb: &ProtocolObject<dyn MTLCommandBuffer>, len: usize) -> Result<Buffer, String> {
+    pub(super) fn take(&mut self, device: &ProtocolObject<dyn MTLDevice>, cb: &ProtocolObject<dyn MTLCommandBuffer>, len: usize) -> Result<Buffer, String> {
         let free = |f: &AtomicBool| f.load(Ordering::Acquire);
         // Large spares go, then spares past the count.
         self.chunks.retain(|(b, f)| !free(f) || b.length() <= KEEP_BYTES);
