@@ -1,5 +1,5 @@
-//! Native Metal against its stored pictures (`reference`), byte for byte. They were recorded from
-//! native Metal while it still matched wgpu's Metal backend in one process, frame for frame.
+//! Native Metal against its stored frame hashes (`reference`). They were recorded from native
+//! Metal while it still matched wgpu's Metal backend byte for byte in one process, frame for frame.
 
 use std::sync::Arc;
 
@@ -62,52 +62,30 @@ fn cases() -> Vec<(String, Frame)> {
     out
 }
 
-/// The Global Constraints rule: equal bytes. Returns the largest per-channel step that differs
-/// (0 when equal); the caller fails on more than 1 and names every case at 1.
-fn largest_step(a: &[u8], b: &[u8]) -> u8 {
-    assert_eq!(a.len(), b.len(), "the pictures differ in size");
-    a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0)
-}
-
-/// Cases allowed to be one step apart: each only for float rounding in the MSL compile, and each
-/// named in the task report. Empty: every case is byte-equal.
-const ONE_STEP_ALLOWED: &[&str] = &[];
-
-fn same_or_near(name: &str, want: &[u8], got: &[u8], w: u32, near: &mut Vec<String>) {
-    match largest_step(want, got) {
-        0 => {}
-        1 if ONE_STEP_ALLOWED.contains(&name) => near.push(name.to_string()),
-        _ => crate::render_pixel_tests::assert_same(name, want, got, w),
-    }
-}
-
-/// What a test checks Metal against: its stored tape (`reference`), under the same rule.
+/// What a test checks Metal against: its stored index (`reference`). The hash of every frame
+/// must match: no frame may be even one step apart.
 struct Check {
-    tape: super::reference::Tape,
-    near: Vec<String>,
+    index: super::reference::Index,
 }
 
 impl Check {
     fn new(test: &str) -> Check {
-        Check { tape: super::reference::Tape::open(test), near: Vec::new() }
+        Check { index: super::reference::Index::open(test) }
     }
 
     /// Metal's picture, `w` wide, against the stored one.
     fn pixels(&mut self, name: &str, metal: &[u8], w: u32) {
         let h = (metal.len() / 4) as u32 / w.max(1);
-        if let Some(want) = self.tape.take(super::reference::Entry::Pixels { name: name.to_string(), w, h, rgba: metal.to_vec() }) {
-            same_or_near(&format!("{name} (stored)"), &want, metal, w, &mut self.near);
-        }
+        self.index.take(super::reference::Entry::Pixels { name: name.to_string(), w, h, rgba: metal.to_vec() });
     }
 
     /// A value the test compares (chain state, error texts), against the stored one.
     fn text(&mut self, name: &str, text: String) {
-        self.tape.take(super::reference::Entry::Text { name: name.to_string(), text });
+        self.index.take(super::reference::Entry::Text { name: name.to_string(), text });
     }
 
     fn finish(self) {
-        report_near(&self.near);
-        self.tape.finish();
+        self.index.finish();
     }
 }
 
@@ -226,13 +204,6 @@ fn match_in_order(metal: &mut MetalWindow, cases: &[crate::render_pixel_tests::P
         let crate::gpu_shared::GpuShared::Metal(m) = metal.shared();
         let b = super::readback::read_rgba(&m.queue, metal.offscreen_texture(), w, h).unwrap();
         check.pixels(&format!("{name} render"), &b, w);
-    }
-}
-
-fn report_near(near: &[String]) {
-    // Only cases on `ONE_STEP_ALLOWED` get here.
-    if !near.is_empty() {
-        eprintln!("cases one step apart: {near:?}");
     }
 }
 
@@ -1102,7 +1073,6 @@ fn a_failed_egui_allocation_is_a_lost_device() {
     let got = metal_egui(&mut painter, &frames[2]).unwrap();
     assert_eq!(painter.pending(), 0);
     check.pixels("after the failures", &got, frames[2].size[0]);
-    assert!(check.near.is_empty());
     check.finish();
     assert!(crate::gpu_pick::take_lost().is_none());
 }
