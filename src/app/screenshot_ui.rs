@@ -119,25 +119,19 @@ impl App {
         self.redraw();
     }
 
-    /// Beside the terminal window: 20 points to its right, else to its left, else at the
-    /// monitor's right edge; centered vertically.
+    /// Beside the terminal window (see `panel_frame`), kept on the screen the window is on.
     fn place_shot_window(&self, w: &crate::shot_ui::ShotWindow) {
         let Some(g) = self.gpu.as_ref() else { return };
         let (Ok(pos), size) = (g.window.outer_position(), g.window.outer_size()) else { return };
         let panel = w.window().outer_size();
         let gap = (20.0 * g.window.scale_factor()) as i32;
-        let (mx, mw) = g.window.current_monitor().map_or((0, i32::MAX), |m| (m.position().x, m.size().width as i32));
-        let right = pos.x + size.width as i32 + gap;
-        let left = pos.x - gap - panel.width as i32;
-        let x = if right + panel.width as i32 <= mx + mw {
-            right
-        } else if left >= mx {
-            left
-        } else {
-            mx + mw - panel.width as i32
-        };
-        let y = pos.y + (size.height as i32 - panel.height as i32) / 2;
-        w.window().set_outer_position(winit::dpi::PhysicalPosition::new(x, y.max(0)));
+        let screen = g.window.current_monitor().map_or((i32::MIN / 2, i32::MIN / 2, i32::MAX, i32::MAX), |m| (m.position().x, m.position().y, m.size().width as i32, m.size().height as i32));
+        let parent = (pos.x, pos.y, size.width as i32, size.height as i32);
+        let (x, y, pw, ph) = panel_frame(parent, (panel.width as i32, panel.height as i32), screen, gap);
+        if (pw, ph) != (panel.width as i32, panel.height as i32) {
+            let _ = w.window().request_inner_size(winit::dpi::PhysicalSize::new(pw as u32, ph as u32));
+        }
+        w.window().set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
     }
 
     /// Takes the frozen copy out of its pane for a moment (to draw from it), then puts it back.
@@ -380,9 +374,62 @@ pub(super) fn desktop() -> Option<std::path::PathBuf> {
     crate::platform::shellfs::desktop()
 }
 
+/// Where the Make Screenshot panel goes, as (x, y, w, h): `gap` to the right of its parent window,
+/// else to its left, else at the screen's right edge; centered on the parent vertically. Every
+/// frame is (x, y, w, h). The panel is shrunk to a screen smaller than it and always lies
+/// fully inside the screen.
+fn panel_frame(parent: (i32, i32, i32, i32), panel: (i32, i32), screen: (i32, i32, i32, i32), gap: i32) -> (i32, i32, i32, i32) {
+    let (sx, sy, sw, sh) = screen;
+    let (w, h) = (panel.0.min(sw), panel.1.min(sh));
+    let right = parent.0 + parent.2 + gap;
+    let left = parent.0 - gap - w;
+    let x = if right + w <= sx + sw {
+        right
+    } else if left >= sx {
+        left
+    } else {
+        sx + sw - w
+    };
+    let y = parent.1 + (parent.3 - h) / 2;
+    (x.clamp(sx, sx + sw - w), y.clamp(sy, sy + sh - h), w, h)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SCREEN: (i32, i32, i32, i32) = (0, 0, 1920, 1080);
+
+    fn inside(f: (i32, i32, i32, i32), s: (i32, i32, i32, i32)) -> bool {
+        f.0 >= s.0 && f.1 >= s.1 && f.0 + f.2 <= s.0 + s.2 && f.1 + f.3 <= s.1 + s.3
+    }
+
+    #[test]
+    fn the_panel_stays_on_screen_for_a_parent_near_the_right_edge() {
+        let f = panel_frame((1000, 100, 900, 700), (612, 720), SCREEN, 20);
+        assert!(inside(f, SCREEN), "{f:?}");
+        // No room on the right, so it goes to the parent's left.
+        assert_eq!(f.0, 1000 - 20 - 612);
+    }
+
+    #[test]
+    fn the_panel_stays_on_screen_for_a_parent_near_the_bottom() {
+        let f = panel_frame((100, 900, 600, 400), (612, 720), SCREEN, 20);
+        assert!(inside(f, SCREEN), "{f:?}");
+    }
+
+    #[test]
+    fn the_panel_shrinks_to_a_screen_smaller_than_it() {
+        let small = (100, 50, 500, 600);
+        let f = panel_frame((120, 60, 480, 500), (612, 720), small, 20);
+        assert!(inside(f, small), "{f:?}");
+        assert_eq!((f.2, f.3), (500, 600));
+    }
+
+    #[test]
+    fn a_parent_that_leaves_room_gets_the_panel_beside_it() {
+        assert_eq!(panel_frame((100, 100, 600, 800), (612, 720), SCREEN, 20), (720, 140, 612, 720));
+    }
 
     /// The frame `render_lines` lays for lines `first..=last` of `screen`, before it is drawn.
     fn picture_frame(screen: &crate::screen::Screen, first: usize, last: usize, cursor: bool) -> Frame {
