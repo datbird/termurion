@@ -102,7 +102,7 @@ pub struct EguiPainter {
     staging: Staging,
     /// The device generation command buffer errors and failed allocations are reported for.
     generation: u64,
-    /// Textures and buffers made (tests).
+    /// Textures, buffers and samplers made (tests).
     made: u64,
 }
 
@@ -153,6 +153,12 @@ fn put(staging: &Buffer, at: &mut usize, bytes: &[u8]) -> usize {
     from
 }
 
+/// `screen` cut to a target of `w` by `h` pixels.
+pub fn fit(screen: ScreenDescriptor, (w, h): (u32, u32)) -> ScreenDescriptor {
+    let [sw, sh] = screen.size_in_pixels;
+    ScreenDescriptor { size_in_pixels: [sw.min(w), sh.min(h)], pixels_per_point: screen.pixels_per_point }
+}
+
 fn vertex_bytes(v: &[egui::epaint::Vertex]) -> &[u8] {
     // SAFETY: `Vertex` is `repr(C)` plain data of VERTEX_SIZE bytes with no padding (checked above).
     unsafe { std::slice::from_raw_parts(v.as_ptr().cast::<u8>(), v.len() * VERTEX_SIZE) }
@@ -193,6 +199,13 @@ impl EguiPainter {
             Target::Texture(t) => Some(t.retain()),
             Target::None => None,
         };
+        // A drawable can lag the window during a resize: the frame is cut to the target, never
+        // drawn past it (a scissor or viewport outside the target is a Metal error). Positions
+        // stay in pixels, so what fits draws where it would.
+        let screen = match &out {
+            Some(t) => fit(screen, (t.width() as u32, t.height() as u32)),
+            None => screen,
+        };
         let drawn = shared.command_buffer(self.generation).and_then(|cb| {
             let encoded = self.encode(&shared.device, &cb, out.as_deref(), jobs, screen);
             if let (Ok(()), Target::Drawable(d)) = (&encoded, &target) {
@@ -229,6 +242,7 @@ impl EguiPainter {
                     texture_bytes += d.image.width() * d.image.height() * 4;
                     if !self.samplers.contains_key(&d.options) {
                         self.samplers.insert(d.options, sampler(device, d.options)?);
+                        self.made += 1;
                     }
                     if d.pos.is_none() { Some(texture(device, d.image.size())?) } else { None }
                 }
@@ -394,7 +408,7 @@ impl EguiPainter {
         Ok(())
     }
 
-    /// Textures and buffers made so far, and staging chunks (tests).
+    /// Textures, buffers and samplers made so far, and staging chunks (tests).
     #[cfg(test)]
     pub fn objects_made(&self) -> (u64, u64) {
         (self.made, self.staging.made)

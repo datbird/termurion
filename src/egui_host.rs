@@ -144,6 +144,8 @@ impl Canvas {
         }
     }
 
+    // Only the Metal layer takes the scale; a wgpu surface follows the window itself.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     fn resize(&mut self, w: u32, h: u32, scale: f64) {
         match self {
             Canvas::Wgpu(c) => {
@@ -154,7 +156,6 @@ impl Canvas {
             #[cfg(target_os = "macos")]
             Canvas::Metal(m) => m.resize(w, h, scale),
         }
-        let _ = scale;
     }
 }
 

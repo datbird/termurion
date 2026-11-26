@@ -143,7 +143,7 @@ fn sampler(device: &ProtocolObject<dyn MTLDevice>) -> Result<Retained<ProtocolOb
     d.setMaxAnisotropy(1);
     d.setLodMinClamp(0.0);
     d.setLodMaxClamp(0.0);
-    device.newSamplerStateWithDescriptor(&d).ok_or_else(|| "no Metal sampler".to_string())
+    super::new_sampler(device, &d).ok_or_else(|| "no Metal sampler".to_string())
 }
 
 impl MetalText {

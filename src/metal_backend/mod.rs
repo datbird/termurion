@@ -195,6 +195,15 @@ pub(crate) fn new_buffer(device: &ProtocolObject<dyn MTLDevice>, size: usize, op
     device.newBufferWithLength_options(size, options)
 }
 
+/// A Metal sampler, or None when the device made none (or a test made it fail).
+#[cfg(target_os = "macos")]
+pub(crate) fn new_sampler(device: &ProtocolObject<dyn MTLDevice>, desc: &objc2_metal::MTLSamplerDescriptor) -> Option<Retained<ProtocolObject<dyn objc2_metal::MTLSamplerState>>> {
+    if fails_now(false) {
+        return None;
+    }
+    device.newSamplerStateWithDescriptor(desc)
+}
+
 /// A Metal texture, or None when the device has no room (or a test made it fail).
 #[cfg(target_os = "macos")]
 pub(crate) fn new_texture(device: &ProtocolObject<dyn MTLDevice>, desc: &objc2_metal::MTLTextureDescriptor) -> Option<Retained<ProtocolObject<dyn objc2_metal::MTLTexture>>> {

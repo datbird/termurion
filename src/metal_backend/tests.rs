@@ -1036,7 +1036,7 @@ fn metal_egui(painter: &mut super::EguiPainter, f: &EguiFrame) -> Result<Vec<u8>
 fn metal_egui_into(painter: &mut super::EguiPainter, f: &EguiFrame, t: &objc2::runtime::ProtocolObject<dyn MTLTexture>) -> Result<Vec<u8>, String> {
     let dev = test_device();
     painter.paint(dev, super::egui_painter::Target::Texture(t), &f.jobs, &f.deltas, super::egui_painter::ScreenDescriptor { size_in_pixels: f.size, pixels_per_point: f.ppp })?;
-    super::readback::read_rgba(&dev.queue, t, f.size[0], f.size[1])
+    super::readback::read_rgba(&dev.queue, t, t.width() as u32, t.height() as u32)
 }
 
 /// The Settings window, a prompt and a popover, each frame tessellated once and painted by
@@ -1177,5 +1177,55 @@ fn a_failed_egui_allocation_is_a_lost_device() {
     assert_eq!(painter.pending(), 0);
     compare("after the failures", &want, &got, frames[2].size[0], &mut near);
     assert!(near.is_empty());
+    assert!(crate::gpu_pick::take_lost().is_none());
+}
+
+/// A frame laid out for a window bigger than its drawable (a resize the drawable has not caught up
+/// with) is cut to the drawable: no scissor or viewport past it, and what fits draws where the
+/// full-size frame draws it.
+#[test]
+fn an_egui_frame_bigger_than_its_target_is_cut_to_it() {
+    let frames = egui_frames("cut", (400.0, 300.0), 1.0, false, 2, |_| {}, |ui, _| {
+        ui.heading("Profiles");
+        for i in 0..20 {
+            ui.label(format!("row {i}: text that runs past the cut on the right side of the window"));
+        }
+        egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| ui.label("clipped past the bottom"));
+    });
+    let mut full = super::EguiPainter::new(&test_device().device).unwrap();
+    let mut cut = super::EguiPainter::new(&test_device().device).unwrap();
+    let small = super::egui_painter::offscreen_target(&test_device().device, (300, 200)).unwrap();
+    for f in &frames {
+        let whole = metal_egui(&mut full, f).unwrap();
+        let got = metal_egui_into(&mut cut, f, &small).unwrap();
+        let want: Vec<u8> = (0..200).flat_map(|y| whole[y * 400 * 4..y * 400 * 4 + 300 * 4].to_vec()).collect();
+        crate::render_pixel_tests::assert_same(&f.name, &want, &got, 300);
+    }
+    let s = super::egui_painter::fit(super::egui_painter::ScreenDescriptor { size_in_pixels: [400, 150], pixels_per_point: 2.0 }, (300, 200));
+    assert_eq!((s.size_in_pixels, s.pixels_per_point), ([300, 150], 2.0));
+}
+
+/// The egui samplers go through the allocation hook: one that fails is a lost device like any
+/// other Metal failure, and once made it is counted and kept.
+#[test]
+fn a_failed_egui_sampler_is_a_lost_device() {
+    let _one = loss_reports();
+    let _ = crate::gpu_pick::take_lost();
+    let frames = prompt_frames();
+    let mut painter = super::EguiPainter::new(&test_device().device).unwrap();
+    let t = super::egui_painter::offscreen_target(&test_device().device, (frames[0].size[0], frames[0].size[1])).unwrap();
+    let before = painter.objects_made().0;
+    // The first allocation of the first frame is its first texture's sampler.
+    super::fail_allocations(1);
+    let err = metal_egui_into(&mut painter, &frames[0], &t).unwrap_err();
+    super::fail_allocations(0);
+    assert!(err.contains("sampler"), "{err}");
+    assert!(crate::gpu_pick::take_lost().is_some_and(|w| w.contains("egui")));
+    assert_eq!(painter.objects_made().0, before, "nothing made by the failed frame");
+    metal_egui_into(&mut painter, &frames[0], &t).unwrap();
+    let made = painter.objects_made().0;
+    assert!(made > before + 1, "the sampler and the font texture are counted");
+    metal_egui_into(&mut painter, &frames[1], &t).unwrap();
+    assert_eq!(painter.objects_made().0, made, "the sampler is kept");
     assert!(crate::gpu_pick::take_lost().is_none());
 }

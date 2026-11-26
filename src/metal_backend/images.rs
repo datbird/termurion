@@ -53,7 +53,7 @@ pub(super) fn sampler_with(device: &ProtocolObject<dyn MTLDevice>, (min, mag): (
     d.setMaxAnisotropy(1);
     d.setLodMinClamp(0.0);
     d.setLodMaxClamp(32.0);
-    device.newSamplerStateWithDescriptor(&d).ok_or_else(|| "no Metal sampler".to_string())
+    super::new_sampler(device, &d).ok_or_else(|| "no Metal sampler".to_string())
 }
 
 impl ImagePipeline {
