@@ -521,7 +521,7 @@ impl EguiCanvas {
                 Ok(()) => Shown::Drawn,
                 Err(_) => Shown::Skipped,
             },
-            Next::Occluded | Next::Timeout => {
+            Next::Contents(..) | Next::Occluded | Next::Timeout => {
                 let _ = self.painter.paint(&self.shared, Target::None, &[], deltas, screen);
                 Shown::Later
             }

@@ -60,6 +60,16 @@ fn target(device: &ProtocolObject<dyn MTLDevice>, (w, h): (u32, u32), views: boo
     super::new_texture(device, &desc).ok_or_else(|| format!("no Metal texture of {w} x {h}"))
 }
 
+/// Where a frame goes once drawn.
+enum Present {
+    Drawable(Retained<ProtocolObject<dyn objc2_quartz_core::CAMetalDrawable>>),
+    /// The layer's surface with this index (`Surface::next_contents`).
+    Contents(usize),
+    /// A test window's own texture: nowhere.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Offscreen,
+}
+
 /// Why a frame did not draw: the CPU prepare (nothing reached the GPU side; the next frame takes
 /// it up) or the Metal side (the two are apart until `MetalWindow::in_step`).
 enum Failed {
@@ -199,21 +209,30 @@ impl MetalWindow {
                 let t = if (old.width() as u32, old.height() as u32) == self.size { old } else { target(&self.shared.device, self.size, true).map_err(|e| self.metal_failed(e))? };
                 self.offscreen = Some(t.clone());
                 self.acquire = Acquire { wait: wait_start.elapsed(), dropped: false };
-                return self.draw_into(None, &t, frame, fx);
+                return self.draw_into(Present::Offscreen, &t, frame, fx);
             }
             self.acquire = Acquire { wait: wait_start.elapsed(), dropped: true };
             return Err(RenderError::Skip);
         };
-        let next = surface.next();
-        self.acquire = Acquire { wait: wait_start.elapsed(), dropped: !matches!(next, Next::Drawable(..)) };
+        let next = if surface.shows_contents() {
+            // A surface that could not be made is a frame with no drawable: the next one tries again.
+            surface.next_contents(&self.shared.device, self.size).unwrap_or_else(|e| {
+                crate::gpu_pick::log_gpu_error(&format!("Metal: {e}"));
+                Next::Timeout
+            })
+        } else {
+            surface.next()
+        };
+        self.acquire = Acquire { wait: wait_start.elapsed(), dropped: !matches!(next, Next::Drawable(..) | Next::Contents(..)) };
         match next {
-            Next::Drawable(drawable, texture) => self.draw_into(Some(drawable), &texture, frame, fx),
+            Next::Drawable(drawable, texture) => self.draw_into(Present::Drawable(drawable), &texture, frame, fx),
+            Next::Contents(i, texture) => self.draw_into(Present::Contents(i), &texture, frame, fx),
             Next::Occluded | Next::Timeout => Err(RenderError::Skip),
         }
     }
 
-    /// Draws `frame` into `texture` and presents `drawable` with it.
-    fn draw_into(&mut self, drawable: Option<Retained<ProtocolObject<dyn objc2_quartz_core::CAMetalDrawable>>>, texture: &ProtocolObject<dyn MTLTexture>, frame: &Frame, fx: Option<FxFrame<'_>>) -> Result<Drawn, RenderError> {
+    /// Draws `frame` into `texture` and presents it as `present` says.
+    fn draw_into(&mut self, present: Present, texture: &ProtocolObject<dyn MTLTexture>, frame: &Frame, fx: Option<FxFrame<'_>>) -> Result<Drawn, RenderError> {
         let cb = self.shared.command_buffer(self.generation).map_err(RenderError::Refused)?;
         let draw_start = self.timing.then(Instant::now);
         let kept = match fx {
@@ -226,6 +245,7 @@ impl MetalWindow {
             Ok(()) => Ok(()),
             Err(Failed::Prepare(e)) => Err(e),
             Err(Failed::Metal(_)) => {
+                self.show(&present, &cb, false);
                 cb.commit();
                 // Reported as a lost device: the app's recovery rebuilds the window, with its
                 // tries and backoff, and shows the restart banner once they run out.
@@ -236,15 +256,27 @@ impl MetalWindow {
         let present_start = self.timing.then(Instant::now);
         // A frame that failed before it drew (no buffer, a refused prepare) is not shown: the
         // window keeps its last picture. It is still committed, so its staging chunk comes back.
-        if let Some(d) = drawable.as_ref().filter(|_| kept.is_ok()) {
-            cb.presentDrawable(ProtocolObject::<dyn MTLDrawable>::from_ref(&**d));
-        }
+        self.show(&present, &cb, kept.is_ok());
         cb.commit();
         #[cfg(test)]
-        if drawable.is_none() {
+        if matches!(present, Present::Offscreen) {
             cb.waitUntilCompleted();
         }
         Ok(Drawn { bar: None, kept, draw, present: present_start.map(|t| t.elapsed()) })
+    }
+
+    /// Puts the frame in `cb` on screen once it completes; `drawn`: false for a frame that failed,
+    /// which only gives its surface back.
+    fn show(&self, present: &Present, cb: &ProtocolObject<dyn MTLCommandBuffer>, drawn: bool) {
+        match present {
+            Present::Drawable(d) if drawn => cb.presentDrawable(ProtocolObject::<dyn MTLDrawable>::from_ref(&**d)),
+            Present::Contents(i) => {
+                if let Some(s) = &self.surface {
+                    s.show(*i, cb, drawn);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// The CPU half prepares the frame and the Metal draw encodes it. A Metal failure leaves the

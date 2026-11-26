@@ -523,6 +523,49 @@ fn the_layer_follows_its_root_layer() {
     assert_eq!(surface.layer.contentsScale(), 1.0, "the root's scale, not the argument's, wins under a root");
 }
 
+/// The layer's own surfaces (macOS 14 and later): up to three are drawn into at once, a failed
+/// frame only gives its surface back, a completed one shows its surface as the layer's contents
+/// and frees it, and a new size makes new ones.
+#[test]
+fn frames_go_to_the_layers_own_surfaces() {
+    use super::surface::{Next, Surface, FORMAT};
+    use objc2_metal::MTLCommandBuffer;
+    let shared = test_device();
+    let surface = Surface::detached();
+    let take = |size| match surface.next_contents(&shared.device, size).unwrap() {
+        Next::Contents(i, t) => Some((i, t)),
+        _ => None,
+    };
+    let held: Vec<_> = (0..3).map(|_| take((64, 32)).expect("a free surface")).collect();
+    let mut ids: Vec<usize> = held.iter().map(|(i, _)| *i).collect();
+    ids.dedup();
+    assert_eq!(ids.len(), 3);
+    assert!(held.iter().all(|(_, t)| (t.width(), t.height(), t.pixelFormat()) == (64, 32, FORMAT)));
+    assert!(take((64, 32)).is_none(), "all three are drawn into");
+    // SAFETY: reading the layer's contents object.
+    let contents = || unsafe { surface.layer.contents() }.map(|c| objc2::rc::Retained::as_ptr(&c));
+    let before = contents();
+    let generation = crate::gpu_pick::current_generation();
+    let cb = shared.command_buffer(generation).unwrap();
+    surface.show(held[0].0, &cb, false);
+    cb.commit();
+    assert_eq!(take((64, 32)).map(|(i, _)| i), Some(held[0].0), "a failed frame gives its surface back");
+    assert_eq!(contents(), before, "a failed frame is not shown");
+    let cb = shared.command_buffer(generation).unwrap();
+    surface.show(held[1].0, &cb, true);
+    cb.commit();
+    cb.waitUntilCompleted();
+    // The completed handler runs on Metal's own queue, at or after the wait's end.
+    let start = std::time::Instant::now();
+    while take((64, 32)).is_none() {
+        assert!(start.elapsed() < std::time::Duration::from_secs(5), "the shown surface is freed");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(contents().is_some() && contents() != before, "a completed frame is the layer's contents");
+    let (_, t) = take((80, 40)).expect("a surface of the new size");
+    assert_eq!((t.width(), t.height()), (80, 40));
+}
+
 /// Steady frames reuse their staging chunks: no new Metal buffer per frame.
 #[test]
 fn steady_frames_make_no_staging_buffers() {
