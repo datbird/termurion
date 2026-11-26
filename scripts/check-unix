@@ -110,7 +110,10 @@ if [ "$do_mac" = 1 ]; then
     host="${CHECK_UNIX_MAC_HOST:-funtimes}"
     rsync -rt --delete --exclude /target/ --exclude /.git/ --exclude /.superpowers/ ./ "$host:src/termurion/" || { echo "macos: check did not run"; exit 2; }
     # macos_build_has_no_wgpu: macOS draws with Metal only, so no wgpu crate may be in its build.
-    wgpu_paths=$(ssh "$host" 'cd src/termurion && for c in wgpu wgpu-core wgpu-hal egui-wgpu; do ~/.cargo/bin/cargo tree -e normal --target aarch64-apple-darwin -i "$c" 2>/dev/null; done') || { echo "macos: macos_build_has_no_wgpu did not run"; exit 2; }
+    # The whole graph in one call, so a cargo failure fails the check instead of reading as "not found".
+    tree=$(ssh "$host" 'cd src/termurion && ~/.cargo/bin/cargo tree -e normal --target aarch64-apple-darwin --prefix none') || { echo "macos: macos_build_has_no_wgpu did not run"; exit 2; }
+    [ -n "$tree" ] || { echo "macos: macos_build_has_no_wgpu did not run (empty tree)"; exit 2; }
+    wgpu_paths=$(printf '%s\n' "$tree" | grep -E '^(wgpu|wgpu-core|wgpu-hal|egui-wgpu) v' | sort -u)
     if [ -n "$wgpu_paths" ]; then
         echo "macos: macos_build_has_no_wgpu FAILED:"
         printf '%s\n' "$wgpu_paths" | head -20 | sed 's/^/  /'
