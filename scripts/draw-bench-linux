@@ -1,0 +1,401 @@
+#!/usr/bin/env bash
+# Draw-speed benchmark for a Linux desktop: CPU and memory of Termurion, Ghostty, Alacritty and
+# Ptyxis for the same window grid and the same output, with and without a render plugin (effect).
+# It runs ON the machine it measures, inside that machine's graphical session (over ssh it finds
+# the session by itself). Same workloads, columns and output layout as scripts/draw-bench
+# (the macOS bench), so the tables compare directly.
+#
+#   cpu%   CPU time of the terminal's processes (app plus its session host) per wall second
+#   ws%    the same for the compositor (gnome-shell, Xorg, Xwayland, kwin)
+#   fps    not measured on Linux: no portable way to count presented frames, printed as "-"
+#   MB/s   bytes the workload got into the tty (only the flood is limited by the terminal)
+#   other% CPU of every other live process during the run (noise)
+#   RSS MB resident memory of the terminal's processes at the run's end
+# Workloads (identical to draw-bench): idle, stream20, claude, flood. DRAW_BENCH_WL picks some.
+# Configs: termurion, termurion-fx (Lightning), termurion-fx-<id> for each shipped render plugin
+# (aurora cyber embers fireworks glitch hologram katana lightning mecha neon phosphor shockwave
+# teleport), ghostty, ghostty-fx (the Lightning shader as a custom shader), alacritty, ptyxis.
+# Every Termurion config sets Effects animation to Smooth (60 frames/s).
+# A terminal that is not installed is skipped with a line saying so.
+#
+# Window: 220 columns by 63 rows for every terminal. Position is only applied where the session
+# allows it (X11); on Wayland the grid is the same and the place is the compositor's choice.
+# Termurion is found from --termurion, else $DRAW_BENCH_TERMURION, else `termurion` on PATH, else
+# the newest Termurion-*-linux-x86_64.AppImage in ~/Applications or ~/Downloads. The binary can be
+# an AppImage or a plain executable, so two builds can be compared.
+# Ghostty-fx needs the shader file: $DRAW_BENCH_SHADER, else resources/render_plugins/lightning/
+# lightning-cursor.glsl of the checkout holding this script ($DRAW_BENCH_REPO overrides it).
+# Safety: it refuses to start while any terminal it would measure is already running (it only
+# ever stops what it started), unless --kill-existing is given. Every setting it touches is saved
+# first and put back on exit. Work files live in $DRAW_BENCH_DIR (default ~/.cache/draw-bench).
+#
+# Usage: scripts/draw-bench-linux [--secs N] [--passes N] [--out DIR] [--termurion PATH]
+#                                 [--dry-run] [--kill-existing] [CONFIG...]
+# Over ssh: ssh HOST 'bash -s -- --dry-run' < scripts/draw-bench-linux
+set -uo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
+repo="${DRAW_BENCH_REPO:-$(cd "$here/.." 2>/dev/null && pwd || true)}"
+B="${DRAW_BENCH_DIR:-$HOME/.cache/draw-bench}"
+fx_ids=(aurora cyber embers fireworks glitch hologram katana lightning mecha neon phosphor shockwave teleport)
+secs=20; passes=1; out=""; dry=0; killex=0
+term_bin="${DRAW_BENCH_TERMURION:-}"
+configs=()
+usage() { echo "usage: draw-bench-linux [--secs N] [--passes N] [--out DIR] [--termurion PATH] [--dry-run] [--kill-existing] [termurion|termurion-fx|termurion-fx-<id>|ghostty|ghostty-fx|alacritty|ptyxis ...]" >&2; exit 2; }
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --secs) secs="${2:?}"; shift ;;
+        --passes) passes="${2:?}"; shift ;;
+        --out) out="${2:?}"; shift ;;
+        --termurion) term_bin="${2:?}"; shift ;;
+        --dry-run) dry=1 ;;
+        --kill-existing) killex=1 ;;
+        termurion|termurion-fx|termurion-fx-*|ghostty|ghostty-fx|alacritty|ptyxis) configs+=("$1") ;;
+        *) usage ;;
+    esac
+    shift
+done
+if [ ${#configs[@]} -eq 0 ]; then
+    configs=(termurion)
+    for id in "${fx_ids[@]}"; do configs+=("termurion-fx-$id"); done
+    configs+=(ghostty ghostty-fx alacritty ptyxis)
+fi
+workloads=(${DRAW_BENCH_WL:-idle stream20 claude flood})
+case "$secs$passes" in *[!0-9]*) usage ;; esac
+if [ -f "$repo/scripts/draw-bench-linux" ]; then base="$repo/target/draw-bench"; else repo=""; base="$B/runs"; fi
+out="${out:-$base/$(date +%Y%m%d-%H%M%S)}"
+COLS=220; ROWS=63; X=60; Y=40
+
+# --- what is installed -----------------------------------------------------------------------
+
+find_termurion() {
+    if [ -n "$term_bin" ]; then [ -x "$term_bin" ] && { echo "$term_bin"; return; }; return 1; fi
+    command -v termurion && return
+    ls -t "$HOME"/Applications/Termurion-*-linux-x86_64.AppImage "$HOME"/Downloads/Termurion-*-linux-x86_64.AppImage 2>/dev/null | head -1
+}
+shader_file() {
+    if [ -n "${DRAW_BENCH_SHADER:-}" ]; then echo "$DRAW_BENCH_SHADER"; return; fi
+    local f="$repo/resources/render_plugins/lightning/lightning-cursor.glsl"
+    [ -f "$f" ] && echo "$f"
+}
+# Prints the program for a config, or nothing when the config cannot run here.
+program_for() {
+    case "$1" in
+        termurion*) find_termurion ;;
+        ghostty*) command -v ghostty ;;
+        alacritty) command -v alacritty ;;
+        ptyxis) command -v ptyxis ;;
+    esac
+}
+# Why a config cannot run, empty when it can.
+skip_reason() {
+    local p; p=$(program_for "$1")
+    case "$1" in
+        termurion*) [ -n "$p" ] || { echo "no Termurion found (use --termurion PATH)"; return; } ;;
+        *) [ -n "$p" ] || { echo "${1%-fx} is not installed"; return; } ;;
+    esac
+    if [ "$1" = ghostty-fx ] && [ -z "$(shader_file)" ]; then echo "no Lightning shader file (set DRAW_BENCH_SHADER)"; fi
+}
+proc_names() {
+    case "$1" in
+        termurion*) echo "termurion termurion-host" ;;
+        ghostty*) echo "ghostty" ;;
+        alacritty) echo "alacritty" ;;
+        ptyxis) echo "ptyxis ptyxis-agent" ;;
+    esac
+}
+all_names="termurion termurion-host ghostty alacritty ptyxis ptyxis-agent"
+comp_names="gnome-shell Xorg Xwayland kwin_wayland kwin_x11 mutter"
+
+# --- the plan --------------------------------------------------------------------------------
+
+plan() {
+    echo "draw-bench-linux plan: ${secs}s runs, $passes pass(es), window ${COLS}x${ROWS}, workloads: ${workloads[*]}"
+    echo "work dir $B, results in $out"
+    echo "session: $(session_summary)"
+    local n=0 skipped=0 cfg r
+    for cfg in "${configs[@]}"; do
+        r=$(skip_reason "$cfg")
+        if [ -n "$r" ]; then echo "  skip  $cfg: $r"; skipped=$((skipped + 1)); continue; fi
+        echo "  run   $cfg ($(program_for "$cfg")): ${workloads[*]}"
+        n=$((n + 1))
+    done
+    echo "runs: $((n * passes * ${#workloads[@]})) measured runs ($n configs x $passes passes x ${#workloads[@]} workloads), $skipped config(s) skipped"
+    echo "each run waits for a quiet machine (no build), measures ${secs}s, repeats up to 8 times if noisy"
+}
+
+# The graphical session's environment, taken from the compositor so it works over ssh.
+session_env() {
+    local pid
+    for n in gnome-shell kwin_wayland kwin_x11 Xorg; do
+        pid=$(pgrep -u "$(id -u)" -x "$n" | head -1)
+        [ -n "$pid" ] && break
+    done
+    [ -n "${pid:-}" ] || return 1
+    tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -E '^(DISPLAY|WAYLAND_DISPLAY|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|XAUTHORITY|XDG_SESSION_TYPE)='
+}
+session_summary() {
+    local e; e=$(session_env) || { echo "no graphical session found for this user"; return; }
+    echo "$e" | grep -E '^(XDG_SESSION_TYPE|DISPLAY|WAYLAND_DISPLAY)=' | tr '\n' ' '
+}
+
+plan
+[ "$dry" = 1 ] && { echo "dry run: nothing was started or changed"; exit 0; }
+
+# --- from here on it touches the machine ---------------------------------------------------
+
+session_env > /dev/null || { echo "draw-bench-linux: no graphical session to open windows in" >&2; exit 2; }
+while IFS= read -r l; do export "$l"; done < <(session_env)
+for n in $all_names; do
+    if pgrep -u "$(id -u)" -x "$n" > /dev/null; then
+        if [ "$killex" = 1 ]; then pkill -u "$(id -u)" -x "$n"; sleep 1
+        else echo "draw-bench-linux: $n is already running; close it or pass --kill-existing" >&2; exit 2; fi
+    fi
+done
+mkdir -p "$out" "$B"
+results="$out/results.tsv"
+printf 'config\tworkload\tpass\twall_s\tcpu_pct\tws_pct\tfps\tmb_s\tother_pct\tfront\tnote\trss_mb\n' > "$results"
+
+# A plain shell with a fixed prompt; it tells the driver its tty.
+cat > "$B/shell.sh" <<'EOF'
+#!/bin/sh
+tty > "$(dirname "$0")/tty.$1"
+export PS1="bench % "
+exec bash --norc --noprofile
+EOF
+chmod +x "$B/shell.sh"
+
+# The workloads, written to the tty from outside (the terminal reads them like program output).
+# The same program as scripts/draw-bench.
+cat > "$B/writer.pl" <<'EOF'
+#!/usr/bin/perl
+# writer.pl WORKLOAD TTY SECS: prints the bytes written.
+use strict; use warnings; use Time::HiRes qw(time sleep);
+my ($mode, $tty, $secs) = @ARGV;
+open(my $fh, '>', $tty) or die "open $tty: $!";
+binmode $fh;
+my $bytes = 0;
+sub put { my $s = shift; my $n = syswrite($fh, $s); $bytes += $n if defined $n; }
+my @words = qw(the renderer keeps each row it built and draws only what changed since the last frame
+  while a spinner turns and new text arrives below the fold of a long answer about glyph atlases
+  instanced quads damage regions frame pacing and the cost of a shader at full retina size);
+my $seed = 7;
+sub rnd { $seed = ($seed * 1103515245 + 12345) % 2147483648; return $seed; }
+sub prose {
+    my $want = shift; my $s = '';
+    while (length($s) < $want) { $s .= $words[rnd() % @words] . ' '; }
+    return substr($s, 0, $want);
+}
+my $t0 = time; my $end = $t0 + $secs; my $n = 0;
+if ($mode eq 'idle') {
+    sleep($secs);
+} elsif ($mode eq 'stream20') {
+    # 20 lines a second, each a different line of 60 to 110 characters.
+    while ((my $now = time) < $end) {
+        $n++;
+        put(sprintf("%06d \e[1m%s\e[0m %s\r\n", $n, 'line', prose(60 + rnd() % 50)));
+        my $next = $t0 + $n * 0.05;
+        sleep($next - time) if $next > time;
+    }
+} elsif ($mode eq 'claude') {
+    # Claude Code's bottom area, redrawn 10 times a second: the spinner row and a 3-row input box,
+    # with a new line of answer above them every other tick. The cursor waits in the box.
+    my @spin = ("\xc2\xb7", "\xe2\x9c\xa2", "\xe2\x9c\xb3", "\xe2\x9c\xb6", "\xe2\x9c\xbb", "\xe2\x9c\xbd");
+    my $h = "\xe2\x94\x80" x 118;
+    put("\r\n\r\n\r\n\r\n");
+    my $tick = 0;
+    while (time < $end) {
+        my $s = "\r\e[2A\e[J";
+        $s .= "\e[38;5;252m" . prose(70 + rnd() % 40) . "\e[0m\r\n" if $tick % 2 == 0;
+        $s .= sprintf("\e[38;5;174m%s\e[0m \e[38;5;174mThinking\xe2\x80\xa6\e[0m \e[2m(%ds \xc2\xb7 \xe2\x86\x91 %.1fk tokens \xc2\xb7 esc to interrupt)\e[0m\r\n",
+                      $spin[$tick % @spin], int($tick / 10), 0.1 * $tick);
+        $s .= "\e[2m\xe2\x95\xad$h\xe2\x95\xae\e[0m\r\n";
+        $s .= "\e[2m\xe2\x94\x82\e[0m > " . (' ' x 115) . "\e[2m\xe2\x94\x82\e[0m\r\n";
+        $s .= "\e[2m\xe2\x95\xb0$h\xe2\x95\xaf\e[0m";
+        $s .= "\e[1A\r\e[4C";
+        put($s);
+        $tick++;
+        my $next = $t0 + $tick * 0.1;
+        sleep($next - time) if $next > time;
+    }
+} elsif ($mode eq 'flood') {
+    my $block = '';
+    my $i = 0;
+    while (length($block) < 1_000_000) {
+        $i++;
+        $block .= sprintf("%07d \e[3%dm%s\e[0m %s\r\n", $i, 1 + $i % 6, 'flood', prose(40 + rnd() % 80));
+    }
+    while (time < $end) { put($block); }
+} else {
+    die "unknown workload $mode";
+}
+close($fh);
+print "$bytes\n";
+EOF
+
+# --- settings, saved and put back ----------------------------------------------------------
+
+TCFG="${XDG_CONFIG_HOME:-$HOME/.config}/termurion"
+GCFG="${XDG_CONFIG_HOME:-$HOME/.config}/ghostty/config"
+saved="$out/saved-settings"
+mkdir -p "$saved"
+cp "$TCFG/profiles.toml" "$saved/profiles.toml" 2>/dev/null || : > "$saved/profiles.toml"
+cp "$TCFG/settings.toml" "$saved/settings.toml" 2>/dev/null || : > "$saved/settings.toml"
+cp "$TCFG/state" "$saved/state" 2>/dev/null || : > "$saved/state"
+cp "$GCFG" "$saved/ghostty-config" 2>/dev/null || : > "$saved/ghostty-config"
+had_pty=0
+if command -v ptyxis > /dev/null && gsettings get org.gnome.Ptyxis default-columns > /dev/null 2>&1; then
+    had_pty=1
+    gsettings get org.gnome.Ptyxis default-columns > "$saved/pty-cols"
+    gsettings get org.gnome.Ptyxis default-rows > "$saved/pty-rows"
+fi
+
+mypids=()
+quit_ours() {
+    local p
+    for p in "${mypids[@]:-}"; do [ -n "$p" ] && kill -- "-$p" 2>/dev/null; done
+    sleep 2
+    # Nothing of these names ran when we started, so what is left is ours.
+    for n in $all_names; do pkill -u "$(id -u)" -x "$n" 2>/dev/null; done
+    sleep 1
+    for n in $all_names; do pkill -9 -u "$(id -u)" -x "$n" 2>/dev/null; done
+    mypids=()
+}
+restore() {
+    quit_ours
+    put_back() { # SAVED TARGET: put the file back, or remove it when there was none
+        if [ -s "$1" ]; then mkdir -p "$(dirname "$2")"; cp "$1" "$2"; else rm -f "$2"; fi
+    }
+    if [ -s "$saved/profiles.toml" ]; then put_back "$saved/profiles.toml" "$TCFG/profiles.toml"; fi
+    put_back "$saved/settings.toml" "$TCFG/settings.toml"
+    put_back "$saved/state" "$TCFG/state"
+    put_back "$saved/ghostty-config" "$GCFG"
+    if [ "$had_pty" = 1 ]; then
+        gsettings set org.gnome.Ptyxis default-columns "$(cat "$saved/pty-cols")"
+        gsettings set org.gnome.Ptyxis default-rows "$(cat "$saved/pty-rows")"
+    fi
+    echo "draw-bench-linux: settings restored" >&2
+}
+trap restore EXIT
+trap 'exit 130' INT TERM
+
+setup() {
+    local cfg="$1" prog; prog=$(program_for "$cfg")
+    quit_ours
+    rm -f "$B"/tty.*
+    local key=${cfg%-fx}
+    case "$cfg" in
+        termurion*)
+            key=termurion
+            local fx=""
+            case "$cfg" in
+                termurion-fx) fx='"Render Plugins" = ["lightning"]' ;;
+                termurion-fx-*) fx="\"Render Plugins\" = [\"${cfg#termurion-fx-}\"]" ;;
+            esac
+            # The Default profile runs the bench shell at the bench size; -fx turns one plugin on.
+            awk -v fx="$fx" -v cols="$COLS" -v rows="$ROWS" -v cmd="$B/shell.sh termurion" '
+                /^(Columns|Rows|Command|"Custom Command"|"Render Plugins") = / && inside { next }
+                { print }
+                /^Name = "Default"$/ && !done { inside = 1; done = 1; print "Columns = " cols; print "Rows = " rows; print "\"Custom Command\" = \"Yes\""; print "Command = \"" cmd "\""; if (fx != "") print fx }
+                /^\[\[profile\]\]/ && done { inside = 0 }' "$saved/profiles.toml" > "$TCFG/profiles.toml"
+            # Effects animation = Smooth (3), and no saved window frame to override the grid.
+            { echo '[settings]'; echo 'EffectsAnimation = 3'
+              awk '/^\[settings\.SavedWindowFrames\]/{exit} /^\[settings\]$/{next} /^EffectsAnimation = /{next} {print}' "$saved/settings.toml"; } > "$TCFG/settings.toml"
+            rm -f "$TCFG/state"
+            ;;
+        ghostty*)
+            { printf 'font-family = monospace\nfont-size = 12\nwindow-width = %d\nwindow-height = %d\n' "$COLS" "$ROWS"
+              printf 'command = %s/shell.sh ghostty\ncursor-style-blink = false\nwindow-save-state = never\nconfirm-close-surface = false\nquit-after-last-window-closed = true\ngtk-single-instance = false\n' "$B"
+              [ "$cfg" = ghostty-fx ] && printf 'custom-shader = %s\ncustom-shader-animation = always\ncursor-color = #9fd0fe\n' "$B/lightning.glsl"; } > "$GCFG.new"
+            mkdir -p "$(dirname "$GCFG")"; mv "$GCFG.new" "$GCFG"
+            [ "$cfg" = ghostty-fx ] && cp "$(shader_file)" "$B/lightning.glsl"
+            ;;
+        alacritty)
+            printf '[window]\ndimensions = { columns = %d, lines = %d }\nposition = { x = %d, y = %d }\n[font]\nsize = 12\n[cursor]\nstyle = { blinking = "Never" }\n' "$COLS" "$ROWS" "$X" "$Y" > "$B/alacritty.toml"
+            ;;
+        ptyxis)
+            gsettings set org.gnome.Ptyxis default-columns "$COLS"
+            gsettings set org.gnome.Ptyxis default-rows "$ROWS"
+            ;;
+    esac
+    case "$cfg" in
+        alacritty) setsid "$prog" --config-file "$B/alacritty.toml" -e "$B/shell.sh" alacritty > /dev/null 2>&1 & ;;
+        ptyxis) setsid "$prog" -s -x "$B/shell.sh ptyxis" > /dev/null 2>&1 & ;;
+        *) setsid "$prog" > /dev/null 2>&1 & ;;
+    esac
+    mypids+=("$!")
+    local i
+    for i in $(seq 1 40); do [ -s "$B/tty.$key" ] && break; sleep 1; done
+    [ -s "$B/tty.$key" ] || { echo "draw-bench-linux: $cfg did not start its shell" >&2; return 1; }
+    sleep 3
+    echo "draw-bench-linux: $cfg is up, $(stty -F "$(cat "$B/tty.$key")" size | awk '{print $2"x"$1}') cells" >&2
+}
+
+# --- measuring -----------------------------------------------------------------------------
+
+hz=$(getconf CLK_TCK)
+# Summed CPU seconds of the named processes, or of every live process when no names are given.
+cpu_of() {
+    local f
+    if [ $# -eq 0 ]; then f=$(ls -d /proc/[0-9]*/stat 2>/dev/null)
+    else f=$(for p in $(pids_of "$@"); do echo "/proc/$p/stat"; done); fi
+    [ -n "$f" ] || { echo 0; return; }
+    # Fields after the ")" that ends the name: utime is the 12th, stime the 13th.
+    cat $f 2>/dev/null | sed 's/^.*) //' | awk -v hz="$hz" '{ s += $12 + $13 } END { printf "%.2f", s / hz }'
+}
+pids_of() { local n; for n in "$@"; do pgrep -u "$(id -u)" -x "$n"; done; }
+now() { date +%s.%N; }
+wait_quiet() {
+    local said=0 quiet=0
+    while [ "$quiet" -lt 2 ]; do
+        if pgrep -u "$(id -u)" -x cargo > /dev/null || pgrep -u "$(id -u)" -x rustc > /dev/null; then
+            [ "$said" = 1 ] || echo "draw-bench-linux: the machine is busy (a build); waiting" >&2
+            said=1; quiet=0
+        else quiet=$((quiet + 1)); fi
+        sleep 15
+    done
+}
+
+# One measured run: prints RESULT and the tab-separated numbers.
+run_one() {
+    local cfg="$1" wl="$2" key=${1%-fx}
+    case "$cfg" in termurion*) key=termurion ;; esac
+    local names; names=$(proc_names "$cfg")
+    local a0 c0 w0 t0 a1 c1 w1 t1 bytes rss
+    a0=$(cpu_of); c0=$(cpu_of $names); w0=$(cpu_of $comp_names); t0=$(now)
+    bytes=$(perl "$B/writer.pl" "$wl" "$(cat "$B/tty.$key")" "$secs")
+    a1=$(cpu_of); c1=$(cpu_of $names); w1=$(cpu_of $comp_names); t1=$(now)
+    rss=$(ps -o rss= -p "$(pids_of $names | paste -sd,)" 2>/dev/null | awk '{ s += $1 } END { if (NR) printf "%.0f", s / 1024 }')
+    # Front-window checks need X11 tools; without them the column says so.
+    awk -v a0="$a0" -v a1="$a1" -v c0="$c0" -v c1="$c1" -v w0="$w0" -v w1="$w1" -v t0="$t0" -v t1="$t1" -v b="$bytes" -v rss="$rss" \
+        'BEGIN { wall = t1 - t0; printf "RESULT\t%.2f\t%.1f\t%.1f\t-\t%.2f\t%.1f\tunchecked\t%s\n", wall, 100 * (c1 - c0) / wall, 100 * (w1 - w0) / wall, b / wall / 1e6, 100 * ((a1 - a0) - (c1 - c0) - (w1 - w0)) / wall, rss }'
+}
+
+for pass in $(seq 1 "$passes"); do
+    for cfg in "${configs[@]}"; do
+        r=$(skip_reason "$cfg")
+        if [ -n "$r" ]; then echo "draw-bench-linux: skipping $cfg: $r" >&2; continue; fi
+        wait_quiet
+        setup "$cfg" || continue
+        for wl in "${workloads[@]}"; do
+            note=""
+            for try in 1 2 3 4 5 6 7 8; do
+                wait_quiet
+                line=$(run_one "$cfg" "$wl" | grep '^RESULT')
+                other=$(printf '%s' "$line" | cut -f7)
+                if awk -v o="${other:-999}" 'BEGIN { exit !(o < 25) }'; then break; fi
+                echo "draw-bench-linux: $cfg $wl try $try: other processes ${other}% of a core; again" >&2
+                [ "$try" = 8 ] && note=noisy
+            done
+            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$cfg" "$wl" "$pass" "$(printf '%s' "$line" | cut -f2-8)" "$note" "$(printf '%s' "$line" | cut -f9)" >> "$results"
+            printf '%-13s %-9s pass %s: %s\n' "$cfg" "$wl" "$pass" "$(printf '%s' "$line" | cut -f2-8 | awk -F'\t' '{printf "cpu %s%%  ws %s%%  fps %s  %s MB/s  other %s%%  front %s", $2, $3, $4, $5, $6, $7}')" >&2
+        done
+    done
+done
+
+# The table: the median over passes of each config and workload (same layout as draw-bench).
+echo
+awk -F'\t' 'NR > 1 { k = $1 "\t" $2; n[k]++; cpu[k, n[k]] = $5; ws[k, n[k]] = $6; fps[k, n[k]] = $7; mb[k, n[k]] = $8; if ($12 != "") rs[k, ++nr[k]] = $12; if (!(k in seen)) { seen[k] = 1; order[++m] = k } }
+    function med(a, k, c,   i, j, t, v) { for (i = 1; i <= c; i++) v[i] = a[k, i]; for (i = 1; i <= c; i++) for (j = i + 1; j <= c; j++) if (v[j] < v[i]) { t = v[i]; v[i] = v[j]; v[j] = t } return c % 2 ? v[(c + 1) / 2] : (v[c / 2] + v[c / 2 + 1]) / 2 }
+    END { printf "| config | workload | CPU %% | WindowServer %% | frames/s | MB/s | RSS MB |\n|---|---|---|---|---|---|---|\n"
+          for (i = 1; i <= m; i++) { k = order[i]; split(k, p, "\t"); printf "| %s | %s | %.1f | %.1f | %s | %.2f | %s |\n", p[1], p[2], med(cpu, k, n[k]), med(ws, k, n[k]), "-", med(mb, k, n[k]), nr[k] ? sprintf("%.0f", med(rs, k, nr[k])) : "" } }' "$results" | tee "$out/table.md"
+echo "draw-bench-linux: results in $out" >&2
