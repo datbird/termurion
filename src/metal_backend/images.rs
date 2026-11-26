@@ -9,7 +9,7 @@ use objc2_metal::{
     MTLDevice, MTLOrigin, MTLPixelFormat, MTLRegion, MTLRenderPipelineState, MTLSamplerAddressMode, MTLSamplerDescriptor, MTLSamplerMinMagFilter, MTLSamplerMipFilter, MTLSamplerState, MTLSize, MTLStorageMode, MTLTexture, MTLTextureDescriptor, MTLTextureUsage,
 };
 
-use super::quads::{Attr, Blend, Layout, Shader, SCREEN};
+use super::quads::{Attr, Blend, Layout, ScreenSlots, Shader, SCREEN};
 use super::shaders::{Entry, Kind};
 use crate::draw_list::{ImageDraw, IMAGE_STRIDE};
 
@@ -24,6 +24,7 @@ const PICTURE: [Entry; 2] = [Entry::new(0, Kind::Texture, false, true), Entry::n
 
 pub(super) struct ImagePipeline {
     pub pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    pub slots: ScreenSlots,
     sampler: Retained<ProtocolObject<dyn MTLSamplerState>>,
     /// Tiled background images repeat.
     repeat_sampler: Retained<ProtocolObject<dyn MTLSamplerState>>,
@@ -53,7 +54,7 @@ fn sampler(device: &ProtocolObject<dyn MTLDevice>, repeat: bool) -> Result<Retai
 impl ImagePipeline {
     pub fn new(device: &ProtocolObject<dyn MTLDevice>, format: MTLPixelFormat) -> Result<ImagePipeline, String> {
         let shader = Shader::new(device, include_str!("../image.wgsl"), ("vs", "fs"), &[&SCREEN, &PICTURE], &IMAGE_BUFFERS)?;
-        Ok(ImagePipeline { pipeline: shader.pipeline(device, format, Blend::ALPHA)?, sampler: sampler(device, false)?, repeat_sampler: sampler(device, true)?, cache: HashMap::new(), uploads: 0, frames: 0 })
+        Ok(ImagePipeline { pipeline: shader.pipeline(device, format, Blend::ALPHA)?, slots: ScreenSlots::of(&shader)?, sampler: sampler(device, false)?, repeat_sampler: sampler(device, true)?, cache: HashMap::new(), uploads: 0, frames: 0 })
     }
 
     /// The texture and sampler `d` draws with; None for a picture with no texture (too big, bad data).

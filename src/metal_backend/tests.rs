@@ -149,8 +149,7 @@ fn a_new_scale_resizes_the_drawable() {
 /// another kind of error and a stale device's report do not.
 #[test]
 fn a_lost_device_is_reported() {
-    // The wgpu loss test takes the same reports: one at a time.
-    let _one = crate::render::test_gpu::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _one = loss_reports();
     let _ = crate::gpu_pick::take_lost();
     let generation = crate::gpu_pick::next_generation();
     let mut win = metal_window((64, 32));
@@ -189,6 +188,14 @@ fn an_effect_says_the_metal_renderer_has_none_yet() {
     let mut win = metal_window(SIZE);
     let effect = crate::render_fx::discover(None).0.into_iter().next().expect("a shipped effect");
     assert_eq!(win.set_effect(Some(effect.compile().unwrap()), None).unwrap_err(), super::window::NO_EFFECTS_YET);
+}
+
+/// The loss reports are process-wide, so tests that take them run one at a time under
+/// `test_gpu::LOCK`. The shared wgpu device is made first: its making takes the same lock, so a
+/// test holding the lock while another makes the device would wait on it forever.
+fn loss_reports() -> std::sync::MutexGuard<'static, ()> {
+    handles();
+    crate::render::test_gpu::LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// A wgpu window and a Metal window whose renderers draw rows through the row renderer (`rows`)
@@ -394,45 +401,122 @@ fn metal_matches_wgpu_in_web_color_mode() {
 }
 
 /// A Metal allocation that fails mid-frame (a grown atlas or row buffer, a staging chunk, a quad
-/// buffer, a picture) leaves the CPU side counting changes the GPU never got: the frame is a lost
-/// surface, and once the app remakes it both sides start over and draw as wgpu does.
+/// buffer, a picture) leaves the CPU side counting changes the GPU never got: the frame is
+/// skipped and reported as a lost device, and once recovery rebuilds the window both sides start
+/// over and draw as wgpu does.
 #[test]
 fn a_failed_metal_allocation_starts_both_sides_over() {
+    let _one = loss_reports();
+    let _ = crate::gpu_pick::take_lost();
     let (_, mut wgpu, _) = text_pair(true);
     let mut cases: Vec<_> = crate::render_pixel_tests::pixel_cases(wgpu.renderer()).into_iter().filter(|c| c.name.starts_with("cjk_flood")).take(40).collect();
     let size = cases[0].size;
-    // Many quads grow a quad buffer; a picture needs a texture.
+    // Many quads grow a quad buffer. The picture frame has the text of the frame before it, so
+    // its one new texture is the picture's.
     let quads = Frame { clear: [0.0, 0.0, 0.0, 1.0], fade: 1.0, quads: (0..4000).map(|k| Quad { rect: rect((k % 100) as f32 * 8.0, (k / 100) as f32 * 8.0, 6.0, 6.0), color: [0.5, 0.2, 0.9, 1.0] }).collect(), ..cases[3].frame.clone() };
     let pictured = Frame { images: vec![picture(9, rect(20.5, 30.0, 200.0, 100.0), (17, 11), [0.0, 0.0, 1.0, 1.0], false)], ..cases[5].frame.clone() };
     cases.insert(4, crate::render_pixel_tests::PixelCase { name: "many quads".into(), frame: quads, size });
     cases.insert(7, crate::render_pixel_tests::PixelCase { name: "a picture".into(), frame: pictured, size });
+    assert_eq!(cases[6].frame.rows, cases[7].frame.rows);
     let mut metal = metal_window(size);
     let mut lost = Vec::new();
     for (i, c) in cases.iter().enumerate() {
-        // Fail the first allocation of these frames: the first frame's staging chunk, the quad
-        // buffer, the picture's texture (or whatever that frame makes first).
-        if [0, 4, 7].contains(&i) {
-            super::fail_allocations(1);
+        // The first frame's first allocation (its staging chunk), the quad frame's first (the
+        // grown buffer), and the picture frame's texture.
+        match i {
+            0 | 4 => super::fail_allocations(1),
+            7 => super::fail_textures(1),
+            _ => {}
         }
         let want = wgpu.capture(&c.frame, None, size.0, size.1).unwrap();
         match metal.render(&c.frame, None, None) {
-            Err(crate::gpu_window::RenderError::Lost(why)) => {
-                lost.push(c.name.clone());
+            Err(crate::gpu_window::RenderError::Skip) => {
+                let why = crate::gpu_pick::take_lost().expect("the failure is reported as a lost device");
                 assert!(why.starts_with("Metal: "), "{why}");
+                if i == 7 {
+                    assert!(why.contains("picture"), "not the picture's texture: {why}");
+                }
+                lost.push(c.name.clone());
                 assert!(metal.stale().is_some());
-                // As the app does with a lost surface: remake it and draw again.
-                metal.remake_surface().unwrap();
+                // As recovery does: the window rebuilt on the device, then it draws again.
+                metal.rebuild(&crate::gpu_shared::GpuShared::Metal(test_device().clone()), None).unwrap();
                 assert!(metal.stale().is_none());
                 assert_eq!(metal.renderer_mut().atlas().generation(), 0, "the atlas started over");
                 metal.render(&c.frame, None, None).unwrap().kept.unwrap();
             }
-            other => other.unwrap_or_else(|_| panic!("{}: an error that is not a lost surface", c.name)).kept.unwrap(),
+            other => other.unwrap_or_else(|_| panic!("{}: an error that is not a skipped frame", c.name)).kept.unwrap(),
         }
         super::fail_allocations(0);
+        super::fail_textures(0);
         let got = super::readback::read_rgba(&test_device().queue, metal.offscreen_texture(), size.0, size.1).unwrap();
         crate::render_pixel_tests::assert_same(&c.name, &want, &got, size.0);
     }
     assert_eq!(lost, [cases[0].name.as_str(), "many quads", "a picture"]);
+    assert!(crate::gpu_pick::take_lost().is_none());
+}
+
+/// With allocations failing for good, the app's recovery (`gpu_pick::Recovery`, driven here as
+/// `gpu_recovery_tick` drives it) tries to rebuild the window `MAX_TRIES` times and gives up,
+/// which is when the restart banner shows; meanwhile no frame redraws. A failure again right
+/// after a recovery gives up at once.
+#[test]
+fn a_lasting_allocation_failure_ends_in_the_restart_banner() {
+    use crate::gpu_pick::{Action, Recovery, MAX_TRIES};
+    use crate::gpu_window::RenderError;
+    let _one = loss_reports();
+    let _ = crate::gpu_pick::take_lost();
+    let frame = Frame { clear: [0.0, 0.0, 0.0, 1.0], fade: 1.0, quads: vec![Quad { rect: rect(1.0, 1.0, 9.0, 9.0), color: [1.0, 0.0, 0.0, 1.0] }], ..Default::default() };
+    // Every Metal allocation of this thread fails from here on.
+    let mut win = metal_window((64, 32));
+    super::fail_allocations(u32::MAX);
+    let mut recovery = Recovery::new(1);
+    let mut now = std::time::Instant::now();
+    assert!(matches!(win.render(&frame, None, None), Err(RenderError::Skip)));
+    recovery.lost(now);
+    assert!(crate::gpu_pick::take_lost().is_some());
+    let mut attempts = 0;
+    loop {
+        match recovery.poll(now) {
+            Action::Attempt { .. } => {
+                attempts += 1;
+                crate::gpu_pick::next_generation();
+                match win.rebuild(&crate::gpu_shared::GpuShared::Metal(test_device().clone()), None) {
+                    Ok(()) => panic!("a rebuild with no allocations worked"),
+                    Err(_) => recovery.failed(now),
+                }
+            }
+            Action::WaitUntil(t) => now = t,
+            Action::GaveUp => break,
+            Action::Idle => panic!("recovery went idle while the window is stale"),
+        }
+    }
+    assert_eq!(attempts, MAX_TRIES);
+    // The window stays stale and refuses to draw rather than looping.
+    assert!(win.stale().is_some());
+    assert!(matches!(win.render(&frame, None, None), Err(RenderError::Refused(_))));
+    super::fail_allocations(0);
+
+    // A rebuild that works, then the same failure within a minute: recovery gives up.
+    let mut win = metal_window((64, 32));
+    let mut recovery = Recovery::new(1);
+    let now = std::time::Instant::now();
+    super::fail_allocations(1);
+    let fresh = Frame { quads: vec![Quad { rect: rect(0.0, 0.0, 4.0, 4.0), color: [0.0, 1.0, 0.0, 1.0] }], ..frame.clone() };
+    assert!(matches!(win.render(&fresh, None, None), Err(RenderError::Skip)));
+    assert!(crate::gpu_pick::take_lost().is_some());
+    recovery.lost(now);
+    assert!(matches!(recovery.poll(now), Action::Attempt { .. }));
+    win.rebuild(&crate::gpu_shared::GpuShared::Metal(test_device().clone()), None).unwrap();
+    recovery.recovered(now);
+    win.render(&frame, None, None).unwrap().kept.unwrap();
+    // The staging chunk is reused now, so a new picture is what allocates.
+    let pictured = Frame { images: vec![picture(11, rect(2.0, 2.0, 20.0, 10.0), (5, 3), [0.0, 0.0, 1.0, 1.0], false)], ..frame.clone() };
+    super::fail_textures(1);
+    assert!(matches!(win.render(&pictured, None, None), Err(RenderError::Skip)));
+    super::fail_textures(0);
+    assert!(crate::gpu_pick::take_lost().is_some());
+    recovery.lost(now + std::time::Duration::from_secs(1));
+    assert_eq!(recovery.poll(now), Action::GaveUp);
 }
 
 /// The window's layer follows its root layer's bounds and scale, as wgpu's raw-window-metal layer

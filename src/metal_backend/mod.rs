@@ -191,7 +191,7 @@ pub fn egui_wgpu() -> Result<crate::gpu_shared::GpuShared, String> {
 /// A Metal buffer, or None when the device has no room (or a test made it fail).
 #[cfg(target_os = "macos")]
 pub(crate) fn new_buffer(device: &ProtocolObject<dyn MTLDevice>, size: usize, options: objc2_metal::MTLResourceOptions) -> Option<Retained<ProtocolObject<dyn objc2_metal::MTLBuffer>>> {
-    if fails_now() {
+    if fails_now(false) {
         return None;
     }
     device.newBufferWithLength_options(size, options)
@@ -200,29 +200,46 @@ pub(crate) fn new_buffer(device: &ProtocolObject<dyn MTLDevice>, size: usize, op
 /// A Metal texture, or None when the device has no room (or a test made it fail).
 #[cfg(target_os = "macos")]
 pub(crate) fn new_texture(device: &ProtocolObject<dyn MTLDevice>, desc: &objc2_metal::MTLTextureDescriptor) -> Option<Retained<ProtocolObject<dyn objc2_metal::MTLTexture>>> {
-    if fails_now() {
+    if fails_now(true) {
         return None;
     }
     device.newTextureWithDescriptor(desc)
 }
 
+// How many more allocations of this test thread fail: any kind, then textures only.
 #[cfg(all(test, target_os = "macos"))]
-thread_local!(static FAILS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) });
+thread_local!(static FAILS: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((0, 0)) });
 
 /// Makes the next `n` buffers or textures this thread asks for fail (tests).
 #[cfg(all(test, target_os = "macos"))]
 pub fn fail_allocations(n: u32) {
-    FAILS.with(|f| f.set(n));
+    FAILS.with(|f| f.set((n, f.get().1)));
+}
+
+/// Makes the next `n` textures this thread asks for fail; buffers are still made (tests).
+#[cfg(all(test, target_os = "macos"))]
+pub fn fail_textures(n: u32) {
+    FAILS.with(|f| f.set((f.get().0, n)));
 }
 
 #[cfg(target_os = "macos")]
-fn fails_now() -> bool {
+fn fails_now(texture: bool) -> bool {
     #[cfg(test)]
     return FAILS.with(|f| {
-        let n = f.get();
-        f.set(n.saturating_sub(1));
-        n > 0
+        let (any, textures) = f.get();
+        if any > 0 {
+            f.set((any - 1, textures));
+            return true;
+        }
+        if texture && textures > 0 {
+            f.set((any, textures - 1));
+            return true;
+        }
+        false
     });
     #[cfg(not(test))]
-    false
+    {
+        let _ = texture;
+        false
+    }
 }

@@ -52,7 +52,7 @@ fn target(device: &ProtocolObject<dyn MTLDevice>, (w, h): (u32, u32), views: boo
     let usage = MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead;
     desc.setUsage(if views { usage | MTLTextureUsage::PixelFormatView } else { usage });
     desc.setStorageMode(MTLStorageMode::Private);
-    device.newTextureWithDescriptor(&desc).ok_or_else(|| format!("no Metal texture of {w} x {h}"))
+    super::new_texture(device, &desc).ok_or_else(|| format!("no Metal texture of {w} x {h}"))
 }
 
 /// Why a frame did not draw: the CPU prepare (nothing reached the GPU side; the next frame takes
@@ -185,9 +185,9 @@ impl MetalWindow {
         let wait_start = Instant::now();
         let Some(surface) = self.surface.as_ref() else {
             #[cfg(test)]
-            if self.offscreen.is_some() {
-                // Made again each frame: the size may have changed.
-                let t = target(&self.shared.device, self.size, false).map_err(RenderError::Refused)?;
+            if let Some(old) = self.offscreen.clone() {
+                // Made again when the size changed.
+                let t = if (old.width() as u32, old.height() as u32) == self.size { old } else { target(&self.shared.device, self.size, false).map_err(|e| self.metal_failed(e))? };
                 self.offscreen = Some(t.clone());
                 self.acquire = Acquire { wait: wait_start.elapsed(), dropped: false };
                 return self.draw_into(None, &t, frame);
@@ -213,10 +213,11 @@ impl MetalWindow {
         let kept = match kept {
             Ok(()) => Ok(()),
             Err(Failed::Prepare(e)) => Err(e),
-            Err(Failed::Metal(e)) => {
+            Err(Failed::Metal(_)) => {
                 cb.commit();
-                // As a lost surface: the app remakes it (`remake_surface`) and draws again.
-                return Err(RenderError::Lost(e));
+                // Reported as a lost device: the app's recovery rebuilds the window, with its
+                // tries and backoff, and shows the restart banner once they run out.
+                return Err(RenderError::Skip);
             }
         };
         let draw = draw_start.map(|t| t.elapsed());
@@ -243,10 +244,20 @@ impl MetalWindow {
         let drawn = self.draw.run(&self.shared.device, cb, &list, &up, view, raw);
         self.renderer.recycle(list, up);
         drawn.map_err(|e| {
-            let e = format!("Metal: {e}");
-            self.stale = Some(e.clone());
-            Failed::Metal(e)
+            self.metal_failed(e);
+            Failed::Metal(self.stale.clone().unwrap_or_default())
         })
+    }
+
+    /// A Metal allocation failed: the window starts its text over before it draws again, and the
+    /// failure goes to the app as a lost device (`gpu_pick::report_lost`), so recovery remakes
+    /// the device a limited number of times and then shows the restart banner. The frame itself
+    /// is skipped, so nothing redraws in a loop meanwhile.
+    fn metal_failed(&mut self, why: String) -> RenderError {
+        let why = format!("Metal: {why}");
+        crate::gpu_pick::report_lost(self.generation, why.clone());
+        self.stale = Some(why);
+        RenderError::Skip
     }
 
     /// Starts the text over on both sides when a Metal failure left them apart: the CPU atlas,
@@ -285,7 +296,10 @@ impl MetalWindow {
             return Err(format!("an image of {w} x {h} pixels is larger than the graphics card allows ({max})"));
         }
         // With a second view, as the wgpu backend's screenshot texture has where the card allows.
-        let tex = target(&self.shared.device, (w, h), true)?;
+        let tex = target(&self.shared.device, (w, h), true).map_err(|e| {
+            self.metal_failed(e);
+            self.stale.clone().unwrap_or_default()
+        })?;
         let raw = tex.newTextureViewWithPixelFormat(raw_format(FORMAT)).ok_or("no Metal texture view")?;
         let cb = self.shared.command_buffer(self.generation)?;
         let drawn = self.encode(&cb, frame, &tex, Some(&raw));

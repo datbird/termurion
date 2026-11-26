@@ -160,10 +160,26 @@ pub(super) const SCREEN: [Entry; 1] = [Entry::new(0, Kind::Buffer, true, false)]
 const QUAD_ATTRS: [Attr; 2] = [Attr { location: 0, offset: 0, format: wgpu::VertexFormat::Float32x2 }, Attr { location: 1, offset: 8, format: wgpu::VertexFormat::Float32x4 }];
 const QUAD_BUFFERS: [Layout; 1] = [Layout { stride: QUAD_STRIDE as u32, instance: false, attrs: &QUAD_ATTRS }];
 
+/// The vertex stage slots of the screen uniform and of the sizes buffer, as the translation of a
+/// quad or image shader gave them.
+#[derive(Clone, Copy)]
+pub(super) struct ScreenSlots {
+    pub screen: usize,
+    pub sizes: usize,
+}
+
+impl ScreenSlots {
+    pub fn of(shader: &Shader) -> Result<ScreenSlots, String> {
+        Ok(ScreenSlots { screen: shader.vertex_buffer(0, 0)?, sizes: shader.sizes_slot() })
+    }
+}
+
 /// Rectangles: two triangles each, position and color per vertex.
 pub(super) struct QuadPipeline {
     shader: Shader,
     pub pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    /// Also the fade pipelines' (the same shader).
+    pub slots: ScreenSlots,
     /// The fade pass on a non-sRGB view of the target, made on first use.
     fader: Option<Retained<ProtocolObject<dyn MTLRenderPipelineState>>>,
     /// The fade pass on the target's own sRGB format (no second view), made on first use.
@@ -175,7 +191,7 @@ impl QuadPipeline {
     pub fn new(device: &ProtocolObject<dyn MTLDevice>, format: MTLPixelFormat) -> Result<QuadPipeline, String> {
         let shader = Shader::new(device, include_str!("../quad.wgsl"), ("vs", "fs"), &[&SCREEN], &QUAD_BUFFERS)?;
         let pipeline = shader.pipeline(device, format, Blend::ALPHA)?;
-        Ok(QuadPipeline { shader, pipeline, fader: None, fader_view: None, format })
+        Ok(QuadPipeline { slots: ScreenSlots::of(&shader)?, shader, pipeline, fader: None, fader_view: None, format })
     }
 
     /// The fade pipeline for a pass on a raw (non-sRGB) view when `raw`, else on the target's view.

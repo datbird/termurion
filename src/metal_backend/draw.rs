@@ -15,7 +15,7 @@ use objc2_metal::{
 };
 
 use super::images::ImagePipeline;
-use super::quads::QuadPipeline;
+use super::quads::{QuadPipeline, ScreenSlots};
 use super::shaders;
 use super::text::{Made, MetalText, TextStart};
 use crate::draw_list::{BufferWrite, DrawList, ImageDraw, QuadBuf, Shadow, Uploads, IMAGE_STRIDE, QUAD_STRIDE};
@@ -93,10 +93,6 @@ fn private_buffer(device: &ProtocolObject<dyn MTLDevice>, size: u64) -> Result<B
     super::new_buffer(device, size as usize, MTLResourceOptions::StorageModePrivate).ok_or_else(|| format!("no Metal buffer of {size} bytes"))
 }
 
-/// The slot of the vertex stage's buffer sizes (after the screen uniform; `shaders::stage_resources`).
-const SIZES_SLOT: usize = 1;
-/// The screen uniform's slot.
-const SCREEN_SLOT: usize = 0;
 
 impl MetalDraw {
     /// The draw for a renderer whose glyph atlas and rows are as `text` says (new ones).
@@ -221,7 +217,7 @@ impl MetalDraw {
 
     /// Binds a vertex buffer as wgpu-hal does: the buffer at the top slot, the bound length in the
     /// sizes buffer vertex pulling reads, and the screen uniform.
-    fn bind_vertices(&self, enc: &ProtocolObject<dyn MTLRenderCommandEncoder>, pipeline: &ProtocolObject<dyn MTLRenderPipelineState>, which: QuadBuf, bytes: u64, screen: [f32; 4]) {
+    fn bind_vertices(&self, enc: &ProtocolObject<dyn MTLRenderCommandEncoder>, pipeline: &ProtocolObject<dyn MTLRenderPipelineState>, slots: ScreenSlots, which: QuadBuf, bytes: u64, screen: [f32; 4]) {
         enc.setRenderPipelineState(pipeline);
         enc.setFrontFacingWinding(MTLWinding::CounterClockwise);
         enc.setCullMode(MTLCullMode::None);
@@ -230,21 +226,21 @@ impl MetalDraw {
         // SAFETY: the slots are the ones the shaders were translated with; the bytes outlive the calls.
         unsafe {
             enc.setVertexBuffer_offset_atIndex(Some(&self.bufs[which.index()]), 0, shaders::vertex_buffer_slot(0) as usize);
-            enc.setVertexBytes_length_atIndex(std::ptr::NonNull::from(&sizes).cast(), 4, SIZES_SLOT);
-            enc.setVertexBytes_length_atIndex(std::ptr::NonNull::from(&screen).cast(), 16, SCREEN_SLOT);
+            enc.setVertexBytes_length_atIndex(std::ptr::NonNull::from(&sizes).cast(), 4, slots.sizes);
+            enc.setVertexBytes_length_atIndex(std::ptr::NonNull::from(&screen).cast(), 16, slots.screen);
         }
     }
 
     fn draw_quads(&self, enc: &ProtocolObject<dyn MTLRenderCommandEncoder>, pipeline: &ProtocolObject<dyn MTLRenderPipelineState>, which: QuadBuf, verts: std::ops::Range<u32>, screen: [f32; 4]) {
         // Only the list's own length: a list that shrank leaves its old tail unread.
-        self.bind_vertices(enc, pipeline, which, verts.end as u64 * QUAD_STRIDE, screen);
+        self.bind_vertices(enc, pipeline, self.quads.slots, which, verts.end as u64 * QUAD_STRIDE, screen);
         // SAFETY: the range lies in what the buffer holds.
         unsafe { enc.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, verts.start as usize, verts.len()) };
     }
 
     /// Draws `list` from `which`; a picture with no texture is skipped.
     fn draw_images(&self, enc: &ProtocolObject<dyn MTLRenderCommandEncoder>, which: QuadBuf, list: &[ImageDraw], screen: [f32; 4]) {
-        self.bind_vertices(enc, &self.images.pipeline, which, list.len() as u64 * 6 * IMAGE_STRIDE, screen);
+        self.bind_vertices(enc, &self.images.pipeline, self.images.slots, which, list.len() as u64 * 6 * IMAGE_STRIDE, screen);
         for d in list {
             let Some((texture, sampler)) = self.images.bound(d) else { continue };
             // SAFETY: slot 0 of each kind is the picture's (`images::PICTURE`); the range is the picture's six vertices.
