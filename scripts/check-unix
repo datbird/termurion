@@ -4,6 +4,7 @@
 # CHECK_UNIX_MAC_HOST overrides the macOS ssh host (default funtimes).
 # With --test it runs `cargo test --lib` instead and prints "<os>: P passed, F failed" with the failing names.
 # FILTER is one or more space separated test name filters (default: every lib test).
+# A test run with no new output for CHECK_UNIX_STALL_MINUTES (default 30) is a hang: it is stopped and fails.
 # Usage: scripts/check-unix [--linux-only | --mac-only] [--test [FILTER]]   (flags in any order; FILTER words follow --test)
 set -uo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
@@ -37,12 +38,43 @@ report() {
     [ "$n" -ne 0 ] && bad=1
     return 0
 }
+# Runs a test command with its output in $1 and stops it after $stall minutes with no new output.
+# Returns 3 on a stall. The local run gets its own process group; on macOS the remote test processes are killed by name.
+stall="${CHECK_UNIX_STALL_MINUTES:-30}"
+run_watched() {
+    local log="$1" os="$2"; shift 2
+    setsid "$@" >"$log" 2>&1 &
+    local pid=$! last=-1 still=0 size
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep 30
+        size=$(stat -c %s "$log" 2>/dev/null || echo 0)
+        if [ "$size" = "$last" ]; then still=$((still + 30)); else still=0; last=$size; fi
+        if [ "$still" -ge $((stall * 60)) ]; then
+            kill -TERM -- "-$pid" 2>/dev/null
+            # The brackets keep pkill from matching its own shell's command line.
+            [ "$os" = macos ] && ssh "$host" 'pkill -f "[t]arget/debug/deps/termurion-"; pkill -f "[c]argo test --lib"' 2>/dev/null
+            wait "$pid" 2>/dev/null
+            return 3
+        fi
+    done
+    wait "$pid"
+}
 # Runs the lib tests, prints "<os>: P passed, F failed" and the failing names. Exit 1 on a failure.
 # A run that built nothing (no "test result" line) did not really run: exit 2.
 test_report() {
     local os="$1"; shift
-    local out p=0 f=0 line
-    out=$("$@" 2>&1)
+    local out p=0 f=0 line log
+    log=$(mktemp)
+    run_watched "$log" "$os" "$@"
+    if [ $? -eq 3 ]; then
+        echo "$os: tests stalled, no output for $stall minutes; stopped"
+        grep -E 'has been running for over' "$log" | sed 's/^/  /' | tail -20
+        tail -5 "$log" >&2
+        rm -f "$log"
+        bad=1
+        return 0
+    fi
+    out=$(cat "$log"); rm -f "$log"
     while read -r line; do
         p=$((p + $(sed -n 's/.* \([0-9]*\) passed.*/\1/p' <<<"$line")))
         f=$((f + $(sed -n 's/.* \([0-9]*\) failed.*/\1/p' <<<"$line")))
