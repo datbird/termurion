@@ -93,7 +93,6 @@ fn private_buffer(device: &ProtocolObject<dyn MTLDevice>, size: u64) -> Result<B
     super::new_buffer(device, size as usize, MTLResourceOptions::StorageModePrivate).ok_or_else(|| format!("no Metal buffer of {size} bytes"))
 }
 
-
 impl MetalDraw {
     /// The draw for a renderer whose glyph atlas and rows are as `text` says (new ones).
     pub fn new(device: &ProtocolObject<dyn MTLDevice>, format: MTLPixelFormat, text: &TextStart) -> Result<MetalDraw, String> {

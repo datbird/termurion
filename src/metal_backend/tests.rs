@@ -519,6 +519,25 @@ fn a_lasting_allocation_failure_ends_in_the_restart_banner() {
     assert_eq!(recovery.poll(now), Action::GaveUp);
 }
 
+/// A screenshot whose texture cannot be made fails alone: it changed nothing, so no loss is
+/// reported, the window is not stale, and the next frame draws as wgpu does.
+#[test]
+fn a_failed_capture_texture_is_only_an_error() {
+    let _one = loss_reports();
+    let _ = crate::gpu_pick::take_lost();
+    let (_, mut wgpu, _) = text_pair(true);
+    let c = crate::render_pixel_tests::pixel_cases(wgpu.renderer()).into_iter().find(|c| !c.frame.rows.is_empty()).expect("a case with text");
+    let mut metal = metal_window(c.size);
+    super::fail_textures(1);
+    assert!(metal.capture(&c.frame, None, c.size.0, c.size.1).is_err(), "the capture texture was made");
+    super::fail_textures(0);
+    assert!(crate::gpu_pick::take_lost().is_none(), "a failed screenshot was reported as a lost device");
+    assert!(metal.stale().is_none());
+    metal.render(&c.frame, None, None).unwrap().kept.unwrap();
+    let got = super::readback::read_rgba(&test_device().queue, metal.offscreen_texture(), c.size.0, c.size.1).unwrap();
+    crate::render_pixel_tests::assert_same(&c.name, &wgpu.capture(&c.frame, None, c.size.0, c.size.1).unwrap(), &got, c.size.0);
+}
+
 /// The window's layer follows its root layer's bounds and scale, as wgpu's raw-window-metal layer
 /// does, and takes the drawable size it is given.
 #[test]

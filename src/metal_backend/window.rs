@@ -296,10 +296,9 @@ impl MetalWindow {
             return Err(format!("an image of {w} x {h} pixels is larger than the graphics card allows ({max})"));
         }
         // With a second view, as the wgpu backend's screenshot texture has where the card allows.
-        let tex = target(&self.shared.device, (w, h), true).map_err(|e| {
-            self.metal_failed(e);
-            self.stale.clone().unwrap_or_default()
-        })?;
+        // Nothing has changed yet: a screenshot too big for the memory left is only an error, not
+        // a lost device.
+        let tex = target(&self.shared.device, (w, h), true)?;
         let raw = tex.newTextureViewWithPixelFormat(raw_format(FORMAT)).ok_or("no Metal texture view")?;
         let cb = self.shared.command_buffer(self.generation)?;
         let drawn = self.encode(&cb, frame, &tex, Some(&raw));
