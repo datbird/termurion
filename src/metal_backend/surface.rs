@@ -162,6 +162,13 @@ pub(super) struct Ticks {
 }
 
 impl Ticks {
+    /// The link starts again: the gap since its last callback before the pause is no interval,
+    /// and an odd gap from then is no evidence; only the interval is kept.
+    fn resume(&self) {
+        self.last.set(0.0);
+        self.odd.set(0.0);
+    }
+
     fn tick(&self, at: f64) {
         self.ticked.set(true);
         let gap = at - self.last.replace(at);
@@ -229,11 +236,14 @@ impl DisplayLink {
 
     /// Pauses the link when nothing wants it (no effect frames, no `owed` frame), runs it when
     /// something does.
-    fn sync(&self, owed: bool) {
+    /// True when this unpaused the link.
+    fn sync(&self, owed: bool) -> bool {
         let pause = self.running.get().is_none() && !owed;
-        if self.paused.replace(pause) != pause {
+        let changed = self.paused.replace(pause) != pause;
+        if changed {
             self.link.setPaused(pause);
         }
+        changed && !pause
     }
 }
 
@@ -546,7 +556,9 @@ impl Surface {
             }
             self.ticks.ticked.set(false);
         }
-        d.sync(self.owed.get());
+        if d.sync(self.owed.get()) {
+            self.ticks.resume();
+        }
     }
 
     /// The time between display link ticks while effect frames follow it; None when they
@@ -560,6 +572,11 @@ impl Surface {
     /// frame waits for (then it is no longer owed).
     pub fn take_display_tick(&self) -> crate::gpu_window::DisplayTick {
         let ticked = self.ticks.ticked.replace(false);
+        // A tick with no effect frames comes at the display's rate (an owed frame): the interval
+        // it measures is not the effect rate's any more, so a resumed rate measures again.
+        if let Some(d) = self.display.as_ref().filter(|d| ticked && d.running.get().is_none()) {
+            d.measured.set(None);
+        }
         let owed = ticked && self.owed.get();
         if owed {
             self.set_owed(false);
@@ -569,8 +586,8 @@ impl Surface {
 
     fn set_owed(&self, owed: bool) {
         self.owed.set(owed);
-        if let Some(d) = &self.display {
-            d.sync(owed);
+        if self.display.as_ref().is_some_and(|d| d.sync(owed)) {
+            self.ticks.resume();
         }
     }
 
@@ -714,11 +731,10 @@ mod tests {
         // as one that finishes after the check.
         assert!(!ran.get(), "nothing runs after a pending read");
         complete();
-        // And one that finishes between the reads of a surface whose pending flag was already
-        // clear (an earlier frame of it) still reads its own newer shown serial.
-        assert!(!t.free_with(&presenter, || presenter.shown.store(5, Ordering::Release)), "it is on screen");
-        assert!(!t.free(&presenter), "and afterwards");
-        presenter.shown.store(6, Ordering::Release);
-        assert!(t.free(&presenter), "a later frame replaced it");
+        assert!(!t.free(&presenter), "it is on screen");
+        // Its pending flag is clear now. A later frame shown between the two reads is seen: the
+        // shown serial is read after `pending`, not before it.
+        assert!(t.free_with(&presenter, || presenter.shown.store(6, Ordering::Release)), "a later frame replaced it");
+        assert!(t.free(&presenter), "and afterwards");
     }
 }
