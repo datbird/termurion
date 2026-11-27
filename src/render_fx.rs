@@ -2159,7 +2159,7 @@ mod tests {
             n += 1.25;
             n
         };
-        let mut v4 = |next: &mut dyn FnMut() -> f32| [next(), next(), next(), next()];
+        let v4 = |next: &mut dyn FnMut() -> f32| [next(), next(), next(), next()];
         let mut u = Uniforms::default();
         u.resolution = [next(), next(), 1.0];
         u.time = next();

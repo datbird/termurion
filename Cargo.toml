@@ -108,10 +108,9 @@ naga = { version = "30.0.1", features = ["wgsl-in", "glsl-in", "msl-out"] }
 # The vertex formats naga's MSL vertex pulling takes (wgpu re-exported them); naga's own types
 # crate, already in the tree through naga.
 naga-types = "30.0.1"
-# The native Metal backend (src/metal_backend), with the features wgpu-hal asked for when it was
-# in the macOS build.
-objc2-metal = { version = "0.3.2", default-features = false, features = ["std", "block2", "MTLAllocation", "MTLBlitCommandEncoder", "MTLBlitPass", "MTLBuffer", "MTLCaptureManager", "MTLCaptureScope", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLComputeCommandEncoder", "MTLComputePass", "MTLComputePipeline", "MTLCounters", "MTLDepthStencil", "MTLDevice", "MTLDrawable", "MTLEvent", "MTLLibrary", "MTLPipeline", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLSampler", "MTLStageInputOutputDescriptor", "MTLTexture", "MTLTypes", "MTLVertexDescriptor", "MTLAccelerationStructure", "MTLAccelerationStructureTypes", "MTLAccelerationStructureCommandEncoder", "MTLResidencySet"] }
-objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "CALayer", "CAMetalLayer", "CADisplayLink", "CAFrameRateRange", "objc2-metal"] }
+# The native Metal backend (src/metal_backend), with only the features the backend uses.
+objc2-metal = { version = "0.3.2", default-features = false, features = ["std", "block2", "MTLAllocation", "MTLBlitCommandEncoder", "MTLBlitPass", "MTLBuffer", "MTLCaptureManager", "MTLCaptureScope", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLDepthStencil", "MTLDevice", "MTLDrawable", "MTLLibrary", "MTLPipeline", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLSampler", "MTLStageInputOutputDescriptor", "MTLTexture", "MTLTypes", "MTLVertexDescriptor"] }
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "CALayer", "CAMetalLayer", "CADisplayLink", "CAFrameRateRange", "objc2-metal"] }
 
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 muda = "0.20"

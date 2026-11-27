@@ -1,5 +1,6 @@
-//! The window's `CAMetalLayer`: a sublayer of winit's view that follows the view's bounds and
-//! scale, handing out drawables.
+//! The window's layer: a sublayer of winit's view that follows the view's bounds and scale. On
+//! macOS 14 and later a terminal window shows its own IOSurfaces on a plain `ContentsLayer`;
+//! other windows get drawables from a `CAMetalLayer`.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -16,11 +17,6 @@ use objc2_foundation::{ns_string, NSDictionary, NSRunLoop, NSRunLoopCommonModes,
 use objc2_metal::{MTLCommandBuffer, MTLCommandBufferStatus, MTLDevice, MTLPixelFormat, MTLStorageMode, MTLTexture, MTLTextureDescriptor, MTLTextureUsage};
 use objc2_quartz_core::{CADisplayLink, CAFrameRateRange, CALayer, CAMetalDrawable, CAMetalLayer};
 
-// The layer wgpu draws on is raw-window-metal 1.1.0's `ObserverLayer` (src/observer.rs): a
-// CAMetalLayer subclass, added as a sublayer, that copies the root layer's bounds and
-// contentsScale by key-value observing. It does not use the autoresizing mask (which rounds
-// fractional bounds wrongly with auto layout on macOS 14 and later). This is the same layer,
-// under its own class name, with each change made with implicit animations off.
 /// The root layer a tracking layer follows, whether it still observes it, and the thread that
 /// made it.
 struct Tracking {
@@ -117,7 +113,7 @@ macro_rules! tracking_layer {
     };
 }
 
-// The layer wgpu draws on is raw-window-metal 1.1.0's `ObserverLayer` (src/observer.rs): a
+// The Metal layer is modeled on raw-window-metal 1.1.0's `ObserverLayer` (src/observer.rs): a
 // CAMetalLayer subclass, added as a sublayer, that copies the root layer's bounds and
 // contentsScale by key-value observing. It does not use the autoresizing mask (which rounds
 // fractional bounds wrongly with auto layout on macOS 14 and later). This is the same layer,

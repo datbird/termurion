@@ -211,7 +211,8 @@ impl MetalWindow {
     }
 
     fn render_frame(&mut self, frame: &Frame, fx: Option<FxFrame<'_>>) -> Result<Drawn, RenderError> {
-        self.in_step().map_err(RenderError::Refused)?;
+        // A text reset that fails is a Metal failure like any other: recovery, not a banner.
+        self.in_step().map_err(|e| self.metal_failed(e))?;
         // An effect frame with no chain draws as a plain one, as on a wgpu window; the in-window
         // menu bar is Linux only.
         let fx = fx.filter(|_| self.chain.is_some());

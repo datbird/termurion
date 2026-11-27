@@ -456,9 +456,10 @@ fn a_lasting_allocation_failure_ends_in_the_restart_banner() {
         }
     }
     assert_eq!(attempts, MAX_TRIES);
-    // The window stays stale and refuses to draw rather than looping.
+    // The window stays stale and skips the frame (reported as lost again) rather than looping.
     assert!(win.stale().is_some());
-    assert!(matches!(win.render(&frame, None, None), Err(RenderError::Refused(_))));
+    assert!(matches!(win.render(&frame, None, None), Err(RenderError::Skip)));
+    assert!(crate::gpu_pick::take_lost().expect("the failed text reset is reported").starts_with("Metal: "));
     super::fail_allocations(0);
 
     // A rebuild that works, then the same failure within a minute: recovery gives up.
