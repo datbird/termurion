@@ -11,11 +11,12 @@ the same settings, the same menus, the same mouse, the same tmux integration, th
 
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D4?style=flat-square)
 ![Language](https://img.shields.io/badge/Rust-2024%20edition-B7410E?style=flat-square)
-![Renderer](https://img.shields.io/badge/renderer-wgpu-5b8cff?style=flat-square)
-![Status](https://img.shields.io/badge/release-1.1.11-7a5cff?style=flat-square)
+![Renderer](https://img.shields.io/badge/renderer-Metal%20%7C%20wgpu-5b8cff?style=flat-square)
+![Status](https://img.shields.io/badge/release-1.1.12-7a5cff?style=flat-square)
 
 [Why Termurion](#why-termurion) ·
 [Features](#features) ·
+[Performance](#performance-and-accuracy) ·
 [Screenshots](#screenshots) ·
 [How it compares](#how-it-compares) ·
 [Architecture](#architecture) ·
@@ -31,7 +32,7 @@ the same settings, the same menus, the same mouse, the same tmux integration, th
 
 ## Why Termurion
 
-Termurion 1.1.11 is the current stable release. It runs on Windows 10 and 11, on macOS (Apple
+Termurion 1.1.12 is the current stable release. It runs on Windows 10 and 11, on macOS (Apple
 Silicon), and on Linux (x86_64), from one code base.
 
 If you live in iTerm2 on a Mac, every Windows terminal feels like a step down. Some have tabs and
@@ -55,7 +56,8 @@ rows until they read `have`. Where iTerm2 has a quirk, Termurion keeps it and wr
 
 ### Terminal
 - Native sessions: ConPTY on Windows, with the current OpenConsole shipped beside the exe, and a pseudo terminal on macOS and Linux
-- GPU renderer on wgpu, ligatures, box drawing, bidi, and true color
+- GPU renderer: native Metal on macOS, wgpu on Windows (DirectX 12) and Linux (Vulkan, then OpenGL), with ligatures, box drawing, bidi, and true color
+- 13 animated cursor effects, cheap enough to leave on: about 3.5% of a core at 60 frames a second on macOS
 - Inline images: OSC 1337 File, sixel, the kitty graphics protocol, animated GIFs
 - Every keyboard protocol: CSI u, modifyOtherKeys, and kitty flags with key releases
 - Mouse reporting that works in vim, tmux, and htop, on WSL and native shells
@@ -139,6 +141,28 @@ rows until they read `have`. Where iTerm2 has a quirk, Termurion keeps it and wr
 </tr>
 </table>
 
+## Performance and accuracy
+
+Every release from 1.1.0 to 1.1.12 spent its days on speed, memory and drawing each pixel right.
+The numbers are in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md), with tables against other
+terminals on the same machine.
+
+- **Effects you can leave on.** On macOS an effect at an idle prompt costs 3.3 to 4.0% of a core
+  at 60 frames a second, less than Ghostty running the same shader (4.3%). In 1.1.11 it was 8.4
+  to 9.6% at 28 frames a second. One animation frame went from about 3.2 ms of CPU to about 0.6 ms.
+- **Native Metal on macOS.** 1.1.12 draws text, cells, effects and the settings windows with
+  Metal directly, into its own surfaces, paced by the display. Windows and Linux keep wgpu.
+- **Only what changed is drawn.** Rows that did not change are not built again (1.1.7), a cursor
+  blink no longer rebuilds the screen (1.1.8), and an animation frame reuses the cells it already
+  has (1.1.6, 1.1.12). Claude Code streaming went from 15.2% of a core in 1.1.8 to 6.4% in 1.1.12.
+- **Floods without the memory.** A `cat` of a big file grew Termurion to 970 MB in 1.1.10. Since
+  1.1.11, flow control keeps it under 200 MB, and it keeps drawing about 60 frames a second
+  while it reads.
+- **Exact rendering.** Text is the same size as in iTerm2 on macOS and as in Windows Terminal and
+  Ptyxis on Windows and Linux (1.1.3, 1.1.5). A frame rebuilt from kept rows equals a full one
+  exactly, and the Metal renderer was held to the old renderer's output byte for byte on every
+  effect, checked against recorded reference pictures.
+
 ## Screenshots
 
 <p align="center"><img src="docs/assets/screenshots/acid.gif" width="900" alt="Termurion running its render test: the wordmark in a moving gradient, a half-block plasma, a test card of colors, text styles and Unicode, and a spinning shaded torus"></p>
@@ -198,7 +222,7 @@ flowchart LR
     end
     subgraph App["termurion.exe"]
         PTY["Own ConPTY layer"] --> EMU["alacritty_terminal<br/>(patched core)"]
-        EMU --> R["wgpu renderer<br/>(glyphon text)"]
+        EMU --> R["GPU renderer<br/>Metal on macOS, wgpu elsewhere<br/>(glyphon text)"]
         UI["iTerm2 UI<br/>menus, toolbelt, status bar"] --> R
         TMUX["tmux gateway"] --> EMU
         API["Python API server<br/>:1912 loopback"] --> UI
@@ -220,23 +244,23 @@ flowchart LR
 
 ## Download
 
-Termurion 1.1.11 is the current stable release. Get it from
-[Releases](https://github.com/datbird/termurion/releases) (the 1.1.11 release is marked Latest). There is one file for each system. [Installing](docs/help/installing.md) has the steps in full. Report bugs in [Issues](https://github.com/datbird/termurion/issues).
+Termurion 1.1.12 is the current stable release. Get it from
+[Releases](https://github.com/datbird/termurion/releases) (the 1.1.12 release is marked Latest). There is one file for each system. [Installing](docs/help/installing.md) has the steps in full. Report bugs in [Issues](https://github.com/datbird/termurion/issues).
 
 **Windows 10 or 11 (x64)**
 
-- `Termurion-1.1.11-win64-installer.exe` installs for your user (no admin prompt), adds Start Menu entries, and upgrades earlier betas in place.
-- `Termurion-1.1.11-win64-portable.zip` is the portable build. Unzip it anywhere and run `termurion.exe`. Keep all the files together.
+- `Termurion-1.1.12-win64-installer.exe` installs for your user (no admin prompt), adds Start Menu entries, and upgrades earlier betas in place.
+- `Termurion-1.1.12-win64-portable.zip` is the portable build. Unzip it anywhere and run `termurion.exe`. Keep all the files together.
 - The files are not code-signed yet. If SmartScreen says they are unrecognized, choose More info, then Run anyway.
 
 **macOS (Apple Silicon)**
 
-- `Termurion-1.1.11-macos-arm64.zip` holds `Termurion.app`. Unzip it and move the app to Applications.
+- `Termurion-1.1.12-macos-arm64.zip` holds `Termurion.app`. Unzip it and move the app to Applications.
 - The app is ad hoc signed and not notarized, so the first open is blocked. Open System Settings > Privacy & Security, choose Open Anyway, then open the app again.
 
 **Linux (x86_64)**
 
-- `Termurion-1.1.11-x86_64.AppImage`. Run `chmod +x` on it, then run it. The first run adds Termurion to the app launcher with its icon.
+- `Termurion-1.1.12-x86_64.AppImage`. Run `chmod +x` on it, then run it. The first run adds Termurion to the app launcher with its icon.
 - AppImageUpdate and AppImage managers can update it in place from the latest GitHub release.
 - It needs FUSE (`fusermount3`), which most desktops have. Where FUSE is missing, start it with `--appimage-extract-and-run`.
 - Tested on Ubuntu 26.04 with GNOME on Wayland. X11 also works. System-wide hotkeys work on X11 only.

@@ -1,6 +1,6 @@
 # GPU Renderer
 
-Termurion draws every window on the GPU. On Windows it uses DirectX 12, the native graphics API that Windows Terminal also uses. The see-through (transparent) windows use it too, so all windows run on one API and one GPU. On macOS and Linux it uses Metal or Vulkan, with OpenGL as the fallback.
+Termurion draws every window on the GPU. On Windows it uses DirectX 12, the native graphics API that Windows Terminal also uses. The see-through (transparent) windows use it too, so all windows run on one API and one GPU. On macOS it draws with native Metal, and only Metal. On Linux it uses Vulkan, with OpenGL as the fallback.
 
 ## Which API
 
@@ -11,9 +11,11 @@ On Windows, Termurion tries DirectX 12 first. Only if DirectX 12 cannot make an 
 - `adapters: ...` lists every GPU Windows offers, once per run.
 - `renderer: device lost (...)`, then `renderer: recovered on <API> <GPU>`, appear when the driver resets or the GPU goes away.
 
-On macOS and Linux, Termurion tries Vulkan or Metal first (Metal on macOS, Vulkan on Linux), then OpenGL. The log lines name the API that was used. Effects work on all of them, OpenGL included.
+On Linux, Termurion tries Vulkan first, then OpenGL. The log lines name the API that was used. Effects work on all of them, OpenGL included.
 
-To test another API, set the environment variable `TERMURION_RENDERER` to `dx12` (Windows only), `vulkan` or `gl` before starting Termurion. That API is tried first; the others still follow as fallbacks.
+On macOS, Termurion draws everything with Metal: text, cells, effects, the Settings and other windows, and screenshots. There is no other API to fall back to. host.log says `renderer: native Metal on <GPU> (...)`. If Metal cannot start, Termurion shows "Termurion could not start Metal:" with the reason, writes `renderer: Metal unavailable: ...` to host.log, and quits. It never switches to another API in silence.
+
+To test another API on Windows or Linux, set the environment variable `TERMURION_RENDERER` to `dx12` (Windows only), `vulkan` or `gl` before starting Termurion. That API is tried first; the others still follow as fallbacks. On macOS the variable is ignored, whatever its value, and host.log says so: `renderer: TERMURION_RENDERER=<value> is ignored: macOS draws with Metal only`.
 
 ## Which GPU
 
@@ -44,3 +46,5 @@ Settings > Advanced > Drawing > "Redraw only the rows that changed" is on by def
 ## If the GPU is lost
 
 A driver update or reset, a timeout, a removed GPU or a laptop switching GPUs can take the graphics device away. Termurion makes a new one for every terminal window, using the same API order and GPU setting as at start, and redraws. Your sessions are not affected. host.log says `renderer: recovered on <API> <GPU>`. If a try fails, Termurion waits a moment and tries again, then moves down the API order. If every API fails, a banner asks you to restart Termurion. Settings and prompt windows that were open at the time may stop drawing; close and reopen them.
+
+On macOS the same recovery runs with Metal alone. Termurion makes a new Metal device and rebuilds every terminal window on it. A GPU memory allocation that fails counts as a lost device too, so the window is rebuilt rather than drawn half way. It tries up to 3 times, waiting a little longer after each failure. If all 3 fail, or the device is lost again within a minute of a recovery, the banner "The graphics device was lost and could not be recovered. Restart Termurion." shows. host.log says `renderer: recovering after: ...`, then `renderer: recovered on Metal <GPU>` or `renderer: recovery on Metal failed: ...`.
