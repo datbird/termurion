@@ -1347,3 +1347,29 @@ fn a_failed_egui_sampler_is_a_lost_device() {
     assert_eq!(painter.objects_made().0, made, "the sampler is kept");
     assert!(crate::gpu_pick::take_lost().is_none());
 }
+
+/// Staging chunks past the old 8 MiB cap are kept while frames need them: a steady 12 MiB frame
+/// makes no chunk after the first, and once frames are small for the decay window the big chunk
+/// is let go.
+#[test]
+fn steady_big_staging_keeps_its_chunks() {
+    use objc2_metal::{MTLCommandBuffer, MTLCommandQueue};
+    let shared = test_device();
+    let mut staging = super::draw::Staging::default();
+    let frame = |staging: &mut super::draw::Staging, len: usize| {
+        let cb = shared.queue.commandBuffer().unwrap();
+        staging.take(&shared.device, &cb, len).unwrap();
+        cb.commit();
+        cb.waitUntilCompleted();
+    };
+    frame(&mut staging, 12 << 20);
+    let made = staging.made;
+    for _ in 0..20 {
+        frame(&mut staging, 12 << 20);
+    }
+    assert_eq!(staging.made, made, "steady big frames made staging chunks");
+    for _ in 0..glyphon::DECAY_FRAMES + 1 {
+        frame(&mut staging, 4096);
+    }
+    assert!(staging.held() <= 1 << 20, "{} staging bytes kept after the burst", staging.held());
+}

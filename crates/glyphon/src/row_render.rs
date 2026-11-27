@@ -8,7 +8,7 @@
 
 use crate::{
     text_render::{prepare_glyph, text_glyph_image, GlyphBounds, GlyphMetadata, GlyphSystem, GlyphonCacheKey},
-    Buffer, Color, FontSystem, GlyphKey, GlyphToRender, PrepareError, RasterizeCustomGlyphRequest,
+    Buffer, Color, FontSystem, GlyphKey, GlyphToRender, HighWater, PrepareError, RasterizeCustomGlyphRequest,
     RasterizedCustomGlyph, Resolution, SwashCache, TextAtlas, TextBounds,
 };
 use std::{
@@ -48,8 +48,6 @@ pub(crate) const FIRST_CAPACITY: u32 = 4096;
 /// Rows in one chunk of the row table, `RowTable` in `row_shader.wgsl`.
 pub(crate) const TABLE_CHUNK_ROWS: u32 = (ROW_TABLE_CHUNK / ROW_UNIFORM_SIZE) as u32;
 const INSTANCE_SIZE: usize = mem::size_of::<GlyphToRender>();
-/// Write bytes kept between frames; a bigger burst (a whole screen after growth) is let go.
-const KEEP_BYTES: usize = 8 << 20;
 
 /// Termurion patch 9: one change to the row renderer's GPU buffers. A backend applies them in
 /// order; byte ranges index [`RowDraws::bytes`].
@@ -86,16 +84,17 @@ pub struct RowDraws {
     pub bytes: Vec<u8>,
     /// The draws of the last `prepare_cpu`, in order (empty after a failed one).
     pub batches: Vec<RowBatch>,
+    /// How many write bytes recent frames needed (patch 10).
+    keep: HighWater,
 }
 
 impl RowDraws {
-    /// Forgets the applied writes, keeping their storage unless a burst made it large.
+    /// Forgets the applied writes, keeping their storage while recent frames needed it.
     pub fn clear_writes(&mut self) {
+        self.keep.note(self.bytes.len());
         self.writes.clear();
         self.bytes.clear();
-        if self.bytes.capacity() > KEEP_BYTES {
-            self.bytes = Vec::new();
-        }
+        self.keep.trim(&mut self.bytes);
     }
 
     /// The bytes a write's range names.
@@ -641,4 +640,32 @@ fn write_slot(out: &mut RowDraws, entry: &Entry) {
         out.bytes.extend_from_slice(&entry.id.to_ne_bytes());
     }
     out.writes.push(RowWrite::Ids { at: slot.start, bytes: from..out.bytes.len() });
+}
+
+#[cfg(test)]
+mod keep_tests {
+    use super::*;
+
+    fn frame(d: &mut RowDraws, len: usize) -> (usize, *const u8) {
+        d.bytes.resize(len, 1);
+        d.clear_writes();
+        (d.bytes.capacity(), d.bytes.as_ptr())
+    }
+
+    /// Steady writes past the old 8 MiB cap keep their storage; once the frames are small for the
+    /// decay window it is given back.
+    #[test]
+    fn steady_big_writes_keep_their_bytes() {
+        let mut d = RowDraws::default();
+        let big = 12 << 20;
+        let warm = frame(&mut d, big);
+        assert!(warm.0 >= big, "the write bytes were let go ({} kept)", warm.0);
+        for i in 0..20 {
+            assert_eq!(frame(&mut d, big), warm, "frame {i} regrew the write bytes");
+        }
+        for _ in 0..crate::DECAY_FRAMES {
+            frame(&mut d, 4096);
+        }
+        assert!(d.bytes.capacity() <= 8192, "kept {} bytes after the burst", d.bytes.capacity());
+    }
 }

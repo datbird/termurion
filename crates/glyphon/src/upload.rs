@@ -10,9 +10,6 @@ use wgpu::{
 
 /// The first size of a staging chunk; a bigger write gets a chunk of its own size.
 const CHUNK: BufferAddress = 256 * 1024;
-/// Chunks kept free after a burst (a flood); the rest are let go. Of chunks bigger than
-/// `CHUNK` (one large write each) only the largest is kept.
-const KEEP_FREE: usize = 8;
 
 struct Chunk {
     buffer: Buffer,
@@ -30,6 +27,9 @@ pub struct UploadBelt {
     /// Mapped again after the GPU finished with them.
     free: Arc<Mutex<Vec<Chunk>>>,
     made: u64,
+    /// Bytes of every chunk not let go, and what recent frames had in use (patch 10).
+    owned: BufferAddress,
+    keep: crate::HighWater,
 }
 
 impl Default for UploadBelt {
@@ -40,7 +40,7 @@ impl Default for UploadBelt {
 
 impl UploadBelt {
     pub fn new() -> Self {
-        Self { encoder: None, active: Vec::new(), closed: Vec::new(), free: Arc::new(Mutex::new(Vec::new())), made: 0 }
+        Self { encoder: None, active: Vec::new(), closed: Vec::new(), free: Arc::new(Mutex::new(Vec::new())), made: 0, owned: 0, keep: crate::HighWater::default() }
     }
 
     /// Staging buffers made so far (tests: flat while frames stream).
@@ -79,10 +79,12 @@ impl UploadBelt {
         }
         let chunk = taken.unwrap_or_else(|| {
             self.made += 1;
+            let size = size.max(CHUNK).next_multiple_of(wgpu::MAP_ALIGNMENT);
+            self.owned += size;
             Chunk {
                 buffer: device.create_buffer(&BufferDescriptor {
                     label: Some("upload chunk"),
-                    size: size.max(CHUNK).next_multiple_of(wgpu::MAP_ALIGNMENT),
+                    size,
                     usage: BufferUsages::MAP_WRITE | BufferUsages::COPY_SRC,
                     mapped_at_creation: true,
                 }),
@@ -115,13 +117,24 @@ impl UploadBelt {
         }
         let uploads = self.encoder.take().map(CommandEncoder::finish);
         let index = queue.submit(uploads.into_iter().chain(commands));
+        // What is in use now (this frame and those the GPU still reads) sets the mark; free
+        // chunks past it go, largest first, outside the lock.
+        let mut spares = std::mem::take(&mut *self.free.lock().unwrap());
+        let spare: BufferAddress = spares.iter().map(|c| c.buffer.size()).sum();
+        self.keep.note((self.owned - spare) as usize);
+        let mut owned = self.owned as usize;
+        self.keep.let_go(&mut owned, &mut spares, |c| Some(c.buffer.size() as usize), CHUNK as usize);
+        self.owned = owned as BufferAddress;
+        let mut free = self.free.lock().unwrap();
+        spares.append(&mut free);
+        *free = spares;
+        drop(free);
         for chunk in self.closed.drain(..) {
             let free = self.free.clone();
             let buffer = chunk.buffer.clone();
             buffer.slice(..).map_async(MapMode::Write, move |mapped| {
                 if mapped.is_ok() {
-                    // What is let go drops after the lock.
-                    let _dropped = keep(&mut free.lock().unwrap(), Chunk { buffer: chunk.buffer, used: 0 });
+                    free.lock().unwrap().push(Chunk { buffer: chunk.buffer, used: 0 });
                 }
             });
         }
@@ -129,57 +142,65 @@ impl UploadBelt {
     }
 }
 
-/// Puts a chunk back on the free list, or hands back what does not stay: past `KEEP_FREE`
-/// chunks, and every chunk bigger than `CHUNK` but the largest.
-fn keep(free: &mut Vec<Chunk>, chunk: Chunk) -> Vec<Chunk> {
-    let mut out = Vec::new();
-    if chunk.buffer.size() > CHUNK {
-        match free.iter().position(|c| c.buffer.size() > CHUNK) {
-            Some(i) if free[i].buffer.size() >= chunk.buffer.size() => return vec![chunk],
-            Some(i) => out.push(free.swap_remove(i)),
-            None => {}
-        }
-    }
-    if free.len() < KEEP_FREE {
-        free.push(chunk);
-    } else {
-        out.push(chunk);
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A burst of writes bigger than a chunk, then small frames: at most one big chunk stays
-    /// free, and the small writes go into standard chunks.
-    #[test]
-    fn a_burst_leaves_at_most_one_big_chunk() {
+    fn frame(device: &Device, queue: &Queue, target: &Buffer, belt: &mut UploadBelt, sizes: &[u64]) {
+        for (i, &n) in sizes.iter().enumerate() {
+            belt.write(device, target, (i as u64 * 64) % CHUNK, &vec![7u8; n as usize]);
+        }
+        belt.submit(queue, []);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        // Another test's poll may run our map callbacks: wait until every chunk is back.
+        let start = std::time::Instant::now();
+        while belt.free_sizes().iter().sum::<u64>() < belt.owned {
+            assert!(start.elapsed().as_secs() < 10, "chunks never came back");
+            std::thread::yield_now();
+            let _ = device.poll(wgpu::PollType::Poll);
+        }
+    }
+
+    fn rig() -> (Device, Queue, Buffer) {
         let (device, queue) = crate::test_gpu::shared();
         let target = device.create_buffer(&BufferDescriptor { label: None, size: 4 * CHUNK, usage: BufferUsages::COPY_DST, mapped_at_creation: false });
+        (device, queue, target)
+    }
+
+    /// A steady frame bigger than the old caps (eight free chunks, one big one): 60 writes that
+    /// each need a chunk of their own plus three big writes. After the first frame it makes no
+    /// chunk.
+    #[test]
+    fn a_steady_big_frame_makes_no_chunks() {
+        let (device, queue, target) = rig();
         let mut belt = UploadBelt::new();
-        let frame = |belt: &mut UploadBelt, sizes: &[u64]| {
-            for (i, &n) in sizes.iter().enumerate() {
-                belt.write(&device, &target, (i as u64 * 64) % CHUNK, &vec![7u8; n as usize]);
-            }
-            belt.submit(&queue, []);
-            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-        };
-        // Three big writes a frame for a few frames.
-        for _ in 0..4 {
-            frame(&mut belt, &[CHUNK + 4096, 2 * CHUNK, 3 * CHUNK]);
-        }
-        let big = |belt: &UploadBelt| belt.free_sizes().iter().filter(|s| **s > CHUNK).count();
-        assert!(big(&belt) <= 1, "free after the burst: {:?}", belt.free_sizes());
-        for _ in 0..20 {
-            frame(&mut belt, &[4096, 512, 64]);
-        }
-        assert!(big(&belt) <= 1, "free after small frames: {:?}", belt.free_sizes());
-        assert!(belt.free_sizes().len() <= KEEP_FREE);
+        let mut sizes = vec![CHUNK * 3 / 4; 60];
+        sizes.extend([CHUNK + 4096, 2 * CHUNK, 3 * CHUNK]);
+        frame(&device, &queue, &target, &mut belt, &sizes);
         let made = belt.buffers_made();
         for _ in 0..20 {
-            frame(&mut belt, &[4096, 512, 64]);
+            frame(&device, &queue, &target, &mut belt, &sizes);
+        }
+        assert_eq!(belt.buffers_made(), made, "steady frames made new chunks");
+    }
+
+    /// After a burst, small frames give the chunks back within the decay window, and then make
+    /// no new ones.
+    #[test]
+    fn a_burst_is_let_go_after_the_decay_window() {
+        let (device, queue, target) = rig();
+        let mut belt = UploadBelt::new();
+        for _ in 0..4 {
+            frame(&device, &queue, &target, &mut belt, &[CHUNK + 4096, 2 * CHUNK, 3 * CHUNK, 4096, 4096]);
+        }
+        for _ in 0..crate::DECAY_FRAMES + 1 {
+            frame(&device, &queue, &target, &mut belt, &[4096, 512, 64]);
+        }
+        let held: u64 = belt.free_sizes().iter().sum();
+        assert!(held <= CHUNK, "free after the small frames: {:?}", belt.free_sizes());
+        let made = belt.buffers_made();
+        for _ in 0..20 {
+            frame(&device, &queue, &target, &mut belt, &[4096, 512, 64]);
         }
         assert_eq!(belt.buffers_made(), made, "small frames made new chunks");
     }

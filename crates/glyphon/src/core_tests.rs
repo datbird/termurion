@@ -1,13 +1,14 @@
 //! Termurion patch 9: the core is GPU-free. Every core file is scanned for the GPU API's name.
 
 /// The files that make up the GPU-free core.
-const CORE: [(&str, &str); 6] = [
+const CORE: [(&str, &str); 7] = [
     ("lib.rs", include_str!("lib.rs")),
     ("custom_glyph.rs", include_str!("custom_glyph.rs")),
     ("error.rs", include_str!("error.rs")),
     ("text_atlas.rs", include_str!("text_atlas.rs")),
     ("text_render.rs", include_str!("text_render.rs")),
     ("row_render.rs", include_str!("row_render.rs")),
+    ("keep.rs", include_str!("keep.rs")),
 ];
 
 #[test]

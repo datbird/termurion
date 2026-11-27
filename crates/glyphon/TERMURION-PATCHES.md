@@ -50,9 +50,8 @@ through `[patch.crates-io]` in Termurion's Cargo.toml. The `examples/`, `benches
    staging buffer that the next submit frees. `UploadBelt` keeps mapped staging chunks (256 KB, a
    bigger write gets its own), records each write as a copy into one encoder, and `submit` sends
    that encoder ahead of the caller's command buffers in one submission, then maps the chunks
-   again with `map_async` (a free chunk comes back on a later poll or submit; at most 8 are kept
-   free, and of those bigger than 256 KB only the largest; a write takes the smallest free chunk
-   that fits). `buffers_made()` counts the chunks made. `RowRenderer::prepare` takes the belt for its
+   again with `map_async` (a free chunk comes back on a later poll or submit; how many stay free
+   follows patch 10; a write takes the smallest free chunk that fits). `buffers_made()` counts the chunks made. `RowRenderer::prepare` takes the belt for its
    instance and row table writes, and `TextRenderer::prepare_with_custom_uploads` writes its
    vertices through it (the upstream `prepare*` methods still use the queue). A grown buffer is
    dropped, not destroyed, since a copy recorded in the same frame may target it. Tests:
@@ -96,5 +95,15 @@ through `[patch.crates-io]` in Termurion's Cargo.toml. The `examples/`, `benches
    (`atlas_ops_rebuild_the_same_texels`: the ops replayed on a CPU image equal the textures read
    back, through growth and eviction; the atlas textures get `COPY_SRC` in glyphon's own tests
    only). `core_tests` scans the core files for the GPU API's name.
+
+10. Kept buffers follow a decaying high-water mark (`keep.rs`, `row_render.rs`, `upload.rs`,
+   `lib.rs`). `HighWater` notes what each frame needed; its mark rises at once and comes down
+   only after `DECAY_FRAMES` (300) frames that all needed less, to the most of those. `trim`
+   shrinks a vector once its room passes twice the mark; `let_go` drops a pool's spares the mark
+   does not cover, largest first. `RowDraws::clear_writes` trims the write bytes with it (it
+   dropped them above 8 MiB before, so a frame past that regrew them every frame) and
+   `UploadBelt::submit` lets go of free chunks past what recent frames had in use (it kept 8).
+   Termurion's draw list and Metal staging use the same helper. Tests: `keep::tests`,
+   `row_render::keep_tests`, `upload::tests`.
 
 To update glyphon, copy the new version here and apply these changes again.

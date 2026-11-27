@@ -44,32 +44,30 @@ pub(crate) struct MetalDraw {
 
 /// The smallest staging chunk (wgpu's upload belt uses chunks of this size too).
 const CHUNK_MIN: usize = 256 << 10;
-/// A spare chunk larger than this is let go once free, so one huge frame does not pin its memory.
-const KEEP_BYTES: usize = 8 << 20;
-/// Most spare chunks kept.
-const KEEP_CHUNKS: usize = 4;
 
 /// Shared staging chunks the buffer writes go through. A chunk belongs to one command buffer
 /// until it completes (its handler frees it), so the CPU never writes one the GPU still reads,
-/// and steady frames reuse chunks instead of making buffers.
+/// and steady frames reuse chunks instead of making buffers. Spares follow the bytes recent takes
+/// had in use (patch 10 of glyphon), so a steady frame of any size keeps its chunks.
 #[derive(Default)]
 pub(super) struct Staging {
     chunks: Vec<(Buffer, Arc<AtomicBool>)>,
     pub(super) made: u64,
+    keep: glyphon::HighWater,
 }
 
 impl Staging {
     /// A free chunk of at least `len` bytes, now held by `cb`.
     pub(super) fn take(&mut self, device: &ProtocolObject<dyn MTLDevice>, cb: &ProtocolObject<dyn MTLCommandBuffer>, len: usize) -> Result<Buffer, String> {
         let free = |f: &AtomicBool| f.load(Ordering::Acquire);
-        // Large spares go, then spares past the count.
-        self.chunks.retain(|(b, f)| !free(f) || b.length() <= KEEP_BYTES);
-        let mut spare = 0;
-        self.chunks.retain(|(_, f)| {
-            spare += usize::from(free(f));
-            !free(f) || spare <= KEEP_CHUNKS
-        });
-        let i = match self.chunks.iter().position(|(b, f)| free(f) && b.length() >= len) {
+        // In use: the chunks a command buffer still holds, and this take.
+        let busy: usize = self.chunks.iter().filter(|(_, f)| !free(f)).map(|(b, _)| b.length()).sum();
+        self.keep.note(busy + len);
+        let mut owned = self.chunks.iter().map(|(b, _)| b.length()).sum();
+        self.keep.let_go(&mut owned, &mut self.chunks, |(b, f)| free(f).then(|| b.length()), CHUNK_MIN);
+        // The smallest free chunk that fits, so a small take leaves a big chunk for a big one.
+        let fit = self.chunks.iter().enumerate().filter(|(_, (b, f))| free(f) && b.length() >= len).min_by_key(|(_, (b, _))| b.length()).map(|(i, _)| i);
+        let i = match fit {
             Some(i) => i,
             None => {
                 let size = len.next_power_of_two().max(CHUNK_MIN);
@@ -86,6 +84,12 @@ impl Staging {
         // SAFETY: Metal copies the block and calls it once the command buffer is done.
         unsafe { cb.addCompletedHandler(block2::RcBlock::as_ptr(&handler)) };
         Ok(buf.clone())
+    }
+
+    /// Bytes of every chunk kept (tests).
+    #[cfg(test)]
+    pub(super) fn held(&self) -> usize {
+        self.chunks.iter().map(|(b, _)| b.length()).sum()
     }
 }
 

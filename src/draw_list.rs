@@ -44,26 +44,32 @@ pub enum BufferWrite {
 pub struct Uploads {
     pub buffers: Vec<BufferWrite>,
     pub atlas: Vec<AtlasOp>,
-    /// Byte buffers of spent writes, kept so the next frame's writes do not allocate.
-    /// Capped by `POOL_COUNT` and `POOL_BYTES`, so one huge frame does not pin its memory.
+    /// Byte buffers of spent writes, kept so the next frame's writes do not allocate. As many
+    /// and as large as recent frames used (`glyphon::HighWater`), so a burst is let go later.
     pool: Vec<Vec<u8>>,
+    keep_count: glyphon::HighWater,
+    keep_bytes: glyphon::HighWater,
 }
-
-/// Most spare buffers kept: a steady frame has a few writes per quad buffer.
-const POOL_COUNT: usize = 32;
-/// Most spare capacity kept in all (8 MiB).
-const POOL_BYTES: usize = 8 << 20;
 
 impl Uploads {
     /// Empties the lists for the next frame, keeping their storage.
     pub fn reset(&mut self) {
+        let (mut count, mut bytes) = (0, 0);
         for w in self.buffers.drain(..) {
-            if let BufferWrite::Quads { bytes, .. } = w {
-                let held: usize = self.pool.iter().map(|b| b.capacity()).sum();
-                if self.pool.len() < POOL_COUNT && held + bytes.capacity() <= POOL_BYTES {
-                    self.pool.push(bytes);
-                }
+            if let BufferWrite::Quads { bytes: b, .. } = w {
+                count += 1;
+                bytes += b.capacity();
+                self.pool.push(b);
             }
+        }
+        let keep_count = self.keep_count.note(count);
+        self.keep_bytes.note(bytes);
+        // Spares past the marks go, largest first.
+        let mut owned = self.pool.iter().map(Vec::capacity).sum();
+        if owned > self.keep_bytes.mark() || self.pool.len() > keep_count {
+            self.keep_bytes.let_go(&mut owned, &mut self.pool, |b| Some(b.capacity()), 0);
+            self.pool.sort_unstable_by_key(|b| std::cmp::Reverse(b.capacity()));
+            self.pool.truncate(keep_count);
         }
         self.atlas.clear();
     }
@@ -274,24 +280,47 @@ mod tests {
         assert_eq!((bytes.as_ptr(), bytes.as_slice()), (first, &[2u8; 100][..]), "the second frame's write took a new buffer");
     }
 
+    fn pool_bytes(out: &Uploads) -> usize {
+        out.pool.iter().map(|b| b.capacity()).sum()
+    }
+
+    /// A full redraw past the old 8 MiB cap, and more writes a frame than the old 32 spares,
+    /// reuse their buffers frame after frame.
     #[test]
-    fn the_spare_pool_is_capped() {
+    fn steady_big_frames_reuse_their_buffers() {
         let mut s = Shadow::new(QuadBuf::Under);
         let mut out = Uploads::default();
-        // One very large frame, then several small ones.
-        s.write(&vec![1u8; 3 * POOL_BYTES], &mut out);
+        let big = vec![1u8; 12 << 20];
+        let mut frame = || {
+            s.forget();
+            s.write(&big, &mut out);
+            for i in 0..64 {
+                out.push_quads(QuadBuf::Over, i * 8, &[0; 8]);
+            }
+            out.reset();
+        };
+        frame();
+        frame();
+        for i in 0..10 {
+            let ((), allocs) = crate::render_fx::counting::count(&mut frame);
+            assert_eq!(allocs, 0, "steady frame {i} allocated");
+        }
+    }
+
+    /// After one very large frame, small frames give its memory back within the decay window.
+    #[test]
+    fn a_burst_is_let_go_after_the_decay_window() {
+        let mut s = Shadow::new(QuadBuf::Under);
+        let mut out = Uploads::default();
+        s.write(&vec![1u8; 24 << 20], &mut out);
+        for i in 0..64 {
+            out.push_quads(QuadBuf::Over, i * 8, &[0; 8]);
+        }
         out.reset();
-        for i in 0..5u8 {
-            s.write(&[i; 100], &mut out);
+        for i in 0..glyphon::DECAY_FRAMES {
+            s.write(&[i as u8; 100], &mut out);
             out.reset();
         }
-        assert!(out.pool.len() <= POOL_COUNT);
-        assert!(out.pool.iter().map(|b| b.capacity()).sum::<usize>() <= POOL_BYTES, "the pool pinned the big frame");
-        // Many small writes at once stop at the count.
-        for i in 0..POOL_COUNT * 2 {
-            out.push_quads(QuadBuf::Under, i as u64, &[0; 8]);
-        }
-        out.reset();
-        assert_eq!(out.pool.len(), POOL_COUNT);
+        assert!(out.pool.len() <= 2 && pool_bytes(&out) <= 4096, "the pool kept {} buffers, {} bytes", out.pool.len(), pool_bytes(&out));
     }
 }
