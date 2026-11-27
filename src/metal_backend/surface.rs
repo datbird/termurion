@@ -21,21 +21,7 @@ use objc2_quartz_core::{CADisplayLink, CAFrameRateRange, CALayer, CAMetalDrawabl
 // contentsScale by key-value observing. It does not use the autoresizing mask (which rounds
 // fractional bounds wrongly with auto layout on macOS 14 and later). This is the same layer,
 // under its own class name, with each change made with implicit animations off.
-define_class!(
-    #[unsafe(super(CAMetalLayer))]
-    #[name = "TermurionMetalLayer"]
-    #[ivars = Tracking]
-    struct TrackingLayer;
-
-    impl TrackingLayer {
-        #[unsafe(method(observeValueForKeyPath:ofObject:change:context:))]
-        fn _observe_value(&self, key_path: Option<&NSString>, object: Option<&AnyObject>, change: Option<&NSDictionary<NSKeyValueChangeKey, AnyObject>>, context: *mut c_void) {
-            self.observe_value(key_path, object, change, context);
-        }
-    }
-);
-
-/// The root layer a `TrackingLayer` follows, whether it still observes it, and the thread that
+/// The root layer a tracking layer follows, whether it still observes it, and the thread that
 /// made it.
 struct Tracking {
     root: Weak<CALayer>,
@@ -43,69 +29,117 @@ struct Tracking {
     made_on: std::thread::ThreadId,
 }
 
-impl Drop for TrackingLayer {
-    fn drop(&mut self) {
-        // `Surface::drop` stops observing on the owner's thread. Core Animation may still let go
-        // of the layer itself on another thread later (a presented drawable, its own deferred
-        // releases), which is safe for a layer out of the tree; the root's observers never are.
-        if self.ivars().observing.get() {
-            debug_assert_eq!(std::thread::current().id(), self.ivars().made_on, "the Metal layer's observers were removed off its own thread");
-            self.stop_observing();
+/// A layer class of `$super` that follows its root layer's bounds and scale (`TrackingLayer`
+/// for drawables, `ContentsLayer` for the own surfaces).
+macro_rules! tracking_layer {
+    ($name:ident, $super:ident, $class:literal) => {
+        define_class!(
+            #[unsafe(super($super))]
+            #[name = $class]
+            #[ivars = Tracking]
+            struct $name;
+
+            impl $name {
+                #[unsafe(method(observeValueForKeyPath:ofObject:change:context:))]
+                fn _observe_value(&self, key_path: Option<&NSString>, object: Option<&AnyObject>, change: Option<&NSDictionary<NSKeyValueChangeKey, AnyObject>>, context: *mut c_void) {
+                    self.observe_value(key_path, object, change, context);
+                }
+            }
+        );
+
+        impl Drop for $name {
+            fn drop(&mut self) {
+                // `Surface::drop` stops observing on the owner's thread. Core Animation may still
+                // let go of the layer itself on another thread later (a presented drawable, its
+                // own deferred releases), which is safe for a layer out of the tree; the root's
+                // observers never are.
+                if self.ivars().observing.get() {
+                    debug_assert_eq!(std::thread::current().id(), self.ivars().made_on, "the layer's observers were removed off its own thread");
+                    self.stop_observing();
+                }
+            }
         }
-    }
+
+        impl $name {
+            /// Removes the observers from the root layer, once. On the thread that added them.
+            fn stop_observing(&self) {
+                if !self.ivars().observing.replace(false) {
+                    return;
+                }
+                // The root layer may be gone already; then the observers went with it.
+                if let Some(root) = self.ivars().root.load() {
+                    // SAFETY: both observers were registered in `new`.
+                    unsafe {
+                        root.removeObserver_forKeyPath(self, ns_string!("contentsScale"));
+                        root.removeObserver_forKeyPath(self, ns_string!("bounds"));
+                    }
+                }
+            }
+
+            fn context() -> *mut c_void {
+                $name::class() as *const AnyClass as *mut c_void
+            }
+
+            fn new(root: &CALayer) -> Retained<$name> {
+                let this = Self::alloc().set_ivars(Tracking { root: Weak::new(root), observing: Cell::new(true), made_on: std::thread::current().id() });
+                // SAFETY: initializing a layer subclass with no requirements of its own.
+                let this: Retained<Self> = unsafe { msg_send![super(this), init] };
+                root.addSublayer(&this);
+                // SAFETY: the observer is removed in `stop_observing`; the options ask for the
+                // initial value too.
+                unsafe {
+                    for key in [ns_string!("contentsScale"), ns_string!("bounds")] {
+                        root.addObserver_forKeyPath_options_context(&this, key, NSKeyValueObservingOptions::New | NSKeyValueObservingOptions::Initial, Self::context());
+                    }
+                }
+                this
+            }
+
+            fn observe_value(&self, key_path: Option<&NSString>, object: Option<&AnyObject>, change: Option<&NSDictionary<NSKeyValueChangeKey, AnyObject>>, context: *mut c_void) {
+                if context != Self::context() {
+                    // SAFETY: the superclass's own observations go on to it unchanged.
+                    return unsafe { msg_send![super(self), observeValueForKeyPath: key_path, ofObject: object, change: change, context: context] };
+                }
+                let Some(new) = change.and_then(|c| c.objectForKey(unsafe { NSKeyValueChangeNewKey })) else { return };
+                without_animation(|| {
+                    if key_path == Some(ns_string!("contentsScale")) {
+                        if let Ok(n) = new.downcast::<NSNumber>() {
+                            self.setContentsScale(n.as_cgfloat());
+                        }
+                    } else if key_path == Some(ns_string!("bounds")) {
+                        if let Some(bounds) = new.downcast::<NSValue>().ok().and_then(|v| v.get_rect()) {
+                            self.setFrame(bounds);
+                        }
+                    }
+                });
+            }
+        }
+    };
 }
 
-impl TrackingLayer {
-    /// Removes the observers from the root layer, once. On the thread that added them.
+// The layer wgpu draws on is raw-window-metal 1.1.0's `ObserverLayer` (src/observer.rs): a
+// CAMetalLayer subclass, added as a sublayer, that copies the root layer's bounds and
+// contentsScale by key-value observing. It does not use the autoresizing mask (which rounds
+// fractional bounds wrongly with auto layout on macOS 14 and later). This is the same layer,
+// under its own class name, with each change made with implicit animations off.
+tracking_layer!(TrackingLayer, CAMetalLayer, "TermurionMetalLayer");
+
+// The own surfaces are shown as a plain layer's contents, as Ghostty's IOSurfaceLayer (a CALayer
+// subclass): a CAMetalLayer's contents are its own, and setting them is undefined behavior.
+tracking_layer!(ContentsLayer, CALayer, "TermurionContentsLayer");
+
+/// The tracking layer a surface put in the tree.
+enum Tracked {
+    Metal(Retained<TrackingLayer>),
+    Contents(Retained<ContentsLayer>),
+}
+
+impl Tracked {
     fn stop_observing(&self) {
-        if !self.ivars().observing.replace(false) {
-            return;
+        match self {
+            Tracked::Metal(l) => l.stop_observing(),
+            Tracked::Contents(l) => l.stop_observing(),
         }
-        // The root layer may be gone already; then the observers went with it.
-        if let Some(root) = self.ivars().root.load() {
-            // SAFETY: both observers were registered in `new`.
-            unsafe {
-                root.removeObserver_forKeyPath(self, ns_string!("contentsScale"));
-                root.removeObserver_forKeyPath(self, ns_string!("bounds"));
-            }
-        }
-    }
-
-    fn context() -> *mut c_void {
-        TrackingLayer::class() as *const AnyClass as *mut c_void
-    }
-
-    fn new(root: &CALayer) -> Retained<TrackingLayer> {
-        let this = Self::alloc().set_ivars(Tracking { root: Weak::new(root), observing: Cell::new(true), made_on: std::thread::current().id() });
-        // SAFETY: initializing a CAMetalLayer subclass with no requirements of its own.
-        let this: Retained<Self> = unsafe { msg_send![super(this), init] };
-        root.addSublayer(&this);
-        // SAFETY: the observer removes itself in Drop; the options ask for the initial value too.
-        unsafe {
-            for key in [ns_string!("contentsScale"), ns_string!("bounds")] {
-                root.addObserver_forKeyPath_options_context(&this, key, NSKeyValueObservingOptions::New | NSKeyValueObservingOptions::Initial, Self::context());
-            }
-        }
-        this
-    }
-
-    fn observe_value(&self, key_path: Option<&NSString>, object: Option<&AnyObject>, change: Option<&NSDictionary<NSKeyValueChangeKey, AnyObject>>, context: *mut c_void) {
-        if context != Self::context() {
-            // SAFETY: the superclass's own observations go on to it unchanged.
-            return unsafe { msg_send![super(self), observeValueForKeyPath: key_path, ofObject: object, change: change, context: context] };
-        }
-        let Some(new) = change.and_then(|c| c.objectForKey(unsafe { NSKeyValueChangeNewKey })) else { return };
-        without_animation(|| {
-            if key_path == Some(ns_string!("contentsScale")) {
-                if let Ok(n) = new.downcast::<NSNumber>() {
-                    self.setContentsScale(n.as_cgfloat());
-                }
-            } else if key_path == Some(ns_string!("bounds")) {
-                if let Some(bounds) = new.downcast::<NSValue>().ok().and_then(|v| v.get_rect()) {
-                    self.setFrame(bounds);
-                }
-            }
-        });
     }
 }
 
@@ -295,7 +329,7 @@ impl Drop for IoSurface {
 struct Presenter {
     /// Taken out by `Surface::drop` on the main thread, so a handler never holds the layer's
     /// last reference: it only borrows it under the lock.
-    layer: Mutex<Option<Retained<CAMetalLayer>>>,
+    layer: Mutex<Option<Retained<CALayer>>>,
     /// The serial of the frame the layer shows (0: none yet). A handler shows its frame only if
     /// it is newer, whatever order Metal runs the handlers in.
     shown: AtomicU64,
@@ -414,22 +448,34 @@ pub struct Surface {
     next_target: Cell<usize>,
     /// The last frame's serial.
     serial: Cell<u64>,
-    /// The layer as the tracking layer it is (all but `detached`), to stop its observers in drop.
-    tracking: Option<Retained<TrackingLayer>>,
+    /// The layer in the tree: `layer` itself for drawables, a plain `ContentsLayer` for the own
+    /// surfaces (then `layer` is in no tree and never shown).
+    shown: Retained<CALayer>,
+    /// The tracking layer in the tree (all but `detached`), to stop its observers in drop.
+    tracking: Option<Tracked>,
     /// Test layers keep their root here.
     _root: Option<Retained<CALayer>>,
 }
 
 impl Surface {
-    fn with(layer: Retained<CAMetalLayer>, display: Option<DisplayLink>, ticks: Rc<Ticks>, contents: bool, root: Option<Retained<CALayer>>) -> Surface {
-        let presenter = Arc::new(Presenter { layer: Mutex::new(Some(layer.clone())), shown: AtomicU64::new(0) });
-        Surface { layer, display, ticks, contents, owed: Cell::new(false), presenter, targets: RefCell::default(), targets_size: Cell::new((0, 0)), next_target: Cell::new(0), serial: Cell::new(0), tracking: None, _root: root }
+    fn with(layer: Retained<CAMetalLayer>, shown: Retained<CALayer>, tracking: Option<Tracked>, display: Option<DisplayLink>, ticks: Rc<Ticks>, root: Option<Retained<CALayer>>) -> Surface {
+        let contents = matches!(tracking, Some(Tracked::Contents(_)));
+        let presenter = Arc::new(Presenter { layer: Mutex::new(contents.then(|| shown.clone())), shown: AtomicU64::new(0) });
+        Surface { layer, shown, display, ticks, contents, owed: Cell::new(false), presenter, targets: RefCell::default(), targets_size: Cell::new((0, 0)), next_target: Cell::new(0), serial: Cell::new(0), tracking, _root: root }
     }
 
-    fn tracked(layer: Retained<TrackingLayer>, display: Option<DisplayLink>, ticks: Rc<Ticks>, contents: bool, root: Option<Retained<CALayer>>) -> Surface {
-        let mut s = Surface::with(layer.clone().into_super(), display, ticks, contents, root);
-        s.tracking = Some(layer);
-        s
+    /// A drawable layer tracking `root`.
+    fn drawables(root: &CALayer, display: Option<DisplayLink>, ticks: Rc<Ticks>) -> Surface {
+        let t = TrackingLayer::new(root);
+        let shown = Retained::into_super(Retained::into_super(t.clone()));
+        Surface::with(t.clone().into_super(), shown, Some(Tracked::Metal(t)), display, ticks, None)
+    }
+
+    /// A plain layer tracking `root` that shows the own surfaces; the CAMetalLayer is in no tree.
+    fn own_surfaces(root: &CALayer, display: Option<DisplayLink>, ticks: Rc<Ticks>, keep_root: Option<Retained<CALayer>>) -> Surface {
+        let c = ContentsLayer::new(root);
+        let shown = Retained::into_super(c.clone());
+        Surface::with(CAMetalLayer::new(), shown, Some(Tracked::Contents(c)), display, ticks, keep_root)
     }
 
     /// The root layer of `ns_view`, which is made layer-backed. Main thread only.
@@ -445,7 +491,7 @@ impl Surface {
     /// A new layer over the whole of `ns_view` that shows drawables (an egui window). Main thread only.
     pub fn attach(ns_view: NonNull<c_void>) -> Result<Surface, String> {
         let (_, root) = Self::root_of(ns_view)?;
-        Ok(Surface::tracked(TrackingLayer::new(&root), None, Rc::default(), false, None))
+        Ok(Surface::drawables(&root, None, Rc::default()))
     }
 
     /// A terminal window's layer over `ns_view`: on macOS 14 and later it shows its own
@@ -453,21 +499,24 @@ impl Surface {
     pub fn attach_terminal(ns_view: NonNull<c_void>) -> Result<Surface, String> {
         let (view, root) = Self::root_of(ns_view)?;
         let ticks: Rc<Ticks> = Rc::default();
-        let display = DisplayLink::new(view, &ticks);
-        let contents = display.is_some();
-        Ok(Surface::tracked(TrackingLayer::new(&root), display, ticks, contents, None))
+        Ok(match DisplayLink::new(view, &ticks) {
+            Some(display) => Surface::own_surfaces(&root, Some(display), ticks, None),
+            None => Surface::drawables(&root, None, ticks),
+        })
     }
 
     /// A layer in no window (tests).
     #[cfg(test)]
     pub fn detached() -> Surface {
-        Surface::with(CAMetalLayer::new(), None, Rc::default(), false, None)
+        let layer = CAMetalLayer::new();
+        let shown = Retained::into_super(layer.clone());
+        Surface::with(layer, shown, None, None, Rc::default(), None)
     }
 
     /// A tracking layer under `root`, a layer in no window (tests).
     #[cfg(test)]
     pub fn under(root: &CALayer) -> Surface {
-        Surface::tracked(TrackingLayer::new(root), None, Rc::default(), false, None)
+        Surface::drawables(root, None, Rc::default())
     }
 
     /// A tracking layer under a root of its own that shows its own surfaces, with ticks given by
@@ -475,7 +524,13 @@ impl Surface {
     #[cfg(test)]
     pub fn contents_for_tests() -> Surface {
         let root = CALayer::new();
-        Surface::tracked(TrackingLayer::new(&root), None, Rc::default(), true, Some(root))
+        Surface::own_surfaces(&root, None, Rc::default(), Some(root.clone()))
+    }
+
+    /// The layer in the tree, which shows the frames (tests).
+    #[cfg(test)]
+    pub fn shown_layer(&self) -> &CALayer {
+        &self.shown
     }
 
     /// A display tick, as the link's callback gives it (tests).
@@ -537,6 +592,18 @@ impl Surface {
             }
             l.setDrawableSize(NSSize::new(f64::from(w.max(1)), f64::from(h.max(1))));
         });
+        if self.contents {
+            // The plain layer showing the own surfaces gets what the CAMetalLayer had in its place.
+            let c = &self.shown;
+            c.setOpaque(true);
+            without_animation(|| match c.superlayer() {
+                Some(root) => {
+                    c.setFrame(root.bounds());
+                    c.setContentsScale(root.contentsScale());
+                }
+                None => c.setContentsScale(scale),
+            });
+        }
     }
 
     /// Runs the display link for effect frames `gap` apart (None inside: the display's rate), or
@@ -670,7 +737,7 @@ impl Surface {
     /// Whether the window holding the layer is fully covered.
     fn occluded(&self) -> bool {
         const VISIBLE: usize = 1 << 1;
-        let mut current: Option<Retained<CALayer>> = Some(Retained::into_super(self.layer.clone()));
+        let mut current: Option<Retained<CALayer>> = Some(self.shown.clone());
         while let Some(layer) = current {
             if let Some(delegate) = layer.delegate() {
                 let window: Option<Retained<NSObject>> = unsafe { msg_send![&*delegate, window] };
@@ -688,7 +755,7 @@ impl Surface {
 impl Drop for Surface {
     fn drop(&mut self) {
         // The handlers of frames still on their way lose the layer here, on this thread, so its
-        // last reference goes with `self.layer` below and never on Metal's completion queue.
+        // last reference goes with `self.shown` below and never on Metal's completion queue.
         let layer = self.presenter.layer.lock().unwrap_or_else(|e| e.into_inner()).take();
         drop(layer);
         // The root's observers go here, on the owner's thread, whoever lets go of the layer last
@@ -696,7 +763,7 @@ impl Drop for Surface {
         if let Some(t) = &self.tracking {
             t.stop_observing();
         }
-        self.layer.removeFromSuperlayer();
+        self.shown.removeFromSuperlayer();
         // A thread with no run loop (a test's) commits its implicit transaction here, so the
         // layers it holds are let go on this thread.
         if MainThreadMarker::new().is_none() {

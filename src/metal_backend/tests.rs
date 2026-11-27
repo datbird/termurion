@@ -560,7 +560,7 @@ fn frames_go_to_the_layers_own_surfaces() {
     assert!(held.iter().all(|(_, t)| (t.width(), t.height(), t.pixelFormat()) == (64, 32, FORMAT)));
     assert!(take((64, 32)).is_none(), "all three are drawn into");
     // SAFETY: reading the layer's contents object.
-    let contents = || unsafe { surface.layer.contents() }.map(|c| objc2::rc::Retained::as_ptr(&c));
+    let contents = || unsafe { surface.shown_layer().contents() }.map(|c| objc2::rc::Retained::as_ptr(&c));
     let before = contents();
     let generation = crate::gpu_pick::current_generation();
     let (a, b, c) = (held[0].0, held[1].0, held[2].0);
@@ -714,6 +714,33 @@ fn a_closed_drawable_layer_goes_on_its_own_thread() {
     }
     // Whatever still holds the layers lets go meanwhile.
     std::thread::sleep(std::time::Duration::from_millis(500));
+}
+
+/// The own surfaces show on a plain layer, never on the CAMetalLayer (whose contents are its own:
+/// setting them is undefined behavior). The plain layer follows its root's bounds and scale and
+/// is opaque, as the CAMetalLayer was in its place.
+#[test]
+fn own_surfaces_show_on_a_plain_layer() {
+    use objc2::ClassType;
+    use objc2_foundation::{NSPoint as CGPoint, NSRect as CGRect, NSSize as CGSize};
+    let mut win = MetalWindow::on_contents_layer(test_device(), Renderer::cpu_only(FACE, PX), (64, 32));
+    let shown = win.surface().shown_layer();
+    // SAFETY: a class check.
+    let metal: bool = unsafe { objc2::msg_send![shown, isKindOfClass: objc2_quartz_core::CAMetalLayer::class()] };
+    assert!(!metal, "a plain layer");
+    assert!(shown.isOpaque());
+    let root = shown.superlayer().expect("in the tree");
+    root.setContentsScale(2.0);
+    root.setBounds(CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(32.5, 16.0)));
+    assert_eq!((shown.contentsScale(), shown.bounds().size), (2.0, CGSize::new(32.5, 16.0)));
+    assert!(win.layer().superlayer().is_none(), "the CAMetalLayer is in no tree");
+    // SAFETY: reading the layers' contents objects.
+    let metal_layer = objc2::Message::retain(win.layer());
+    let metal = || unsafe { metal_layer.contents() }.map(|c| objc2::rc::Retained::as_ptr(&c));
+    let before = metal();
+    win.render(&blank(), None, None).unwrap().kept.unwrap();
+    eventually("the frame is the plain layer's contents", || unsafe { win.surface().shown_layer().contents() }.is_some());
+    assert_eq!(metal(), before, "the CAMetalLayer's contents are left alone");
 }
 
 /// Steady frames reuse their staging chunks: no new Metal buffer per frame.
