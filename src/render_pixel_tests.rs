@@ -615,7 +615,7 @@ fn quad_writes(up: &crate::draw_list::Uploads) -> Vec<(crate::draw_list::QuadBuf
     up.buffers
         .iter()
         .map(|w| match w {
-            crate::draw_list::BufferWrite::Quads { which, offset, bytes } => (*which, *offset, bytes.clone()),
+            crate::draw_list::BufferWrite::Quads { which, offset, bytes } => (*which, *offset, up.bytes_of(bytes).to_vec()),
             other => panic!("unexpected {other:?}"),
         })
         .collect()

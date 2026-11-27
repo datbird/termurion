@@ -47,43 +47,61 @@ const CHUNK_MIN: usize = 256 << 10;
 
 /// Shared staging chunks the buffer writes go through. A chunk belongs to one command buffer
 /// until it completes (its handler frees it), so the CPU never writes one the GPU still reads,
-/// and steady frames reuse chunks instead of making buffers. Spares follow the bytes recent takes
-/// had in use (patch 10 of glyphon), so a steady frame of any size keeps its chunks.
+/// and steady frames reuse chunks instead of making buffers. Spares follow how many chunks of
+/// each size recent frames held at once (glyphon patch 10), so a steady load of any size and
+/// shape keeps its chunks.
 #[derive(Default)]
 pub(super) struct Staging {
     chunks: Vec<(Buffer, Arc<AtomicBool>)>,
     pub(super) made: u64,
-    keep: glyphon::HighWater,
+    marks: glyphon::PoolMarks,
 }
 
 impl Staging {
+    /// Ends a frame: notes what it held and lets go of the spares recent frames did not need.
+    pub(super) fn frame(&mut self) {
+        let free = |f: &AtomicBool| f.load(Ordering::Acquire);
+        let mut owned = [0; glyphon::CLASSES];
+        for (b, _) in &self.chunks {
+            owned[glyphon::class_of(b.length())] += 1;
+        }
+        self.marks.end_frame(&mut owned, &mut self.chunks, |(b, f)| free(f).then(|| b.length()));
+    }
+
     /// A free chunk of at least `len` bytes, now held by `cb`.
     pub(super) fn take(&mut self, device: &ProtocolObject<dyn MTLDevice>, cb: &ProtocolObject<dyn MTLCommandBuffer>, len: usize) -> Result<Buffer, String> {
         let free = |f: &AtomicBool| f.load(Ordering::Acquire);
-        // In use: the chunks a command buffer still holds, and this take.
-        let busy: usize = self.chunks.iter().filter(|(_, f)| !free(f)).map(|(b, _)| b.length()).sum();
-        self.keep.note(busy + len);
-        let mut owned = self.chunks.iter().map(|(b, _)| b.length()).sum();
-        self.keep.let_go(&mut owned, &mut self.chunks, |(b, f)| free(f).then(|| b.length()), CHUNK_MIN);
-        // The smallest free chunk that fits, so a small take leaves a big chunk for a big one.
-        let fit = self.chunks.iter().enumerate().filter(|(_, (b, f))| free(f) && b.length() >= len).min_by_key(|(_, (b, _))| b.length()).map(|(i, _)| i);
+        // A free chunk of this take's own size (a power of two), so each size keeps its count and
+        // a small take never holds a big chunk.
+        let size = len.next_power_of_two().max(CHUNK_MIN);
+        let fit = self.chunks.iter().position(|(b, f)| free(f) && b.length() == size);
         let i = match fit {
             Some(i) => i,
             None => {
-                let size = len.next_power_of_two().max(CHUNK_MIN);
                 let buf = super::new_buffer(device, size, MTLResourceOptions::StorageModeShared).ok_or("no Metal staging buffer")?;
                 self.made += 1;
                 self.chunks.push((buf, Arc::new(AtomicBool::new(true))));
                 self.chunks.len() - 1
             }
         };
+        self.chunks[i].1.store(false, Ordering::Release);
+        let mut now = [0; glyphon::CLASSES];
+        for (b, _) in self.chunks.iter().filter(|(_, f)| !free(f)) {
+            now[glyphon::class_of(b.length())] += 1;
+        }
+        self.marks.in_use(&now);
         let (buf, flag) = &self.chunks[i];
-        flag.store(false, Ordering::Release);
         let flag = flag.clone();
         let handler = block2::RcBlock::new(move |_cb: std::ptr::NonNull<ProtocolObject<dyn MTLCommandBuffer>>| flag.store(true, Ordering::Release));
         // SAFETY: Metal copies the block and calls it once the command buffer is done.
         unsafe { cb.addCompletedHandler(block2::RcBlock::as_ptr(&handler)) };
         Ok(buf.clone())
+    }
+
+    /// Chunks a command buffer still holds (tests).
+    #[cfg(test)]
+    pub(super) fn busy(&self) -> usize {
+        self.chunks.iter().filter(|(_, f)| !f.load(Ordering::Acquire)).count()
     }
 
     /// Bytes of every chunk kept (tests).
@@ -193,6 +211,7 @@ impl MetalDraw {
                 BufferWrite::Grow { which, .. } => self.bufs[which.index()] = grown.next().expect("made above"),
                 BufferWrite::Quads { which, offset, bytes } => {
                     let (Some(staging), Some(blit)) = (&staging, &blit) else { continue };
+                    let bytes = up.bytes_of(bytes);
                     // SAFETY: the chunk is shared, at least `total` bytes, and no command buffer
                     // still reads it (`Staging::take`); this write fits at `at`.
                     unsafe {
@@ -216,6 +235,11 @@ impl MetalDraw {
     /// chain's uniform writes).
     pub(super) fn staging_chunk(&mut self, device: &ProtocolObject<dyn MTLDevice>, cb: &ProtocolObject<dyn MTLCommandBuffer>, len: usize) -> Result<Buffer, String> {
         self.staging.take(device, cb, len)
+    }
+
+    /// A new frame for the staging chunks (`Staging::frame`).
+    pub(super) fn staging_frame(&mut self) {
+        self.staging.frame();
     }
 
     /// Staging chunks made so far (tests).

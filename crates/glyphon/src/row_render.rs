@@ -76,7 +76,7 @@ pub struct RowBatch {
 }
 
 /// Termurion patch 9: what [`RowRenderer::prepare_cpu`] hands a backend.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct RowDraws {
     /// Buffer changes, oldest first. `prepare_cpu` adds to them; the caller empties them with
     /// `clear_writes` once a backend applied them.
@@ -86,6 +86,13 @@ pub struct RowDraws {
     pub batches: Vec<RowBatch>,
     /// How many write bytes recent frames needed (patch 10).
     keep: HighWater,
+}
+
+/// The content only: the kept-bytes mark is not part of what a frame draws.
+impl PartialEq for RowDraws {
+    fn eq(&self, other: &Self) -> bool {
+        (&self.writes, &self.bytes, &self.batches) == (&other.writes, &other.bytes, &other.batches)
+    }
 }
 
 impl RowDraws {

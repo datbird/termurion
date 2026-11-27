@@ -40,7 +40,7 @@ pub use text_atlas::{AtlasOp, ColorMode, GlyphKey, TextAtlas};
 pub use row_render::{RowArea, RowBatch, RowDraws, RowRenderer, RowWrite, ROW_TABLE_CHUNK, ROW_UNIFORM_SIZE};
 pub use text_render::{GlyphDraws, TextRenderer};
 // Termurion patch 10: how much a buffer kept between frames holds on to.
-pub use keep::{HighWater, DECAY_FRAMES};
+pub use keep::{class_of, Counts, HighWater, PoolMarks, CLASSES, DECAY_FRAMES};
 #[cfg(feature = "wgpu")]
 pub use cache::Cache;
 // Termurion patch 7: one reused upload path for buffer writes.

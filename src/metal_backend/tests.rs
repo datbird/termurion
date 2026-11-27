@@ -1353,23 +1353,64 @@ fn a_failed_egui_sampler_is_a_lost_device() {
 /// is let go.
 #[test]
 fn steady_big_staging_keeps_its_chunks() {
-    use objc2_metal::{MTLCommandBuffer, MTLCommandQueue};
-    let shared = test_device();
-    let mut staging = super::draw::Staging::default();
-    let frame = |staging: &mut super::draw::Staging, len: usize| {
-        let cb = shared.queue.commandBuffer().unwrap();
-        staging.take(&shared.device, &cb, len).unwrap();
-        cb.commit();
-        cb.waitUntilCompleted();
-    };
-    frame(&mut staging, 12 << 20);
-    let made = staging.made;
+    let mut rig = StagingRig::default();
+    rig.frame(&[12 << 20], false);
+    let made = rig.staging.made;
     for _ in 0..20 {
-        frame(&mut staging, 12 << 20);
+        rig.frame(&[12 << 20], false);
     }
-    assert_eq!(staging.made, made, "steady big frames made staging chunks");
+    assert_eq!(rig.staging.made, made, "steady big frames made staging chunks");
     for _ in 0..glyphon::DECAY_FRAMES + 1 {
-        frame(&mut staging, 4096);
+        rig.frame(&[4096], false);
     }
-    assert!(staging.held() <= 1 << 20, "{} staging bytes kept after the burst", staging.held());
+    assert!(rig.staging.held() <= 1 << 20, "{} staging bytes kept after the burst", rig.staging.held());
+}
+
+/// Mixed and alternating take sizes, done at once or pipelined (each frame's command buffers
+/// finish only after the next frame took its chunks): after warm-up no chunk is made.
+#[test]
+fn mixed_staging_takes_make_no_chunks() {
+    let mixed: Vec<usize> = std::iter::once(3 << 20).chain(std::iter::repeat_n(256 << 10, 20)).collect();
+    let small = vec![256 << 10; 20];
+    for pipelined in [false, true] {
+        let mut rig = StagingRig::default();
+        let frames = [vec![3 << 20], small.clone(), mixed.clone()];
+        for f in 0..6 {
+            rig.frame(&frames[f % 3], pipelined);
+        }
+        let made = rig.staging.made;
+        for f in 0..60 {
+            rig.frame(&frames[f % 3], pipelined);
+        }
+        assert_eq!(rig.staging.made, made, "takes (pipelined {pipelined}) made staging chunks");
+    }
+}
+
+/// Drives a `Staging` frame by frame, one command buffer a frame.
+#[derive(Default)]
+struct StagingRig {
+    staging: super::draw::Staging,
+    last: Vec<objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandBuffer>>>,
+}
+
+impl StagingRig {
+    fn frame(&mut self, lens: &[usize], pipelined: bool) {
+        use objc2_metal::{MTLCommandBuffer, MTLCommandQueue};
+        let shared = test_device();
+        self.staging.frame();
+        // One command buffer holds the frame's takes. Pipelined, it is committed only after the
+        // next frame took its chunks, so two frames hold chunks at once every time.
+        let cb = shared.queue.commandBuffer().unwrap();
+        for &len in lens {
+            self.staging.take(&shared.device, &cb, len).unwrap();
+        }
+        let held = if pipelined { lens.len() } else { 0 };
+        let wait = if pipelined { std::mem::replace(&mut self.last, vec![cb]) } else { vec![cb] };
+        for cb in wait {
+            cb.commit();
+            cb.waitUntilCompleted();
+        }
+        // Completed handlers run on Metal's own thread, a moment after the wait returns.
+        eventually("the finished chunks are free", || self.staging.busy() <= held);
+    }
 }

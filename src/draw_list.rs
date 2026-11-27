@@ -36,7 +36,8 @@ pub enum BufferWrite {
     /// The buffer is made again with room for `size` bytes; what it held is gone, so a full
     /// `Quads` write at offset 0 always follows.
     Grow { which: QuadBuf, size: u64 },
-    Quads { which: QuadBuf, offset: u64, bytes: Vec<u8> },
+    /// `bytes` index [`Uploads::bytes`].
+    Quads { which: QuadBuf, offset: u64, bytes: Range<usize> },
 }
 
 /// Everything a frame sends to the GPU besides the draw calls.
@@ -44,41 +45,31 @@ pub enum BufferWrite {
 pub struct Uploads {
     pub buffers: Vec<BufferWrite>,
     pub atlas: Vec<AtlasOp>,
-    /// Byte buffers of spent writes, kept so the next frame's writes do not allocate. As many
-    /// and as large as recent frames used (`glyphon::HighWater`), so a burst is let go later.
-    pool: Vec<Vec<u8>>,
-    keep_count: glyphon::HighWater,
-    keep_bytes: glyphon::HighWater,
+    /// The bytes of every `Quads` write, in one list kept between frames as long as recent
+    /// frames needed it (`glyphon::HighWater`), so no write allocates and a burst is let go.
+    pub bytes: Vec<u8>,
+    keep: glyphon::HighWater,
 }
 
 impl Uploads {
     /// Empties the lists for the next frame, keeping their storage.
     pub fn reset(&mut self) {
-        let (mut count, mut bytes) = (0, 0);
-        for w in self.buffers.drain(..) {
-            if let BufferWrite::Quads { bytes: b, .. } = w {
-                count += 1;
-                bytes += b.capacity();
-                self.pool.push(b);
-            }
-        }
-        let keep_count = self.keep_count.note(count);
-        self.keep_bytes.note(bytes);
-        // Spares past the marks go, largest first.
-        let mut owned = self.pool.iter().map(Vec::capacity).sum();
-        if owned > self.keep_bytes.mark() || self.pool.len() > keep_count {
-            self.keep_bytes.let_go(&mut owned, &mut self.pool, |b| Some(b.capacity()), 0);
-            self.pool.sort_unstable_by_key(|b| std::cmp::Reverse(b.capacity()));
-            self.pool.truncate(keep_count);
-        }
+        self.keep.note(self.bytes.len());
+        self.buffers.clear();
+        self.bytes.clear();
+        self.keep.trim(&mut self.bytes);
         self.atlas.clear();
     }
 
+    /// The bytes a write's range names.
+    pub fn bytes_of(&self, range: &Range<usize>) -> &[u8] {
+        &self.bytes[range.clone()]
+    }
+
     fn push_quads(&mut self, which: QuadBuf, offset: u64, from: &[u8]) {
-        let mut bytes = self.pool.pop().unwrap_or_default();
-        bytes.clear();
-        bytes.extend_from_slice(from);
-        self.buffers.push(BufferWrite::Quads { which, offset, bytes });
+        let start = self.bytes.len();
+        self.bytes.extend_from_slice(from);
+        self.buffers.push(BufferWrite::Quads { which, offset, bytes: start..self.bytes.len() });
     }
 }
 
@@ -272,20 +263,15 @@ mod tests {
         let mut s = Shadow::new(QuadBuf::Under);
         let mut out = Uploads::default();
         s.write(&[1; 100], &mut out);
-        let BufferWrite::Quads { bytes, .. } = &out.buffers[0] else { panic!("{out:?}") };
-        let first = bytes.as_ptr();
+        let first = out.bytes.as_ptr();
         out.reset();
         s.write(&[2; 100], &mut out);
         let BufferWrite::Quads { bytes, .. } = &out.buffers[0] else { panic!("{out:?}") };
-        assert_eq!((bytes.as_ptr(), bytes.as_slice()), (first, &[2u8; 100][..]), "the second frame's write took a new buffer");
-    }
-
-    fn pool_bytes(out: &Uploads) -> usize {
-        out.pool.iter().map(|b| b.capacity()).sum()
+        assert_eq!((out.bytes.as_ptr(), out.bytes_of(bytes)), (first, &[2u8; 100][..]), "the second frame's write took a new buffer");
     }
 
     /// A full redraw past the old 8 MiB cap, and more writes a frame than the old 32 spares,
-    /// reuse their buffers frame after frame.
+    /// reuse their storage frame after frame.
     #[test]
     fn steady_big_frames_reuse_their_buffers() {
         let mut s = Shadow::new(QuadBuf::Under);
@@ -307,6 +293,39 @@ mod tests {
         }
     }
 
+    /// Frames of varied write sizes in a changing order: what is kept stays near the real need
+    /// (under 1.5 times the biggest frame's bytes), and steady frames allocate nothing.
+    #[test]
+    fn mixed_frames_keep_about_what_they_need() {
+        let mut out = Uploads::default();
+        let sizes: Vec<usize> = [12 << 20, 1 << 20, 3 << 19].into_iter().chain((0..64).map(|i| 8 + i * 40)).collect();
+        let most: usize = sizes.iter().sum();
+        let src = vec![5u8; 12 << 20];
+        let mut order = sizes.clone();
+        for f in 0..200usize {
+            // A different order (and one write left out) every frame.
+            let len = order.len();
+            order.rotate_left(f % len);
+            for (i, &n) in order.iter().enumerate().filter(|(i, _)| *i != f % 7) {
+                out.push_quads(QuadBuf::Under, i as u64, &src[..n]);
+            }
+            out.reset();
+            assert!(out.bytes.capacity() * 2 <= most * 3, "frame {f} kept {} bytes for {most}", out.bytes.capacity());
+        }
+        let mut frame = || {
+            for (i, &n) in order.iter().enumerate() {
+                out.push_quads(QuadBuf::Under, i as u64, &src[..n]);
+            }
+            out.reset();
+        };
+        // The whole list is one write more than any frame above: the first one grows to it.
+        frame();
+        for i in 0..10 {
+            let ((), allocs) = crate::render_fx::counting::count(&mut frame);
+            assert_eq!(allocs, 0, "steady frame {i} allocated");
+        }
+    }
+
     /// After one very large frame, small frames give its memory back within the decay window.
     #[test]
     fn a_burst_is_let_go_after_the_decay_window() {
@@ -321,6 +340,6 @@ mod tests {
             s.write(&[i as u8; 100], &mut out);
             out.reset();
         }
-        assert!(out.pool.len() <= 2 && pool_bytes(&out) <= 4096, "the pool kept {} buffers, {} bytes", out.pool.len(), pool_bytes(&out));
+        assert!(out.bytes.capacity() <= 4096, "kept {} bytes", out.bytes.capacity());
     }
 }

@@ -211,6 +211,8 @@ impl MetalWindow {
     }
 
     fn render_frame(&mut self, frame: &Frame, fx: Option<FxFrame<'_>>) -> Result<Drawn, RenderError> {
+        // The last frame's staging use is complete: its spares are let go here.
+        self.draw.staging_frame();
         // A text reset that fails is a Metal failure like any other: recovery, not a banner.
         self.in_step().map_err(|e| self.metal_failed(e))?;
         // An effect frame with no chain draws as a plain one, as on a wgpu window; the in-window

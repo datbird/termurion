@@ -27,9 +27,14 @@ pub struct UploadBelt {
     /// Mapped again after the GPU finished with them.
     free: Arc<Mutex<Vec<Chunk>>>,
     made: u64,
-    /// Bytes of every chunk not let go, and what recent frames had in use (patch 10).
-    owned: BufferAddress,
-    keep: crate::HighWater,
+    /// Patch 10: every chunk not let go, per size class; chunks whose map failed wait in `lost`
+    /// and are taken off at the next submit.
+    owned: crate::keep::Counts,
+    lost: Arc<Mutex<Vec<BufferAddress>>>,
+    marks: crate::PoolMarks,
+    /// Tests: mapped chunks wait here until `release_late`, as if they came back a frame late.
+    #[cfg(test)]
+    late: Option<Arc<Mutex<Vec<Chunk>>>>,
 }
 
 impl Default for UploadBelt {
@@ -40,7 +45,18 @@ impl Default for UploadBelt {
 
 impl UploadBelt {
     pub fn new() -> Self {
-        Self { encoder: None, active: Vec::new(), closed: Vec::new(), free: Arc::new(Mutex::new(Vec::new())), made: 0, owned: 0, keep: crate::HighWater::default() }
+        Self {
+            encoder: None,
+            active: Vec::new(),
+            closed: Vec::new(),
+            free: Arc::new(Mutex::new(Vec::new())),
+            made: 0,
+            owned: [0; crate::keep::CLASSES],
+            lost: Arc::new(Mutex::new(Vec::new())),
+            marks: crate::PoolMarks::default(),
+            #[cfg(test)]
+            late: None,
+        }
     }
 
     /// Staging buffers made so far (tests: flat while frames stream).
@@ -80,7 +96,7 @@ impl UploadBelt {
         let chunk = taken.unwrap_or_else(|| {
             self.made += 1;
             let size = size.max(CHUNK).next_multiple_of(wgpu::MAP_ALIGNMENT);
-            self.owned += size;
+            self.owned[crate::keep::class_of(size as usize)] += 1;
             Chunk {
                 buffer: device.create_buffer(&BufferDescriptor {
                     label: Some("upload chunk"),
@@ -92,14 +108,30 @@ impl UploadBelt {
             }
         });
         self.active.push(chunk);
+        // In use now: this frame's chunks and those the GPU still reads.
+        let mut now = self.owned;
+        for c in self.free.lock().unwrap().iter() {
+            let n = &mut now[crate::keep::class_of(c.buffer.size() as usize)];
+            *n = n.saturating_sub(1);
+        }
+        self.marks.in_use(&now);
         self.active.len() - 1
     }
 
     fn take_free(&mut self, size: BufferAddress) -> Option<Chunk> {
         let mut free = self.free.lock().unwrap();
-        // The smallest that fits, so a small write leaves a big chunk for a big one.
-        let i = free.iter().enumerate().filter(|(_, c)| c.buffer.size() >= size).min_by_key(|(_, c)| c.buffer.size())?.0;
+        // The smallest that fits in the write's own size class, so each class keeps its count
+        // and a small write never holds a big chunk.
+        let class = crate::keep::class_of(size.max(CHUNK) as usize);
+        let i = free.iter().enumerate().filter(|(_, c)| c.buffer.size() >= size && crate::keep::class_of(c.buffer.size() as usize) == class).min_by_key(|(_, c)| c.buffer.size())?.0;
         Some(free.swap_remove(i))
+    }
+
+    /// Hands back the chunks held as late (tests).
+    #[cfg(test)]
+    fn release_late(&mut self) {
+        let late = std::mem::take(&mut *self.late.as_ref().unwrap().lock().unwrap());
+        self.free.lock().unwrap().extend(late);
     }
 
     /// The sizes of the chunks free now (tests).
@@ -117,24 +149,27 @@ impl UploadBelt {
         }
         let uploads = self.encoder.take().map(CommandEncoder::finish);
         let index = queue.submit(uploads.into_iter().chain(commands));
-        // What is in use now (this frame and those the GPU still reads) sets the mark; free
-        // chunks past it go, largest first, outside the lock.
+        // The frame's peak in use sets the marks; free chunks past them go, outside the lock.
+        for size in self.lost.lock().unwrap().drain(..) {
+            let n = &mut self.owned[crate::keep::class_of(size as usize)];
+            *n = n.saturating_sub(1);
+        }
         let mut spares = std::mem::take(&mut *self.free.lock().unwrap());
-        let spare: BufferAddress = spares.iter().map(|c| c.buffer.size()).sum();
-        self.keep.note((self.owned - spare) as usize);
-        let mut owned = self.owned as usize;
-        self.keep.let_go(&mut owned, &mut spares, |c| Some(c.buffer.size() as usize), CHUNK as usize);
-        self.owned = owned as BufferAddress;
+        self.marks.end_frame(&mut self.owned, &mut spares, |c| Some(c.buffer.size() as usize));
         let mut free = self.free.lock().unwrap();
         spares.append(&mut free);
         *free = spares;
         drop(free);
         for chunk in self.closed.drain(..) {
-            let free = self.free.clone();
+            let (free, lost) = (self.free.clone(), self.lost.clone());
+            #[cfg(test)]
+            let free = self.late.clone().unwrap_or(free);
             let buffer = chunk.buffer.clone();
             buffer.slice(..).map_async(MapMode::Write, move |mapped| {
                 if mapped.is_ok() {
                     free.lock().unwrap().push(Chunk { buffer: chunk.buffer, used: 0 });
+                } else {
+                    lost.lock().unwrap().push(chunk.buffer.size());
                 }
             });
         }
@@ -154,7 +189,7 @@ mod tests {
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         // Another test's poll may run our map callbacks: wait until every chunk is back.
         let start = std::time::Instant::now();
-        while belt.free_sizes().iter().sum::<u64>() < belt.owned {
+        while (belt.free_sizes().len() as u32) < belt.owned.iter().sum::<u32>() {
             assert!(start.elapsed().as_secs() < 10, "chunks never came back");
             std::thread::yield_now();
             let _ = device.poll(wgpu::PollType::Poll);
@@ -182,6 +217,42 @@ mod tests {
             frame(&device, &queue, &target, &mut belt, &sizes);
         }
         assert_eq!(belt.buffers_made(), made, "steady frames made new chunks");
+    }
+
+    /// Pipelined frames: each frame's chunks come back after the next frame took its own (and
+    /// before it submits), so two frames' chunks are in use at once. After warm-up no chunk is
+    /// made, with one write size or two.
+    #[test]
+    fn pipelined_frames_make_no_chunks() {
+        let (device, queue, target) = rig();
+        for sizes in [vec![CHUNK * 3 / 4; 4], vec![3 * CHUNK, 4096, 4096]] {
+            let mut belt = UploadBelt::new();
+            belt.late = Some(Arc::new(Mutex::new(Vec::new())));
+            let step = |belt: &mut UploadBelt| {
+                for (i, &n) in sizes.iter().enumerate() {
+                    belt.write(&device, &target, (i as u64 * 64) % CHUNK, &vec![7u8; n as usize]);
+                }
+                belt.release_late();
+                belt.submit(&queue, []);
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                // Another test's poll may run our callbacks: wait until this frame's are in.
+                let late = |belt: &UploadBelt| belt.late.as_ref().unwrap().lock().unwrap().len() as u32;
+                let start = std::time::Instant::now();
+                while late(belt) + (belt.free_sizes().len() as u32) < belt.owned.iter().sum::<u32>() {
+                    assert!(start.elapsed().as_secs() < 10, "chunks never came back");
+                    std::thread::yield_now();
+                    let _ = device.poll(wgpu::PollType::Poll);
+                }
+            };
+            for _ in 0..3 {
+                step(&mut belt);
+            }
+            let made = belt.buffers_made();
+            for _ in 0..30 {
+                step(&mut belt);
+            }
+            assert_eq!(belt.buffers_made(), made, "pipelined frames of {sizes:?} made chunks");
+        }
     }
 
     /// After a burst, small frames give the chunks back within the decay window, and then make

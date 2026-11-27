@@ -51,8 +51,8 @@ through `[patch.crates-io]` in Termurion's Cargo.toml. The `examples/`, `benches
    bigger write gets its own), records each write as a copy into one encoder, and `submit` sends
    that encoder ahead of the caller's command buffers in one submission, then maps the chunks
    again with `map_async` (a free chunk comes back on a later poll or submit; how many stay free
-   follows patch 10; a write takes the smallest free chunk that fits). `buffers_made()` counts the chunks made. `RowRenderer::prepare` takes the belt for its
-   instance and row table writes, and `TextRenderer::prepare_with_custom_uploads` writes its
+   follows patch 10; a write takes the smallest free chunk that fits). `buffers_made()` counts
+   the chunks made. `RowRenderer::prepare` takes the belt for its instance and row table writes, and `TextRenderer::prepare_with_custom_uploads` writes its
    vertices through it (the upstream `prepare*` methods still use the queue). A grown buffer is
    dropped, not destroyed, since a copy recorded in the same frame may target it. Tests:
    `row_render::tests` (the rig submits the belt after each prepare).
@@ -99,11 +99,13 @@ through `[patch.crates-io]` in Termurion's Cargo.toml. The `examples/`, `benches
 10. Kept buffers follow a decaying high-water mark (`keep.rs`, `row_render.rs`, `upload.rs`,
    `lib.rs`). `HighWater` notes what each frame needed; its mark rises at once and comes down
    only after `DECAY_FRAMES` (300) frames that all needed less, to the most of those. `trim`
-   shrinks a vector once its room passes twice the mark; `let_go` drops a pool's spares the mark
-   does not cover, largest first. `RowDraws::clear_writes` trims the write bytes with it (it
-   dropped them above 8 MiB before, so a frame past that regrew them every frame) and
-   `UploadBelt::submit` lets go of free chunks past what recent frames had in use (it kept 8).
-   Termurion's draw list and Metal staging use the same helper. Tests: `keep::tests`,
-   `row_render::keep_tests`, `upload::tests`.
+   shrinks a vector once its room passes 1.5 times the mark. `PoolMarks` keeps one mark per size
+   class (powers of two) of how many chunks a frame held at once, noted when a chunk is handed
+   out, and at the frame's end lets go of the spares past each class's mark, smallest first.
+   `RowDraws::clear_writes` trims the write bytes (it dropped them above 8 MiB before, so a frame
+   past that regrew them every frame; `PartialEq` compares the content only). `UploadBelt` keeps
+   its free chunks by `PoolMarks` (it kept 8) and takes a chunk whose map failed off what it
+   owns. Termurion's draw list and Metal staging use the same helpers. Tests: `keep::tests`,
+   `row_render::keep_tests`, `upload::tests` (pipelined frames too).
 
 To update glyphon, copy the new version here and apply these changes again.

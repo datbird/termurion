@@ -35,29 +35,67 @@ impl HighWater {
         self.mark
     }
 
-    /// Shrinks `v` to the mark once its room passes twice the mark. Growth by doubling stays
-    /// under that, so a steady frame never reallocates here.
+    /// Shrinks `v` to the mark once its room passes one and a half times the mark. A steady
+    /// frame reallocates here at most once (a doubled vector comes down to the mark, which then
+    /// holds every frame of the window).
     pub fn trim<T>(&self, v: &mut Vec<T>) {
-        if v.capacity() > self.mark.saturating_mul(2) {
+        if v.capacity() > self.mark.saturating_add(self.mark / 2) {
             v.shrink_to(self.mark);
         }
     }
+}
 
-    /// Lets go of the spares in `items` the mark does not cover, largest first: one whose loss
-    /// still leaves `owned` at or above the mark, and one bigger than twice the mark (and than
-    /// `floor`, the smallest a pool makes), which no recent frame could have needed. `spare` is a
-    /// spare's size, None for an item in use (always kept). Lowers `owned` by what goes and
-    /// allocates nothing; with nothing to let go the order stays as it was.
-    pub fn let_go<T>(&self, owned: &mut usize, items: &mut Vec<T>, spare: impl Fn(&T) -> Option<usize>, floor: usize) {
-        let oversized = self.mark.saturating_mul(2).max(floor);
-        let goes = |n: usize, owned: usize| n > oversized || owned.checked_sub(n).is_some_and(|rest| rest >= self.mark);
-        if !items.iter().any(|t| spare(t).is_some_and(|n| goes(n, *owned))) {
+/// Size classes of pooled chunks: a chunk of `n` bytes is in class `ceil(log2(n))`.
+pub const CLASSES: usize = usize::BITS as usize + 1;
+
+/// The size class of a chunk of `n` bytes.
+pub fn class_of(n: usize) -> usize {
+    (usize::BITS - n.saturating_sub(1).leading_zeros()) as usize
+}
+
+/// Chunks per size class.
+pub type Counts = [u32; CLASSES];
+
+/// What a pool of reused chunks keeps: per size class, as many chunks as recent frames had in
+/// use at once (a `HighWater` each). Counting per class keeps the shape a load needs, so a frame
+/// that holds one big chunk and the next that holds many small ones both find theirs.
+#[derive(Clone, Debug)]
+pub struct PoolMarks {
+    marks: [HighWater; CLASSES],
+    /// This frame's most chunks in use at once, per class.
+    peak: Counts,
+}
+
+impl Default for PoolMarks {
+    fn default() -> Self {
+        PoolMarks { marks: [HighWater::default(); CLASSES], peak: [0; CLASSES] }
+    }
+}
+
+impl PoolMarks {
+    /// Notes the chunks in use now (taken when the pool hands one out) toward this frame's peak.
+    pub fn in_use(&mut self, now: &Counts) {
+        for (p, n) in self.peak.iter_mut().zip(now) {
+            *p = (*p).max(*n);
+        }
+    }
+
+    /// Ends a frame: notes its peak and lets go of the spares in `items` past each class's mark,
+    /// smallest first. `owned` counts every chunk of the pool per class (spares and those in use,
+    /// in `items` or not) and is lowered by what goes. `spare` is an item's size, None for one in
+    /// use. Allocates nothing; with nothing to let go the order stays as it was.
+    pub fn end_frame<T>(&mut self, owned: &mut Counts, items: &mut Vec<T>, spare: impl Fn(&T) -> Option<usize>) {
+        let mut keep = [0u32; CLASSES];
+        for c in 0..CLASSES {
+            keep[c] = self.marks[c].note(std::mem::take(&mut self.peak[c]) as usize) as u32;
+        }
+        if !items.iter().any(|t| spare(t).is_some_and(|n| owned[class_of(n)] > keep[class_of(n)])) {
             return;
         }
-        items.sort_unstable_by_key(|t| std::cmp::Reverse(spare(t).unwrap_or(0)));
+        items.sort_unstable_by_key(|t| spare(t).unwrap_or(usize::MAX));
         items.retain(|t| match spare(t) {
-            Some(n) if goes(n, *owned) => {
-                *owned = owned.saturating_sub(n);
+            Some(n) if owned[class_of(n)] > keep[class_of(n)] => {
+                owned[class_of(n)] -= 1;
                 false
             }
             _ => true,
@@ -113,28 +151,59 @@ mod tests {
     }
 
     #[test]
-    fn let_go_drops_the_largest_spares_above_the_mark() {
-        let mut h = HighWater::default();
-        h.note(300);
-        // In use: 100 (None); spares 200, 500, 200.
-        let mut items = vec![Some(200), None, Some(500), Some(200)];
-        let mut owned = 1000;
-        h.let_go(&mut owned, &mut items, |t| *t, 0);
+    fn classes_are_powers_of_two() {
+        assert_eq!([class_of(0), class_of(1), class_of(2), class_of(3), class_of(4), class_of(5)], [0, 0, 1, 2, 2, 3]);
+        assert_eq!((class_of(256 << 10), class_of((256 << 10) + 1)), (18, 19));
+    }
+
+    fn end(p: &mut PoolMarks, owned: &mut Counts, items: &[Option<usize>]) -> Vec<Option<usize>> {
+        let mut items = items.to_vec();
+        p.end_frame(owned, &mut items, |t| *t);
         items.sort();
-        assert_eq!((items, owned), (vec![None, Some(200)], 300));
-        let mut items = vec![Some(200)];
-        let mut owned = 300;
-        h.let_go(&mut owned, &mut items, |t| *t, 0);
-        assert_eq!(items, [Some(200)]);
-        // The only spare, too big for anything recent frames needed: it goes unless it is the
-        // pool's smallest size.
-        h = HighWater::default();
-        h.note(10);
-        let (mut items, mut owned) = (vec![Some(500)], 500);
-        h.let_go(&mut owned, &mut items, |t| *t, 64);
-        assert!(items.is_empty());
-        let (mut items, mut owned) = (vec![Some(500)], 500);
-        h.let_go(&mut owned, &mut items, |t| *t, 500);
-        assert_eq!(items, [Some(500)]);
+        items
+    }
+
+    #[test]
+    fn a_pool_keeps_each_class_recent_frames_held() {
+        let mut p = PoolMarks::default();
+        let (big, small) = (class_of(4 << 20), class_of(256 << 10));
+        // One frame held two big chunks at once, another twenty small ones.
+        let mut now = [0; CLASSES];
+        now[big] = 2;
+        p.in_use(&now);
+        let mut owned = [0; CLASSES];
+        owned[big] = 2;
+        assert_eq!(end(&mut p, &mut owned, &[Some(4 << 20); 2]).len(), 2);
+        let mut now = [0; CLASSES];
+        now[small] = 20;
+        p.in_use(&now);
+        owned[small] = 20;
+        let all: Vec<Option<usize>> = [Some(4 << 20); 2].into_iter().chain([Some(256 << 10); 20]).collect();
+        assert_eq!(end(&mut p, &mut owned, &all).len(), 22, "a chunk either frame needs was let go");
+        // A third small spare nobody held, and a third big one: they go, the smallest first.
+        let mut owned3 = owned;
+        owned3[big] = 3;
+        owned3[small] = 21;
+        let mut more = all.clone();
+        more.extend([Some(4 << 20), Some(256 << 10)]);
+        assert_eq!(end(&mut p, &mut owned3, &more).len(), 22);
+        assert_eq!((owned3[big], owned3[small]), (2, 20));
+    }
+
+    #[test]
+    fn a_pool_lets_a_burst_go_after_the_window() {
+        let mut p = PoolMarks::default();
+        let big = class_of(16 << 20);
+        let mut now = [0; CLASSES];
+        now[big] = 1;
+        p.in_use(&now);
+        let mut owned = [0; CLASSES];
+        owned[big] = 1;
+        assert_eq!(end(&mut p, &mut owned, &[Some(16 << 20)]).len(), 1);
+        for _ in 1..DECAY_FRAMES {
+            assert_eq!(end(&mut p, &mut owned, &[Some(16 << 20)]).len(), 1);
+        }
+        assert!(end(&mut p, &mut owned, &[Some(16 << 20)]).is_empty(), "the burst's chunk stayed");
+        assert_eq!(owned[big], 0);
     }
 }

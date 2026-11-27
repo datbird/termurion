@@ -354,7 +354,7 @@ impl WgpuDraw {
         for w in &up.buffers {
             match w {
                 BufferWrite::Grow { which, size } => self.bufs[which.index()].buf = GpuVec::alloc(device, *size),
-                BufferWrite::Quads { which, offset, bytes } => self.uploads.write(device, &self.bufs[which.index()].buf, *offset, bytes),
+                BufferWrite::Quads { which, offset, bytes } => self.uploads.write(device, &self.bufs[which.index()].buf, *offset, up.bytes_of(bytes)),
             }
         }
         // The glyphs the CPU placed, the rows' slots and table, then this frame's glyph instances.

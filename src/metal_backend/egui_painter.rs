@@ -193,6 +193,7 @@ impl EguiPainter {
     }
 
     fn paint_frame(&mut self, shared: &MetalShared, target: Target<'_>, jobs: &[egui::ClippedPrimitive], deltas: &egui::TexturesDelta, screen: ScreenDescriptor) -> Result<(), String> {
+        self.staging.frame();
         self.pending.extend(deltas.set.iter().flat_map(|(id, ds)| ds.iter().map(|d| Op::Set(*id, d.clone()))));
         let out: Option<Texture> = match target {
             Target::Drawable(d) => Some(d.texture()),
