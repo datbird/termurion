@@ -93,7 +93,7 @@ impl MetalWindow {
             RawWindowHandle::AppKit(h) => h.ns_view,
             _ => return Err("not an AppKit window".to_string()),
         };
-        let surface = Surface::attach(view)?;
+        let surface = Surface::attach_terminal(view)?;
         let size = window.inner_size();
         let w = MetalWindow::new(shared, Some(surface), (size.width.max(1), size.height.max(1)), window.scale_factor(), Renderer::cpu_only(font, px), Some(window))?;
         w.configure();
@@ -136,6 +136,20 @@ impl MetalWindow {
         let w = MetalWindow::new(shared, Some(Surface::detached()), size, scale, renderer, None).expect("the Metal pipelines");
         w.configure();
         w
+    }
+
+    /// A window over a test layer that shows its own surfaces, ticked by hand (`surface()`).
+    #[cfg(test)]
+    pub fn on_contents_layer(shared: &MetalShared, renderer: Renderer, size: (u32, u32)) -> MetalWindow {
+        let w = MetalWindow::new(shared, Some(Surface::contents_for_tests()), size, 1.0, renderer, None).expect("the Metal pipelines");
+        w.configure();
+        w
+    }
+
+    /// The window's surface (tests).
+    #[cfg(test)]
+    pub(super) fn surface(&self) -> &Surface {
+        self.surface.as_ref().expect("a layer")
     }
 
     /// The layer (tests).
@@ -214,15 +228,9 @@ impl MetalWindow {
             self.acquire = Acquire { wait: wait_start.elapsed(), dropped: true };
             return Err(RenderError::Skip);
         };
-        let next = if surface.shows_contents() {
-            // A surface that could not be made is a frame with no drawable: the next one tries again.
-            surface.next_contents(&self.shared.device, self.size).unwrap_or_else(|e| {
-                crate::gpu_pick::log_gpu_error(&format!("Metal: {e}"));
-                Next::Timeout
-            })
-        } else {
-            surface.next()
-        };
+        let next = if surface.shows_contents() { surface.next_contents(&self.shared.device, self.size) } else { Ok(surface.next()) };
+        // A surface that cannot be made is an allocation failure like any other in the frame.
+        let next = next.map_err(|e| self.metal_failed(e))?;
         self.acquire = Acquire { wait: wait_start.elapsed(), dropped: !matches!(next, Next::Drawable(..) | Next::Contents(..)) };
         match next {
             Next::Drawable(drawable, texture) => self.draw_into(Present::Drawable(drawable), &texture, frame, fx),
@@ -233,7 +241,15 @@ impl MetalWindow {
 
     /// Draws `frame` into `texture` and presents it as `present` says.
     fn draw_into(&mut self, present: Present, texture: &ProtocolObject<dyn MTLTexture>, frame: &Frame, fx: Option<FxFrame<'_>>) -> Result<Drawn, RenderError> {
-        let cb = self.shared.command_buffer(self.generation).map_err(RenderError::Refused)?;
+        let cb = match self.shared.command_buffer(self.generation) {
+            Ok(cb) => cb,
+            Err(e) => {
+                if let (Present::Contents(i), Some(s)) = (&present, &self.surface) {
+                    s.give_back(*i);
+                }
+                return Err(RenderError::Refused(e));
+            }
+        };
         let draw_start = self.timing.then(Instant::now);
         let kept = match fx {
             Some(fx) => self.encode_fx(&cb, frame, fx, texture),
@@ -272,7 +288,11 @@ impl MetalWindow {
             Present::Drawable(d) if drawn => cb.presentDrawable(ProtocolObject::<dyn MTLDrawable>::from_ref(&**d)),
             Present::Contents(i) => {
                 if let Some(s) = &self.surface {
-                    s.show(*i, cb, drawn);
+                    if drawn {
+                        s.show(*i, cb);
+                    } else {
+                        s.give_back(*i);
+                    }
                 }
             }
             _ => {}
@@ -491,8 +511,8 @@ impl MetalWindow {
     }
 
     /// `Surface::take_display_tick`.
-    pub fn take_display_tick(&self) -> bool {
-        self.surface.as_ref().is_some_and(Surface::take_display_tick)
+    pub fn take_display_tick(&self) -> crate::gpu_window::DisplayTick {
+        self.surface.as_ref().map(Surface::take_display_tick).unwrap_or_default()
     }
 
     pub fn set_timing(&mut self, on: bool) {

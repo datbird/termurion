@@ -19,7 +19,8 @@
 # flood (a 1 MB block of colored text written as fast as the terminal reads it).
 # Configs: termurion, termurion-fx (Lightning), ghostty, ghostty-fx (the same Lightning shader as
 # a Ghostty custom-shader), iterm2, and termurion-fx-<id> for any one effect by its id (termurion-fx-cyber).
-# DRAW_BENCH_WL picks the workloads, for example DRAW_BENCH_WL=idle.
+# DRAW_BENCH_WL picks the workloads, for example DRAW_BENCH_WL=idle. DRAW_BENCH_FX_PACING sets
+# Termurion's "Effects animation" (0 Full, 1 Balanced, 2 Light, 3 Smooth) for the runs.
 #
 # Messages in the VM is pulled to the front by the iMessage bridge at second 38 of every minute,
 # and a hidden window stops drawing, so runs are timed into two slots between those checks
@@ -247,7 +248,9 @@ setup() {
                 { print }
                 /^Name = "Default"$/ && !done { inside = 1; done = 1; print "Columns = " cols; print "Rows = " rows; print "\"Custom Command\" = \"Yes\""; print "Command = \"/Users/admin/termbench/shell.sh termurion\""; if (fx != "") print fx }
                 /^\[\[profile\]\]/ && done { inside = 0 }' "$saved/profiles.toml" | vm "cat > \"\$HOME/$TSUP/profiles.toml\""
-            { awk '/^\[settings.SavedWindowFrames\]/{exit} {print}' "$saved/settings.toml"
+            { awk -v pacing="${DRAW_BENCH_FX_PACING:-}" '/^\[settings.SavedWindowFrames\]/{exit} pacing != "" && /^EffectsAnimation = /{next} {print}' "$saved/settings.toml"
+              # "Effects animation" for every Termurion run: 0 Full, 1 Balanced, 2 Light, 3 Smooth.
+              [ -n "${DRAW_BENCH_FX_PACING:-}" ] && printf 'EffectsAnimation = %d\n' "$DRAW_BENCH_FX_PACING"
               printf '[settings.SavedWindowFrames]\n"%s 0" = [%d.0, %d.0, 1595.0, 992.0]\n' "$(sed -n 's/^Default = "\(.*\)"/\1/p' "$saved/profiles.toml")" "$X" "$Y"; } | vm "cat > \"\$HOME/$TSUP/settings.toml\""
             vm "rm -f \"\$HOME/$TSUP/state\""
             ;;

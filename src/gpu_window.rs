@@ -107,6 +107,15 @@ pub struct Overlay<'a> {
 /// Draws over a frame and answers the menu item chosen.
 pub type OverlayDraw<'a> = &'a mut dyn FnMut(&Overlay<'_>) -> Option<String>;
 
+/// What a display link tick asks for (`WindowGpu::take_display_tick`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DisplayTick {
+    /// The link fired since the last call.
+    pub ticked: bool,
+    /// ...and a frame that found no free surface is owed: draw it now.
+    pub owed: bool,
+}
+
 /// A terminal window's GPU backend.
 pub enum WindowGpu {
     #[cfg(not(target_os = "macos"))]
@@ -654,11 +663,12 @@ impl WindowGpu {
         }
     }
 
-    /// Whether the display refreshed since the last call (always false off the display).
-    pub fn take_display_tick(&self) -> bool {
+    /// Whether the display link fired since the last call, and whether a frame that found no
+    /// free surface is owed on it (never off macOS).
+    pub fn take_display_tick(&self) -> DisplayTick {
         match self {
             #[cfg(not(target_os = "macos"))]
-            WindowGpu::Wgpu(_) => false,
+            WindowGpu::Wgpu(_) => DisplayTick::default(),
             #[cfg(target_os = "macos")]
             WindowGpu::Metal(w) => w.take_display_tick(),
         }

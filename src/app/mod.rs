@@ -7710,9 +7710,9 @@ impl App {
         // Sampled before the acquire wait now: the effects' clock then runs a few ms ahead of
         // the present, which the 33 ms and 16 ms frame gaps already allow.
         let fx_now = Instant::now();
-        let fx_lead = gpu.win.display_period().map_or(Duration::ZERO, |p| p / 2);
+        let fx_link = gpu.win.display_period();
         if let Some(fx) = gpu.fx.as_mut().filter(|f| f.active()) {
-            fx.set_lead(fx_lead);
+            fx.set_link(fx_link);
             fx.prepare(frame.fx.as_ref(), fx_signals.as_ref(), (w, h), focused_window, fx_now, fx_pacing);
         }
         // A system expose (X11 Expose, Win32 WM_PAINT) reaches this as the same RedrawRequested

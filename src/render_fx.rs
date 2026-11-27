@@ -1107,13 +1107,13 @@ pub struct Clock {
     next_due: Option<Instant>,
     /// The frame gap of the current pacing (`set_pacing`), which `frame` advances `next_due` by.
     gap: Option<Duration>,
-    /// How early a frame paced by the display may come (`set_lead`), on top of `FRAME_SLACK`.
-    lead: Duration,
+    /// The display link's interval while it paces the frames (`set_link`).
+    link: Option<Duration>,
 }
 
 impl Default for Clock {
     fn default() -> Self {
-        Clock { first: None, last: None, focused: None, last_change: None, next_due: None, gap: None, lead: Duration::ZERO }
+        Clock { first: None, last: None, focused: None, last_change: None, next_due: None, gap: None, link: None }
     }
 }
 
@@ -1124,10 +1124,12 @@ impl Clock {
         self.gap = pacing.frame_gap();
     }
 
-    /// Frames that follow the display draw on the refresh nearest their due time, up to `lead`
-    /// (half a refresh) early; such a frame still counts as the due one. Zero on the loop timer.
-    pub fn set_lead(&mut self, lead: Duration) {
-        self.lead = lead;
+    /// Frames paced by a display link `link` apart draw on the tick nearest their due time, up
+    /// to half a tick early, and such a frame counts as the due one. The phase also stays
+    /// within the ticks the gap spans of the frame just drawn, so the next due frame always
+    /// lands on a tick, even on a display a little faster than the rate. None on the loop timer.
+    pub fn set_link(&mut self, link: Option<Duration>) {
+        self.link = link;
     }
 
     /// Updates `u` for a frame drawn at `now`.
@@ -1136,18 +1138,26 @@ impl Clock {
         let last = self.last.unwrap_or(now);
         self.last = Some(now);
         if let Some(gap) = self.gap {
+            let slack = FRAME_SLACK + self.link.map_or(Duration::ZERO, |p| p / 2);
+            // On the loop timer the next frame is at most a gap (and the slack) away. On a link,
+            // at most the whole ticks nearest the gap and half a tick: the tick that far on
+            // admits it even when it comes up to FRAME_SLACK early.
+            let cap = match self.link {
+                Some(p) => now + p.mul_f64((gap.as_secs_f64() / p.as_secs_f64()).round().max(1.0)) + p / 2,
+                None => now + gap + FRAME_SLACK,
+            };
             // Only a frame the pacing admits moves the phase; a redraw for content or a resize
             // in between leaves it. A pause or stall (over a gap behind) restarts it, no burst.
             let due = match self.next_due {
                 None => now + gap,
-                Some(d) if now + FRAME_SLACK + self.lead >= d => {
+                Some(d) if now + slack >= d => {
                     let n = d + gap;
                     if now.saturating_duration_since(n) > gap { now + gap } else { n }
                 }
                 Some(d) => d,
             };
             // A frame admitted early (within the slack) must not pull the phase early with it.
-            self.next_due = Some(due.min(now + gap + FRAME_SLACK + self.lead));
+            self.next_due = Some(due.min(cap));
         }
         u.time = now.saturating_duration_since(first).as_secs_f32();
         u.time_delta = now.saturating_duration_since(last).as_secs_f32();

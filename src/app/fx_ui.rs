@@ -93,10 +93,14 @@ impl App {
         let mut next: Option<Instant> = None;
         let mut wake = |gpu: &mut Gpu| {
             let period = gpu.win.display_period();
-            let ticked = gpu.win.take_display_tick();
+            let tick = gpu.win.take_display_tick();
+            // A frame that found no free surface (with or without an effect) draws on this tick.
+            if tick.owed {
+                gpu.redraw();
+            }
             let Some(fx) = gpu.fx.as_mut() else { return gpu.win.follow_display(None) };
             match fx.due {
-                Some(t) if fx_due_now(t, now, period, ticked) => {
+                Some(t) if fx_due_now(t, now, period, tick.ticked) => {
                     fx.due = None;
                     gpu.redraw_fx();
                 }
@@ -104,6 +108,10 @@ impl App {
                     let t = fx_backstop(t, period);
                     next = Some(next.map_or(t, |n| n.min(t)));
                 }
+                // A tick with no frame due and none asked for since the last one: the frame that
+                // was asked for never drew (a hidden window, a recovery, a lost surface), so the
+                // link stops until a frame paces the effect again.
+                None if tick.ticked => gpu.win.follow_display(None),
                 None => {}
             }
         };
@@ -167,19 +175,21 @@ impl App {
     }
 }
 
-/// Whether an effect frame due at `t` draws now. On the display (`period`), it draws on the
-/// refresh nearest `t` (`ticked`: this wake is a refresh), or once a refresh is overdue (a
-/// covered window, a paused link); on the loop timer, at `t`.
+/// Whether an effect frame due at `t` draws now. On the display link (ticks `period` apart),
+/// it draws on the tick nearest `t` (`ticked`: this wake is a tick), or once the backstop is
+/// reached (a covered window, a paused link); on the loop timer, at `t`.
 pub(super) fn fx_due_now(t: Instant, now: Instant, period: Option<std::time::Duration>, ticked: bool) -> bool {
     match period {
-        Some(p) => (ticked && t <= now + p / 2) || t + p <= now,
+        Some(p) => (ticked && t <= now + p / 2) || fx_backstop(t, period) <= now,
         None => t <= now,
     }
 }
 
-/// The loop timer for a frame due at `t`: on the display only a backstop, a refresh after it.
+/// The loop timer for a frame due at `t`: on the display link only a backstop, a tick and a
+/// half after it, so a tick (at most half a tick from `t`, or a tick after a frame due at once
+/// under Full) always comes first.
 pub(super) fn fx_backstop(t: Instant, period: Option<std::time::Duration>) -> Instant {
-    period.map_or(t, |p| t + p)
+    period.map_or(t, |p| t + p + p / 2)
 }
 
 impl FxRuntime {
@@ -261,9 +271,9 @@ impl FxRuntime {
         FxRuntime { ids: Default::default(), signals: false, keep_alpha: false, active: false, terms: None, clock: Clock::default(), uniforms: Uniforms::default(), last_uniforms: Uniforms::default(), live_lines: false, animation: Animation::Off, preset: None, due: None, colors: None, palette_fills: 0, rects: Default::default() }
     }
 
-    /// How early a frame paced by the display may come (`Clock::set_lead`).
-    pub(super) fn set_lead(&mut self, lead: std::time::Duration) {
-        self.clock.set_lead(lead);
+    /// The display link's interval while it paces the frames (`Clock::set_link`).
+    pub(super) fn set_link(&mut self, link: Option<std::time::Duration>) {
+        self.clock.set_link(link);
     }
 
     /// When the animation's next frame is due under `pacing`; None when it needs none.
@@ -677,42 +687,78 @@ mod tests {
         assert_eq!(allocs, 0);
     }
 
-    /// Frames drawn in `secs` when each refresh `period` apart (from `phase`) asks as
-    /// `fx_frame_tick` does, under `pacing`.
-    fn display_paced_frames(pacing: render_fx::Pacing, period: std::time::Duration, phase: std::time::Duration, secs: u64) -> usize {
+    /// The main loop under a display link that fires every `link` (from `phase`, with a little
+    /// jitter), with the loop's backstop timer, for `secs`, as `fx_frame_tick` and the frame's
+    /// `pace_fx` run them under `pacing`: (frames drawn, loop wakes, frames the backstop drew).
+    fn display_paced(pacing: render_fx::Pacing, link: std::time::Duration, phase: std::time::Duration, secs: u64) -> (u64, u64, u64) {
+        let us = std::time::Duration::from_micros;
         let t0 = Instant::now();
+        let end = t0 + std::time::Duration::from_secs(secs);
         let mut clock = render_fx::Clock::default();
         let mut u = Uniforms::default();
         clock.set_pacing(pacing);
-        clock.set_lead(period / 2);
+        clock.set_link(Some(link));
         clock.frame(&mut u, t0, (10, 10), None, true);
-        let mut frames = 1;
-        let mut tick = t0 + phase;
-        while tick < t0 + std::time::Duration::from_secs(secs) {
-            let due = clock.next_frame(Animation::Always, tick, true, pacing).unwrap();
-            if fx_due_now(due, tick, Some(period), true) {
-                clock.frame(&mut u, tick, (10, 10), None, true);
-                frames += 1;
+        let mut due = clock.next_frame(Animation::Always, t0, true, pacing).unwrap();
+        let (mut frames, mut wakes, mut backstops) = (0, 0, 0);
+        let mut k: u32 = 0;
+        // Each tick up to 0.8 ms late.
+        let tick_at = |k: u32| t0 + phase + link * k + us(u64::from(k.wrapping_mul(7919) % 800));
+        loop {
+            let tick = tick_at(k);
+            let timer = fx_backstop(due, Some(link));
+            let (now, ticked) = if tick <= timer { (tick, true) } else { (timer, false) };
+            if now >= end {
+                break;
             }
-            tick += period;
+            wakes += 1;
+            if ticked {
+                k += 1;
+            }
+            if fx_due_now(due, now, Some(link), ticked) {
+                clock.frame(&mut u, now, (10, 10), None, true);
+                frames += 1;
+                backstops += u64::from(!ticked);
+                due = clock.next_frame(Animation::Always, now, true, pacing).unwrap();
+            }
         }
-        frames
+        (frames, wakes, backstops)
     }
 
     #[test]
-    fn display_paced_frames_keep_the_rate() {
+    fn display_paced_frames_land_on_the_links_ticks() {
         use render_fx::Pacing;
-        let us = std::time::Duration::from_micros;
-        for (period, name) in [(us(16_667), "60 Hz"), (us(16_600), "60.2 Hz"), (us(16_700), "59.9 Hz"), (us(8_333), "120 Hz")] {
-            for phase in [us(0), us(3_000), us(8_000), us(15_000)] {
-                for (pacing, rate) in [(Pacing::Smooth, 60.0), (Pacing::Balanced, 30.0), (Pacing::Light, 15.0)] {
-                    let n = display_paced_frames(pacing, period, phase, 10) as f64 / 10.0;
-                    assert!((n - rate).abs() <= rate * 0.02 + 0.2, "{name}, phase {phase:?}, {pacing:?}: {n} frames/s, want {rate}");
-                }
-                let full = display_paced_frames(Pacing::Full, period, phase, 10) as f64 / 10.0;
-                let hz = 1.0 / period.as_secs_f64();
-                assert!((full - hz).abs() < 1.0, "{name}: Full draws every refresh, {full}");
+        let hz = |f: f64| std::time::Duration::from_secs_f64(1.0 / f);
+        // (display, pacing, the link's rate: the effect's where the display divides into it).
+        let cases = [
+            (60.0, Pacing::Smooth, 60.0),
+            (60.0, Pacing::Balanced, 30.0),
+            (60.0, Pacing::Light, 15.0),
+            (60.0, Pacing::Full, 60.0),
+            (60.2, Pacing::Smooth, 60.2),
+            (59.9, Pacing::Smooth, 59.9),
+            (59.9, Pacing::Balanced, 59.9 / 2.0),
+            (120.0, Pacing::Smooth, 60.0),
+            (120.0, Pacing::Balanced, 30.0),
+            (120.0, Pacing::Light, 15.0),
+            (120.0, Pacing::Full, 120.0),
+        ];
+        for (display, pacing, rate) in cases {
+            // The link's first tick comes within one interval.
+            for phase in [0.0, 0.2, 0.5, 0.9].map(|f| hz(rate).mul_f64(f)) {
+                let (frames, wakes, backstops) = display_paced(pacing, hz(rate), phase, 10);
+                let fps = frames as f64 / 10.0;
+                let name = format!("{display} Hz, {pacing:?}, phase {phase:?}");
+                assert!((fps - rate).abs() <= rate * 0.01 + 0.2, "{name}: {fps} frames/s, want {rate}");
+                assert_eq!(backstops, 0, "{name}: the backstop timer drew {backstops} frames");
+                assert!(wakes <= frames + 1, "{name}: {wakes} wakes for {frames} frames");
             }
+        }
+        // A link that ticks at the display's rate whatever it is asked: the rate still holds.
+        for (pacing, rate) in [(Pacing::Balanced, 30.0), (Pacing::Light, 15.0)] {
+            let (frames, _, backstops) = display_paced(pacing, hz(60.0), std::time::Duration::from_millis(5), 10);
+            assert!((frames as f64 / 10.0 - rate).abs() <= rate * 0.01 + 0.2, "{pacing:?} on a 60 Hz link: {frames}");
+            assert_eq!(backstops, 0);
         }
     }
 
@@ -723,8 +769,9 @@ mod tests {
         assert!(!fx_due_now(t, t, Some(p), false), "not on a refresh");
         assert!(fx_due_now(t, t - p / 3, Some(p), true), "the refresh nearest it");
         assert!(!fx_due_now(t, t - p, Some(p), true), "a refresh too early");
-        assert!(fx_due_now(t, t + p, Some(p), false), "a refresh overdue: the backstop");
-        assert_eq!(fx_backstop(t, Some(p)), t + p);
+        assert!(!fx_due_now(t, t + p, Some(p), false), "a tick late is not yet the backstop");
+        assert!(fx_due_now(t, t + p + p / 2, Some(p), false), "a tick and a half overdue: the backstop");
+        assert_eq!(fx_backstop(t, Some(p)), t + p + p / 2);
         assert_eq!(fx_backstop(t, None), t);
         assert!(fx_due_now(t, t, None, false), "the loop timer");
     }

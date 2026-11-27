@@ -523,21 +523,38 @@ fn the_layer_follows_its_root_layer() {
     assert_eq!(surface.layer.contentsScale(), 1.0, "the root's scale, not the argument's, wins under a root");
 }
 
-/// The layer's own surfaces (macOS 14 and later): up to three are drawn into at once, a failed
-/// frame only gives its surface back, a completed one shows its surface as the layer's contents
-/// and frees it, and a new size makes new ones.
+/// Waits up to 5 s for `f`, polling (a completed handler runs on Metal's own queue, at or after
+/// a wait's end).
+fn eventually(what: &str, mut f: impl FnMut() -> bool) {
+    let start = std::time::Instant::now();
+    while !f() {
+        assert!(start.elapsed() < std::time::Duration::from_secs(5), "{what}");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+/// A frame with nothing on it.
+fn blank() -> Frame {
+    Frame { fade: 1.0, ..Default::default() }
+}
+
+/// The layer's own surfaces (macOS 14 and later): up to three are drawn into at once; a failed
+/// frame gives its surface back unshown; a shown surface stays out of use until a later frame
+/// replaces it as the layer's contents; one the window server still uses is never handed out; a
+/// new size makes new ones.
 #[test]
 fn frames_go_to_the_layers_own_surfaces() {
     use super::surface::{Next, Surface, FORMAT};
     use objc2_metal::MTLCommandBuffer;
     let shared = test_device();
-    let surface = Surface::detached();
+    let surface = Surface::contents_for_tests();
     let take = |size| match surface.next_contents(&shared.device, size).unwrap() {
         Next::Contents(i, t) => Some((i, t)),
         _ => None,
     };
     let held: Vec<_> = (0..3).map(|_| take((64, 32)).expect("a free surface")).collect();
     let mut ids: Vec<usize> = held.iter().map(|(i, _)| *i).collect();
+    ids.sort();
     ids.dedup();
     assert_eq!(ids.len(), 3);
     assert!(held.iter().all(|(_, t)| (t.width(), t.height(), t.pixelFormat()) == (64, 32, FORMAT)));
@@ -546,24 +563,134 @@ fn frames_go_to_the_layers_own_surfaces() {
     let contents = || unsafe { surface.layer.contents() }.map(|c| objc2::rc::Retained::as_ptr(&c));
     let before = contents();
     let generation = crate::gpu_pick::current_generation();
+    let (a, b, c) = (held[0].0, held[1].0, held[2].0);
+    surface.give_back(a);
+    assert_eq!(take((64, 32)).map(|(i, _)| i), Some(a), "a failed frame gives its surface back");
+    assert_eq!(contents(), before, "and is not shown");
+    // b shows; c, which never got a command buffer, comes back; a is still drawn into.
+    let show = |i| {
+        let cb = shared.command_buffer(generation).unwrap();
+        surface.show(i, &cb);
+        cb.commit();
+        cb.waitUntilCompleted();
+    };
+    show(b);
+    eventually("the completed frame is the layer's contents", || contents().is_some() && contents() != before);
+    let first = contents();
+    surface.give_back(c);
+    surface.give_back(a);
+    let mut free: Vec<usize> = std::iter::from_fn(|| take((64, 32)).map(|(i, _)| i)).collect();
+    free.sort();
+    assert_eq!(free, [a.min(c), a.max(c)], "the surface on screen stays out of use");
+    // A later frame replaces it; then it is free again, and the later one is not.
+    show(a);
+    eventually("the later frame is the layer's contents", || contents() != first);
+    surface.give_back(c);
+    let mut free: Vec<usize> = std::iter::from_fn(|| take((64, 32)).map(|(i, _)| i)).collect();
+    free.sort();
+    assert_eq!(free, [b.min(c), b.max(c)], "the replaced surface is free, the shown one is not");
+    // One the window server still holds is never handed out.
+    surface.give_back(b);
+    surface.give_back(c);
+    surface.hold_in_server(b, true);
+    let free: Vec<usize> = std::iter::from_fn(|| take((64, 32)).map(|(i, _)| i)).collect();
+    assert_eq!(free, [c], "a surface the window server uses is not handed out");
+    surface.hold_in_server(b, false);
+    surface.give_back(c);
+    assert!(take((64, 32)).is_some(), "let go, it is free again");
+    let (j, t) = take((80, 40)).expect("a surface of the new size");
+    assert_eq!((t.width(), t.height()), (80, 40));
+    surface.give_back(j);
+    // The steady frame on this path makes no Rust allocation: handing out a surface, showing it.
     let cb = shared.command_buffer(generation).unwrap();
-    surface.show(held[0].0, &cb, false);
-    cb.commit();
-    assert_eq!(take((64, 32)).map(|(i, _)| i), Some(held[0].0), "a failed frame gives its surface back");
-    assert_eq!(contents(), before, "a failed frame is not shown");
-    let cb = shared.command_buffer(generation).unwrap();
-    surface.show(held[1].0, &cb, true);
+    let (i, allocs) = crate::render_fx::counting::count(|| match surface.next_contents(&shared.device, (80, 40)) {
+        Ok(Next::Contents(i, _)) => {
+            surface.show(i, &cb);
+            Some(i)
+        }
+        _ => None,
+    });
+    assert!(i.is_some());
+    assert_eq!(allocs, 0, "a frame on its own surfaces allocated");
     cb.commit();
     cb.waitUntilCompleted();
-    // The completed handler runs on Metal's own queue, at or after the wait's end.
-    let start = std::time::Instant::now();
-    while take((64, 32)).is_none() {
-        assert!(start.elapsed() < std::time::Duration::from_secs(5), "the shown surface is freed");
-        std::thread::sleep(std::time::Duration::from_millis(5));
+}
+
+/// A surface that cannot be made mid-frame follows the allocation rule: the frame is a lost
+/// device (the app's recovery, with its tries and the restart banner), and the window draws
+/// again once rebuilt.
+#[test]
+fn a_failed_surface_is_a_lost_device() {
+    let _one = loss_reports();
+    let _ = crate::gpu_pick::take_lost();
+    let mut win = MetalWindow::on_contents_layer(test_device(), Renderer::cpu_only(FACE, PX), (64, 32));
+    super::fail_textures(1);
+    assert_eq!(win.render(&blank(), None, None).unwrap_err(), crate::gpu_window::RenderError::Skip);
+    super::fail_textures(0);
+    let why = crate::gpu_pick::take_lost().expect("reported as a lost device");
+    assert!(why.starts_with("Metal: ") && why.contains("surface"), "{why}");
+    win.rebuild(&crate::gpu_shared::GpuShared::Metal(test_device().clone()), None).unwrap();
+    win.render(&blank(), None, None).unwrap().kept.unwrap();
+}
+
+/// A frame that finds no free surface is owed: the display link's next tick asks for it again,
+/// with no other event, and it draws then.
+#[test]
+fn a_frame_with_no_free_surface_draws_on_a_later_tick() {
+    let mut win = MetalWindow::on_contents_layer(test_device(), Renderer::cpu_only(FACE, PX), (64, 32));
+    // The window server holds every surface, as right after each was shown, until all three
+    // are made and held.
+    let mut held = 0;
+    let skipped = loop {
+        let made = win.surface().targets_made();
+        for i in held..made {
+            win.surface().hold_in_server(i, true);
+        }
+        held = made;
+        match win.render(&blank(), None, None) {
+            Ok(d) => {
+                d.kept.unwrap();
+                assert!(held < 3, "a fourth surface");
+            }
+            Err(e) => break e,
+        }
+    };
+    assert_eq!((skipped, held), (crate::gpu_window::RenderError::Skip, 3));
+    assert!(win.last_acquire().dropped);
+    // Every frame drawn so far is done (a later buffer on the same queue is).
+    let cb = test_device().command_buffer(crate::gpu_pick::current_generation()).unwrap();
+    objc2_metal::MTLCommandBuffer::commit(&*cb);
+    objc2_metal::MTLCommandBuffer::waitUntilCompleted(&*cb);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let none = crate::gpu_window::DisplayTick::default();
+    assert_eq!(win.take_display_tick(), none, "no tick yet: nothing asks");
+    for i in 0..held {
+        win.surface().hold_in_server(i, false);
     }
-    assert!(contents().is_some() && contents() != before, "a completed frame is the layer's contents");
-    let (_, t) = take((80, 40)).expect("a surface of the new size");
-    assert_eq!((t.width(), t.height()), (80, 40));
+    win.surface().tick();
+    assert_eq!(win.take_display_tick(), crate::gpu_window::DisplayTick { ticked: true, owed: true }, "the tick asks for the owed frame");
+    win.render(&blank(), None, None).expect("the owed frame draws").kept.unwrap();
+    win.surface().tick();
+    assert_eq!(win.take_display_tick(), crate::gpu_window::DisplayTick { ticked: true, owed: false }, "asked once");
+}
+
+/// A window closed while its frame is on the way: the frame's completed handler never holds
+/// the layer's last reference, so the layer (and its observers on the root) go on the thread
+/// that made them (`TrackingLayer`'s drop checks it).
+#[test]
+fn a_closed_windows_layer_goes_on_its_own_thread() {
+    use objc2_metal::MTLCommandBuffer;
+    let shared = test_device();
+    for _ in 0..20 {
+        let mut win = MetalWindow::on_contents_layer(shared, Renderer::cpu_only(FACE, PX), (64, 32));
+        win.render(&blank(), None, None).unwrap().kept.unwrap();
+        drop(win);
+    }
+    // Every handler has run once a later buffer on the same queue is done, and some time after.
+    let cb = shared.command_buffer(crate::gpu_pick::current_generation()).unwrap();
+    cb.commit();
+    cb.waitUntilCompleted();
+    std::thread::sleep(std::time::Duration::from_millis(100));
 }
 
 /// Steady frames reuse their staging chunks: no new Metal buffer per frame.
