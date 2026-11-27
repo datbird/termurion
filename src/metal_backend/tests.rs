@@ -693,6 +693,29 @@ fn a_closed_windows_layer_goes_on_its_own_thread() {
     std::thread::sleep(std::time::Duration::from_millis(100));
 }
 
+/// A drawable window (egui, macOS before 14) closed with a presented frame on the way: the
+/// drawable may let go of the layer last, on another thread, but the root's observers are gone
+/// on the window's own thread first (`TrackingLayer`'s drop checks that).
+#[test]
+fn a_closed_drawable_layer_goes_on_its_own_thread() {
+    use objc2_metal::{MTLCommandBuffer, MTLDrawable};
+    let shared = test_device();
+    let root = objc2_quartz_core::CALayer::new();
+    for _ in 0..5 {
+        let surface = super::surface::Surface::under(&root);
+        surface.configure(&shared.device, (64, 32), 1.0);
+        let super::surface::Next::Drawable(d, _) = surface.next() else { panic!("a drawable") };
+        let cb = shared.command_buffer(crate::gpu_pick::current_generation()).unwrap();
+        cb.presentDrawable(objc2::runtime::ProtocolObject::<dyn MTLDrawable>::from_ref(&*d));
+        cb.commit();
+        drop(d);
+        drop(surface);
+        cb.waitUntilCompleted();
+    }
+    // Whatever still holds the layers lets go meanwhile.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+}
+
 /// Steady frames reuse their staging chunks: no new Metal buffer per frame.
 #[test]
 fn steady_frames_make_no_staging_buffers() {

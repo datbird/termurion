@@ -32,6 +32,8 @@ pub(super) struct FxRuntime {
     /// When the animation's next frame is due ("Effects animation" caps the rate); the idle
     /// loop asks for it then (`App::fx_frame_tick`).
     pub(super) due: Option<Instant>,
+    /// Display link ticks in a row that found no frame due (`fx_frame_tick`).
+    empty_ticks: u8,
     /// The pane colors the palette and color uniforms were last filled from.
     colors: Option<PaneColors>,
     palette_fills: u64,
@@ -102,16 +104,24 @@ impl App {
             match fx.due {
                 Some(t) if fx_due_now(t, now, period, tick.ticked) => {
                     fx.due = None;
+                    fx.empty_ticks = 0;
                     gpu.redraw_fx();
                 }
                 Some(t) => {
+                    fx.empty_ticks = 0;
                     let t = fx_backstop(t, period);
                     next = Some(next.map_or(t, |n| n.min(t)));
                 }
-                // A tick with no frame due and none asked for since the last one: the frame that
-                // was asked for never drew (a hidden window, a recovery, a lost surface), so the
-                // link stops until a frame paces the effect again.
-                None if tick.ticked => gpu.win.follow_display(None),
+                // Ticks with no frame due: the frame asked for has not drawn. One such tick is a
+                // frame still on its way (under load); after two in a row it never drew (a hidden
+                // window, a recovery, a lost surface), so the link stops until a frame paces the
+                // effect again.
+                None if tick.ticked => {
+                    fx.empty_ticks = fx.empty_ticks.saturating_add(1);
+                    if fx.empty_ticks >= 2 {
+                        gpu.win.follow_display(None);
+                    }
+                }
                 None => {}
             }
         };
@@ -157,7 +167,7 @@ impl App {
         let live_lines = render_fx::SWITCHES.iter().zip(&wanted.1).any(|((_, c, ..), on)| *c == Some("LINE_EFFECT") && *on);
         let signals = render_fx::SWITCHES.iter().zip(&wanted.1).find(|((_, c, ..), _)| c.is_none()).is_none_or(|(_, on)| *on);
         let crate::gpu_window::BuiltEffects { errors, active, terms, animations, preset } = crate::gpu_window::build_effects(&mut gpu.win, &plugins, &wanted.0, &switches);
-        gpu.fx = Some(FxRuntime { ids: wanted, active, terms: terms.filter(|_| active), clock: Clock::default(), uniforms: Uniforms::default(), last_uniforms: Uniforms::default(), live_lines, animation: strongest(&animations), preset, keep_alpha, signals, due: None, colors: None, palette_fills: 0, rects: Default::default() });
+        gpu.fx = Some(FxRuntime { ids: wanted, active, terms: terms.filter(|_| active), clock: Clock::default(), uniforms: Uniforms::default(), last_uniforms: Uniforms::default(), live_lines, animation: strongest(&animations), preset, keep_alpha, signals, due: None, empty_ticks: 0, colors: None, palette_fills: 0, rects: Default::default() });
         if errors.is_empty() {
             self.banners.clear(BANNER);
         } else {
@@ -268,7 +278,7 @@ impl FxRuntime {
 
     #[cfg(test)]
     fn bare() -> FxRuntime {
-        FxRuntime { ids: Default::default(), signals: false, keep_alpha: false, active: false, terms: None, clock: Clock::default(), uniforms: Uniforms::default(), last_uniforms: Uniforms::default(), live_lines: false, animation: Animation::Off, preset: None, due: None, colors: None, palette_fills: 0, rects: Default::default() }
+        FxRuntime { ids: Default::default(), signals: false, keep_alpha: false, active: false, terms: None, clock: Clock::default(), uniforms: Uniforms::default(), last_uniforms: Uniforms::default(), live_lines: false, animation: Animation::Off, preset: None, due: None, empty_ticks: 0, colors: None, palette_fills: 0, rects: Default::default() }
     }
 
     /// The display link's interval while it paces the frames (`Clock::set_link`).

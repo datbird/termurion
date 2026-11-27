@@ -35,17 +35,32 @@ define_class!(
     }
 );
 
-/// The root layer a `TrackingLayer` follows, and the thread that made it.
+/// The root layer a `TrackingLayer` follows, whether it still observes it, and the thread that
+/// made it.
 struct Tracking {
     root: Weak<CALayer>,
+    observing: Cell<bool>,
     made_on: std::thread::ThreadId,
 }
 
 impl Drop for TrackingLayer {
     fn drop(&mut self) {
-        // The observers are removed on the thread that added them (the main thread in the app):
-        // nothing else may hold the layer's last reference (`Presenter`).
-        debug_assert_eq!(std::thread::current().id(), self.ivars().made_on, "the Metal layer was released off its own thread");
+        // `Surface::drop` stops observing on the owner's thread. Core Animation may still let go
+        // of the layer itself on another thread later (a presented drawable, its own deferred
+        // releases), which is safe for a layer out of the tree; the root's observers never are.
+        if self.ivars().observing.get() {
+            debug_assert_eq!(std::thread::current().id(), self.ivars().made_on, "the Metal layer's observers were removed off its own thread");
+            self.stop_observing();
+        }
+    }
+}
+
+impl TrackingLayer {
+    /// Removes the observers from the root layer, once. On the thread that added them.
+    fn stop_observing(&self) {
+        if !self.ivars().observing.replace(false) {
+            return;
+        }
         // The root layer may be gone already; then the observers went with it.
         if let Some(root) = self.ivars().root.load() {
             // SAFETY: both observers were registered in `new`.
@@ -55,15 +70,13 @@ impl Drop for TrackingLayer {
             }
         }
     }
-}
 
-impl TrackingLayer {
     fn context() -> *mut c_void {
         TrackingLayer::class() as *const AnyClass as *mut c_void
     }
 
     fn new(root: &CALayer) -> Retained<TrackingLayer> {
-        let this = Self::alloc().set_ivars(Tracking { root: Weak::new(root), made_on: std::thread::current().id() });
+        let this = Self::alloc().set_ivars(Tracking { root: Weak::new(root), observing: Cell::new(true), made_on: std::thread::current().id() });
         // SAFETY: initializing a CAMetalLayer subclass with no requirements of its own.
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
         root.addSublayer(&this);
@@ -187,6 +200,8 @@ struct DisplayLink {
     link: Retained<CADisplayLink>,
     /// The frame gap the link runs for (None inside: the display's rate); None: no effect frames.
     running: Cell<Option<Option<Duration>>>,
+    /// The rate `Ticks::interval` was measured for.
+    measured: Cell<Option<Option<Duration>>>,
     paused: Cell<bool>,
 }
 
@@ -209,7 +224,7 @@ impl DisplayLink {
         // The common modes, as winit's own wake timer.
         // SAFETY: the main run loop and a constant mode.
         unsafe { link.addToRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSRunLoopCommonModes) };
-        Some(DisplayLink { link, running: Cell::new(None), paused: Cell::new(true) })
+        Some(DisplayLink { link, running: Cell::new(None), measured: Cell::new(None), paused: Cell::new(true) })
     }
 
     /// Pauses the link when nothing wants it (no effect frames, no `owed` frame), runs it when
@@ -348,10 +363,25 @@ impl Target {
 
     /// Free to draw into: its frame is done and the layer shows a later one (or it never showed
     /// one), and the window server no longer uses it.
-    fn free(&self, shown: u64) -> bool {
+    fn free(&self, presenter: &Presenter) -> bool {
+        self.free_with(presenter, || {})
+    }
+
+    /// `free`, with `between` run after the pending flag is read and before the shown serial is
+    /// (tests put a completed handler there). The order matters: the handler stores the shown
+    /// serial and then clears `pending` (both Release), so a `pending` read as false (Acquire)
+    /// guarantees the shown serial read after it is at least that handler's. Read the other way
+    /// round, a handler finishing in between leaves the surface it just put on screen looking
+    /// free.
+    fn free_with(&self, presenter: &Presenter, between: impl FnOnce()) -> bool {
+        if self.pending.load(Ordering::Acquire) {
+            return false;
+        }
+        between();
+        let shown = presenter.shown.load(Ordering::Acquire);
         let serial = self.serial.load(Ordering::Acquire);
         // SAFETY: a live surface.
-        !self.pending.load(Ordering::Acquire) && (serial == 0 || serial != shown) && unsafe { IOSurfaceIsInUse(self.surface.0.as_ptr()) } == 0
+        (serial == 0 || serial != shown) && unsafe { IOSurfaceIsInUse(self.surface.0.as_ptr()) } == 0
     }
 }
 
@@ -374,6 +404,8 @@ pub struct Surface {
     next_target: Cell<usize>,
     /// The last frame's serial.
     serial: Cell<u64>,
+    /// The layer as the tracking layer it is (all but `detached`), to stop its observers in drop.
+    tracking: Option<Retained<TrackingLayer>>,
     /// Test layers keep their root here.
     _root: Option<Retained<CALayer>>,
 }
@@ -381,7 +413,13 @@ pub struct Surface {
 impl Surface {
     fn with(layer: Retained<CAMetalLayer>, display: Option<DisplayLink>, ticks: Rc<Ticks>, contents: bool, root: Option<Retained<CALayer>>) -> Surface {
         let presenter = Arc::new(Presenter { layer: Mutex::new(Some(layer.clone())), shown: AtomicU64::new(0) });
-        Surface { layer, display, ticks, contents, owed: Cell::new(false), presenter, targets: RefCell::default(), targets_size: Cell::new((0, 0)), next_target: Cell::new(0), serial: Cell::new(0), _root: root }
+        Surface { layer, display, ticks, contents, owed: Cell::new(false), presenter, targets: RefCell::default(), targets_size: Cell::new((0, 0)), next_target: Cell::new(0), serial: Cell::new(0), tracking: None, _root: root }
+    }
+
+    fn tracked(layer: Retained<TrackingLayer>, display: Option<DisplayLink>, ticks: Rc<Ticks>, contents: bool, root: Option<Retained<CALayer>>) -> Surface {
+        let mut s = Surface::with(layer.clone().into_super(), display, ticks, contents, root);
+        s.tracking = Some(layer);
+        s
     }
 
     /// The root layer of `ns_view`, which is made layer-backed. Main thread only.
@@ -397,7 +435,7 @@ impl Surface {
     /// A new layer over the whole of `ns_view` that shows drawables (an egui window). Main thread only.
     pub fn attach(ns_view: NonNull<c_void>) -> Result<Surface, String> {
         let (_, root) = Self::root_of(ns_view)?;
-        Ok(Surface::with(TrackingLayer::new(&root).into_super(), None, Rc::default(), false, None))
+        Ok(Surface::tracked(TrackingLayer::new(&root), None, Rc::default(), false, None))
     }
 
     /// A terminal window's layer over `ns_view`: on macOS 14 and later it shows its own
@@ -407,7 +445,7 @@ impl Surface {
         let ticks: Rc<Ticks> = Rc::default();
         let display = DisplayLink::new(view, &ticks);
         let contents = display.is_some();
-        Ok(Surface::with(TrackingLayer::new(&root).into_super(), display, ticks, contents, None))
+        Ok(Surface::tracked(TrackingLayer::new(&root), display, ticks, contents, None))
     }
 
     /// A layer in no window (tests).
@@ -419,7 +457,7 @@ impl Surface {
     /// A tracking layer under `root`, a layer in no window (tests).
     #[cfg(test)]
     pub fn under(root: &CALayer) -> Surface {
-        Surface::with(TrackingLayer::new(root).into_super(), None, Rc::default(), false, None)
+        Surface::tracked(TrackingLayer::new(root), None, Rc::default(), false, None)
     }
 
     /// A tracking layer under a root of its own that shows its own surfaces, with ticks given by
@@ -427,7 +465,7 @@ impl Surface {
     #[cfg(test)]
     pub fn contents_for_tests() -> Surface {
         let root = CALayer::new();
-        Surface::with(TrackingLayer::new(&root).into_super(), None, Rc::default(), true, Some(root))
+        Surface::tracked(TrackingLayer::new(&root), None, Rc::default(), true, Some(root))
     }
 
     /// A display tick, as the link's callback gives it (tests).
@@ -496,11 +534,13 @@ impl Surface {
     pub fn follow_display(&self, gap: Option<Option<Duration>>) {
         let Some(d) = &self.display else { return };
         if d.running.replace(gap) != gap {
-            if let Some(gap) = gap {
-                // The link ticks at the effect's own rate where the display allows it; 0 is the display's rate.
-                let fps = gap.map_or(0.0, |g| (1.0 / g.as_secs_f64()).round() as f32);
-                d.link.setPreferredFrameRateRange(CAFrameRateRange { minimum: fps, maximum: fps, preferred: fps });
-                // Until the link's own callbacks say otherwise.
+            // The link ticks at the effect's own rate where the display allows it; 0 is the
+            // display's rate, which is also what an owed frame alone waits for.
+            let fps = gap.flatten().map_or(0.0, |g| (1.0 / g.as_secs_f64()).round() as f32);
+            d.link.setPreferredFrameRateRange(CAFrameRateRange { minimum: fps, maximum: fps, preferred: fps });
+            if let Some(gap) = gap.filter(|g| d.measured.replace(Some(*g)) != Some(*g)) {
+                // A new rate: until the link's own callbacks say otherwise. The same rate again
+                // after a pause keeps the interval measured for it.
                 self.ticks.interval.set(gap.map_or(1.0 / 60.0, |g| g.as_secs_f64()));
                 self.ticks.last.set(0.0);
             }
@@ -569,10 +609,9 @@ impl Surface {
             // A frame still on its way keeps its own surface alive until it is shown.
             targets.clear();
         }
-        let shown = self.presenter.shown.load(Ordering::Acquire);
         let start = self.next_target.get();
         let n = targets.len();
-        let i = match (0..n).map(|k| (start + k) % n).find(|&i| targets[i].free(shown)) {
+        let i = match (0..n).map(|k| (start + k) % n).find(|&i| targets[i].free(&self.presenter)) {
             Some(i) => i,
             None if n < TARGETS => {
                 targets.push(Target::new(device, &self.presenter, size)?);
@@ -635,11 +674,51 @@ impl Drop for Surface {
         // last reference goes with `self.layer` below and never on Metal's completion queue.
         let layer = self.presenter.layer.lock().unwrap_or_else(|e| e.into_inner()).take();
         drop(layer);
+        // The root's observers go here, on the owner's thread, whoever lets go of the layer last
+        // (on the drawable path a presented drawable can, on Metal's thread).
+        if let Some(t) = &self.tracking {
+            t.stop_observing();
+        }
         self.layer.removeFromSuperlayer();
         // A thread with no run loop (a test's) commits its implicit transaction here, so the
         // layers it holds are let go on this thread.
         if MainThreadMarker::new().is_none() {
             flush_transactions();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A surface is free only once a later frame replaced it on screen; a handler finishing
+    /// between `free`'s two reads (the frame it just showed is this surface's) must not make it
+    /// look free.
+    #[test]
+    fn a_handler_finishing_mid_check_never_frees_the_shown_surface() {
+        let device = &super::super::test_device().device;
+        let presenter = Presenter { layer: Mutex::new(None), shown: AtomicU64::new(2) };
+        let t = Target::new(device, &Arc::new(Presenter { layer: Mutex::new(None), shown: AtomicU64::new(0) }), (8, 8)).unwrap();
+        // Frame 5 is drawn into it and its command buffer not done.
+        t.serial.store(5, Ordering::Release);
+        t.pending.store(true, Ordering::Release);
+        // The handler shows frame 5, as `Target::new`'s block does: shown, then pending.
+        let complete = || {
+            presenter.shown.store(5, Ordering::Release);
+            t.pending.store(false, Ordering::Release);
+        };
+        let ran = Cell::new(false);
+        assert!(!t.free_with(&presenter, || ran.set(true)), "pending: drawn into, not done");
+        // With `pending` read first, a handler that finishes right after that read is the same
+        // as one that finishes after the check.
+        assert!(!ran.get(), "nothing runs after a pending read");
+        complete();
+        // And one that finishes between the reads of a surface whose pending flag was already
+        // clear (an earlier frame of it) still reads its own newer shown serial.
+        assert!(!t.free_with(&presenter, || presenter.shown.store(5, Ordering::Release)), "it is on screen");
+        assert!(!t.free(&presenter), "and afterwards");
+        presenter.shown.store(6, Ordering::Release);
+        assert!(t.free(&presenter), "a later frame replaced it");
     }
 }
