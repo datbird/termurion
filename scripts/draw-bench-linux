@@ -7,7 +7,9 @@
 #
 #   cpu%   CPU time of the terminal's processes (app plus its session host) per wall second
 #   ws%    the same for the compositor (gnome-shell, Xorg, Xwayland, kwin)
-#   fps    not measured on Linux: no portable way to count presented frames, printed as "-"
+#   fps    only with DRAW_BENCH_FPS=1: the terminal is started with WAYLAND_DEBUG=1 and the busiest
+#          wl_surface's commit count per wall second is the frame rate (Wayland sessions only).
+#          The debug log costs the terminal CPU, so take cpu% from a run without it. Else "-".
 #   MB/s   bytes the workload got into the tty (only the flood is limited by the terminal)
 #   other% CPU of every other live process during the run (noise)
 #   RSS MB resident memory of the terminal's processes at the run's end
@@ -15,7 +17,8 @@
 # Configs: termurion, termurion-fx (Lightning), termurion-fx-<id> for each shipped render plugin
 # (aurora cyber embers fireworks glitch hologram katana lightning mecha neon phosphor shockwave
 # teleport), ghostty, ghostty-fx (the Lightning shader as a custom shader), alacritty, ptyxis.
-# Every Termurion config sets Effects animation to Smooth (60 frames/s).
+# Every Termurion config sets Effects animation to Smooth (60 frames/s) unless
+# DRAW_BENCH_EFFECTS says otherwise (0 Full, 1 Balanced, 2 Light, 3 Smooth).
 # A terminal that is not installed is skipped with a line saying so.
 #
 # Window: 220 columns by 63 rows for every terminal. Position is only applied where the session
@@ -265,7 +268,14 @@ quit_ours() {
     # Nothing of these names ran when we started, so what is left is ours.
     for n in $all_names; do pkill -u "$(id -u)" -x "$n" 2>/dev/null; done
     sleep 1
-    for n in $all_names; do pkill -9 -u "$(id -u)" -x "$n" 2>/dev/null; done
+    # A termurion-host left behind makes the next launch exit silently: wait until none is left.
+    local i
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        for n in $all_names; do pkill -9 -u "$(id -u)" -x "$n" 2>/dev/null; done
+        left=0; for n in $all_names; do pgrep -u "$(id -u)" -x "$n" > /dev/null && left=1; done
+        [ "$left" = 0 ] && break
+        sleep 1
+    done
     mypids=()
 }
 restore() {
@@ -305,9 +315,11 @@ setup() {
                 { print }
                 /^Name = "Default"$/ && !done { inside = 1; done = 1; print "Columns = " cols; print "Rows = " rows; print "\"Custom Command\" = \"Yes\""; print "Command = \"" cmd "\""; if (fx != "") print fx }
                 /^\[\[profile\]\]/ && done { inside = 0 }' "$saved/profiles.toml" > "$TCFG/profiles.toml"
-            # Effects animation = Smooth (3), and no saved window frame to override the grid.
-            { echo '[settings]'; echo 'EffectsAnimation = 3'
-              awk '/^\[settings\.SavedWindowFrames\]/{exit} /^\[settings\]$/{next} /^EffectsAnimation = /{next} {print}' "$saved/settings.toml"; } > "$TCFG/settings.toml"
+            # Effects animation = Smooth (3), no saved window frame to override the grid, and the
+            # "See Tips of the Day?" question put off for good (the state file is removed below, and
+            # that modal dialog froze the main window at 2 frames/s while it was up).
+            { echo '[settings]'; echo "EffectsAnimation = ${DRAW_BENCH_EFFECTS:-3}"; echo 'NoSyncNextAnnoyanceTime = 9999999999.0'
+              awk '/^\[settings\.SavedWindowFrames\]/{exit} /^\[settings\]$/{next} /^(EffectsAnimation|NoSyncNextAnnoyanceTime) = /{next} {print}' "$saved/settings.toml"; } > "$TCFG/settings.toml"
             rm -f "$TCFG/state"
             ;;
         ghostty*)
@@ -328,7 +340,8 @@ setup() {
     case "$cfg" in
         alacritty) setsid "$prog" --config-file "$B/alacritty.toml" -e "$B/shell.sh" alacritty > /dev/null 2>&1 & ;;
         ptyxis) setsid "$prog" -s -x "$B/shell.sh ptyxis" > /dev/null 2>&1 & ;;
-        *) setsid "$prog" > /dev/null 2>&1 & ;;
+        *) if [ "${DRAW_BENCH_FPS:-0}" = 1 ]; then : > "$B/wl.log"; WAYLAND_DEBUG=1 setsid "$prog" > /dev/null 2> "$B/wl.log" &
+           else setsid "$prog" > /dev/null 2>&1 & fi ;;
     esac
     mypids+=("$!")
     local i
@@ -359,7 +372,7 @@ wait_quiet() {
             [ "$said" = 1 ] || echo "draw-bench-linux: the machine is busy (a build); waiting" >&2
             said=1; quiet=0
         else quiet=$((quiet + 1)); fi
-        sleep 15
+        sleep "${DRAW_BENCH_QUIET:-15}"
     done
 }
 
@@ -368,16 +381,23 @@ run_one() {
     local cfg="$1" wl="$2" key=${1%-fx}
     case "$cfg" in termurion*) key=termurion ;; esac
     local names; names=$(proc_names "$cfg")
-    local a0 c0 w0 t0 a1 c1 w1 t1 bytes rss
+    local a0 c0 w0 t0 a1 c1 w1 t1 bytes rss o0=0 o1=0 fps="-"
+    [ "${DRAW_BENCH_FPS:-0}" = 1 ] && o0=$(stat -c %s "$B/wl.log" 2>/dev/null || echo 0)
     a0=$(cpu_of); c0=$(cpu_of $names); w0=$(cpu_of $comp_names); t0=$(now)
     local wout wcpu
     wout=$(perl "$B/writer.pl" "$wl" "$(cat "$B/tty.$key")" "$secs")
     bytes=${wout% *}; wcpu=${wout#* }
     a1=$(cpu_of); c1=$(cpu_of $names); w1=$(cpu_of $comp_names); t1=$(now)
+    if [ "${DRAW_BENCH_FPS:-0}" = 1 ]; then
+        o1=$(stat -c %s "$B/wl.log" 2>/dev/null || echo 0)
+        fps=$(tail -c +$((o0 + 1)) "$B/wl.log" | head -c $((o1 - o0)) | grep -o 'wl_surface#[0-9]*\.commit' | sort | uniq -c | sort -rn | head -1 \
+            | awk -v w="$(awk -v a="$t0" -v b="$t1" 'BEGIN { print b - a }')" '{ printf "%.1f", $1 / w }')
+        [ -n "$fps" ] || fps="-"
+    fi
     rss=$(ps -o rss= -p "$(pids_of $names | paste -sd,)" 2>/dev/null | awk '{ s += $1 } END { if (NR) printf "%.0f", s / 1024 }')
     # Front-window checks need X11 tools; without them the column says so.
-    awk -v a0="$a0" -v a1="$a1" -v c0="$c0" -v c1="$c1" -v w0="$w0" -v w1="$w1" -v t0="$t0" -v t1="$t1" -v b="$bytes" -v rss="$rss" -v wc="$wcpu" \
-        'BEGIN { wall = t1 - t0; printf "RESULT\t%.2f\t%.1f\t%.1f\t-\t%.2f\t%.1f\tunchecked\t%s\n", wall, 100 * (c1 - c0) / wall, 100 * (w1 - w0) / wall, b / wall / 1e6, 100 * ((a1 - a0) - (c1 - c0) - (w1 - w0) - wc) / wall, rss }'
+    awk -v a0="$a0" -v a1="$a1" -v c0="$c0" -v c1="$c1" -v w0="$w0" -v w1="$w1" -v t0="$t0" -v t1="$t1" -v b="$bytes" -v rss="$rss" -v wc="$wcpu" -v fps="$fps" \
+        'BEGIN { wall = t1 - t0; printf "RESULT\t%.2f\t%.1f\t%.1f\t%s\t%.2f\t%.1f\tunchecked\t%s\n", wall, 100 * (c1 - c0) / wall, 100 * (w1 - w0) / wall, fps, b / wall / 1e6, 100 * ((a1 - a0) - (c1 - c0) - (w1 - w0) - wc) / wall, rss }'
 }
 
 for pass in $(seq 1 "$passes"); do
@@ -404,8 +424,8 @@ done
 
 # The table: the median over passes of each config and workload (same layout as draw-bench).
 echo
-awk -F'\t' 'NR > 1 { k = $1 "\t" $2; n[k]++; cpu[k, n[k]] = $5; ws[k, n[k]] = $6; fps[k, n[k]] = $7; mb[k, n[k]] = $8; if ($12 != "") rs[k, ++nr[k]] = $12; if (!(k in seen)) { seen[k] = 1; order[++m] = k } }
+awk -F'\t' 'NR > 1 { k = $1 "\t" $2; n[k]++; cpu[k, n[k]] = $5; ws[k, n[k]] = $6; fps[k, n[k]] = $7; if ($7 != "-") fn[k]++; mb[k, n[k]] = $8; if ($12 != "") rs[k, ++nr[k]] = $12; if (!(k in seen)) { seen[k] = 1; order[++m] = k } }
     function med(a, k, c,   i, j, t, v) { for (i = 1; i <= c; i++) v[i] = a[k, i]; for (i = 1; i <= c; i++) for (j = i + 1; j <= c; j++) if (v[j] < v[i]) { t = v[i]; v[i] = v[j]; v[j] = t } return c % 2 ? v[(c + 1) / 2] : (v[c / 2] + v[c / 2 + 1]) / 2 }
     END { printf "| config | workload | CPU %% | WindowServer %% | frames/s | MB/s | RSS MB |\n|---|---|---|---|---|---|---|\n"
-          for (i = 1; i <= m; i++) { k = order[i]; split(k, p, "\t"); printf "| %s | %s | %.1f | %.1f | %s | %.2f | %s |\n", p[1], p[2], med(cpu, k, n[k]), med(ws, k, n[k]), "-", med(mb, k, n[k]), nr[k] ? sprintf("%.0f", med(rs, k, nr[k])) : "" } }' "$results" | tee "$out/table.md"
+          for (i = 1; i <= m; i++) { k = order[i]; split(k, p, "\t"); printf "| %s | %s | %.1f | %.1f | %s | %.2f | %s |\n", p[1], p[2], med(cpu, k, n[k]), med(ws, k, n[k]), fn[k] ? sprintf("%.1f", med(fps, k, n[k])) : "-", med(mb, k, n[k]), nr[k] ? sprintf("%.0f", med(rs, k, nr[k])) : "" } }' "$results" | tee "$out/table.md"
 echo "draw-bench-linux: results in $out" >&2

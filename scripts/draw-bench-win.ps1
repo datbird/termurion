@@ -41,6 +41,7 @@ param(
     [switch]$DryRun,
     [switch]$KillExisting,
     [double]$NoisePct = 25,
+    [string]$Effects = '3',
     [Parameter(Position = 0, ValueFromRemainingArguments = $true)][string[]]$Config = @()
 )
 $ErrorActionPreference = 'Stop'
@@ -313,9 +314,9 @@ function Setup-Config($cfg) {
             }
         }
         [IO.File]::WriteAllText((Join-Path $tcfg 'profiles.toml'), (($o -join "`n") + "`n"), $utf8)
-        # Effects animation = Smooth (3), and no saved window frame to override the grid.
+        # Effects animation = -Effects (default 3, Smooth; 'default' leaves the build's own default), and no saved window frame to override the grid.
         $s = New-Object Collections.Generic.List[string]
-        $s.Add('[settings]'); $s.Add('EffectsAnimation = 3')
+        $s.Add('[settings]'); if ($Effects -ne 'default') { $s.Add("EffectsAnimation = $Effects") }
         $sp = Join-Path $saved 'settings.toml'
         if (Test-Path -LiteralPath $sp) {
             foreach ($l in (Get-Content -LiteralPath $sp)) {
